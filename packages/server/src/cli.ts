@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import { serve } from '@hono/node-server';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { EmailError } from '@fluxmail/core';
 import { createContext } from './context.js';
 import {
   configFilePath,
@@ -57,8 +58,9 @@ const accounts = program.command('accounts').description('Manage connected email
 accounts
   .command('add')
   .argument('<provider>', 'Email provider (currently: gmail)')
+  .option('--reauthorize <account-id>', 'Reconnect an existing account')
   .description('Connect an account via OAuth (opens a browser consent flow)')
-  .action(async (provider: string) => {
+  .action(async (provider: string, opts: { reauthorize?: string }) => {
     if (provider !== 'gmail') {
       console.error(`Provider "${provider}" is not supported yet. Available: gmail`);
       process.exitCode = 1;
@@ -66,12 +68,33 @@ accounts
     }
     const ctx = createContext();
     try {
-      const result = await runLoopbackFlow(ctx.config, (url) => {
-        console.log('\nOpen this URL in your browser to authorize Gmail access:\n');
-        console.log(`  ${url}\n`);
-        console.log('Waiting for Google to redirect back…');
-      });
-      const account = ctx.registry.addGmailAccount(result.email, result.tokens, result.displayName);
+      const existing = opts.reauthorize ? ctx.registry.getAccount(opts.reauthorize) : undefined;
+      if (existing && existing.provider !== provider) {
+        throw new EmailError(
+          'invalid_request',
+          `Account ${existing.id} uses ${existing.provider}, not ${provider}.`
+        );
+      }
+      if (!existing) ctx.registry.assertCanAddAccount();
+
+      const account = await runLoopbackFlow(
+        ctx.config,
+        (url) => {
+          console.log('\nOpen this URL in your browser to authorize Gmail access:\n');
+          console.log(`  ${url}\n`);
+          console.log('Waiting for Google to redirect back…');
+        },
+        (result) => {
+          if (existing && result.email !== existing.email) {
+            throw new EmailError(
+              'invalid_request',
+              `Google authorized ${result.email}, but account ${existing.id} belongs to ${existing.email}. ` +
+                'Try again and choose the matching Google account.'
+            );
+          }
+          return ctx.registry.addGmailAccount(result.email, result.tokens, result.displayName);
+        }
+      );
       console.log(`\nConnected ${account.email} (account id: ${account.id})`);
     } catch (err) {
       console.error(`\nError: ${err instanceof Error ? err.message : String(err)}`);

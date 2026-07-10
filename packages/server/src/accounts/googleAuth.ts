@@ -60,6 +60,40 @@ export interface OAuthResult {
   tokens: Credentials;
 }
 
+function oauthListenerError(err: Error, port: number): Error {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code !== 'EADDRINUSE') return err;
+
+  return new Error(
+    `OAuth callback port ${port} is already in use.\n\n` +
+      'If Fluxmail is already running with Docker Compose, connect the account inside the container:\n\n' +
+      '  docker compose exec fluxmail fluxmail accounts add gmail\n\n' +
+      `Otherwise, stop the process using port ${port} and try again.`,
+    { cause: err }
+  );
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    const entities: Record<string, string> = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    };
+    return entities[char]!;
+  });
+}
+
+function callbackPage(title: string, message: string): string {
+  return (
+    '<html><body style="font-family: sans-serif">' +
+    `<h2>${escapeHtml(title)}</h2><p>${escapeHtml(message)}</p>` +
+    '<p>You can close this tab and return to the terminal.</p></body></html>'
+  );
+}
+
 export async function exchangeCode(client: OAuth2Client, code: string): Promise<OAuthResult> {
   const { tokens } = await client.getToken(code);
   if (!tokens.refresh_token) {
@@ -76,15 +110,16 @@ export async function exchangeCode(client: OAuth2Client, code: string): Promise<
  * Loopback OAuth flow for the CLI: listens once on config.oauthPort, prints the
  * consent URL, and resolves when Google redirects back with a code.
  */
-export async function runLoopbackFlow(
+export async function runLoopbackFlow<T = OAuthResult>(
   config: FluxmailConfig,
-  onAuthUrl: (url: string) => void
-): Promise<OAuthResult> {
+  onAuthUrl: (url: string) => void,
+  onAuthorized?: (result: OAuthResult) => T | Promise<T>
+): Promise<T> {
   const redirectUri = `http://localhost:${config.oauthPort}/oauth/callback`;
   const client = createOAuthClient(config, redirectUri);
   const state = randomBytes(16).toString('hex');
 
-  return new Promise<OAuthResult>((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     const server = createServer(async (req, res) => {
       // Close the listener and destroy lingering keep-alive sockets (the browser
       // holds its connection open after loading the page); otherwise the CLI
@@ -118,17 +153,23 @@ export async function runLoopbackFlow(
           return;
         }
         const result = await exchangeCode(client, code);
-        finish(() => resolve(result));
-        res.writeHead(200, { 'content-type': 'text/html' }).end(
-          `<html><body style="font-family: sans-serif"><h2>${result.email} is connected to Fluxmail</h2>` +
-            '<p>You can close this tab and return to the terminal.</p></body></html>'
+        const accepted = onAuthorized ? await onAuthorized(result) : (result as T);
+        finish(() => resolve(accepted));
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(
+          callbackPage(`${result.email} is connected to Fluxmail`, 'The account is ready to use.')
         );
       } catch (err) {
         finish(() => reject(err));
-        res.writeHead(500).end('Token exchange failed; check the terminal.');
+        const expected = err instanceof EmailError;
+        const message = expected
+          ? err.message
+          : 'Fluxmail could not finish connecting this account. Check the terminal for details.';
+        res.writeHead(expected ? 400 : 500, { 'content-type': 'text/html; charset=utf-8' }).end(
+          callbackPage('Fluxmail could not connect this account', message)
+        );
       }
     });
-    server.on('error', reject);
+    server.on('error', (err) => reject(oauthListenerError(err, config.oauthPort)));
     server.listen(config.oauthPort, config.oauthHost, () => {
       onAuthUrl(buildAuthUrl(client, state));
     });

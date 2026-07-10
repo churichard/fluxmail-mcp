@@ -27,7 +27,7 @@ Fluxmail uses your own Google Cloud OAuth app:
    - `http://localhost:8976/oauth/callback` (used by `fluxmail accounts add gmail`)
    - `<your FLUXMAIL_BASE_URL>/auth/google/callback` (only if you use the server-hosted flow on a remote deployment)
 
-Fluxmail requests the full `https://mail.google.com/` scope because the unified API supports permanent delete, which Gmail's narrower scopes don't allow. While your consent screen is in Google's "Testing" status, refresh tokens expire 7 days after they are issued, even if Fluxmail uses them during that time. Re-run `fluxmail accounts add gmail` when the token expires, or publish the consent screen to "In production" for long-lived tokens.
+Fluxmail requests the full `https://mail.google.com/` scope because the unified API supports permanent delete, which Gmail's narrower scopes don't allow. While your consent screen is in Google's "Testing" status, refresh tokens expire 7 days after they are issued, even if Fluxmail uses them during that time. When a token expires, find the account ID with `fluxmail accounts list`, then run `fluxmail accounts add gmail --reauthorize <account-id>`. You can also publish the consent screen to "In production" for long-lived tokens.
 
 ### 3. Run Fluxmail and connect your Gmail
 
@@ -351,6 +351,7 @@ For a personal setup, `fluxmail config set` is the simplest: set `GOOGLE_CLIENT_
 fluxmail serve                      # HTTP server (MCP at /mcp)
 fluxmail stdio                      # stdio MCP server
 fluxmail accounts add gmail         # OAuth consent flow
+fluxmail accounts add gmail --reauthorize <account-id>
 fluxmail accounts list | remove <id>
 fluxmail apikey create --name <name>  # key for the HTTP endpoint (shown once); name it after the client using it
 fluxmail apikey list | revoke <id>

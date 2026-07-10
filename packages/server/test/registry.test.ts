@@ -51,6 +51,15 @@ describe('AccountRegistry', () => {
     }
   });
 
+  it('detects the account limit before starting an OAuth flow', () => {
+    const registry = new AccountRegistry(openDb(':memory:'), testConfig());
+    const account = registry.addGmailAccount('one@example.com', tokens);
+
+    expect(() => registry.assertCanAddAccount()).toThrow(
+      new RegExp(`free tier allows 1 account.*--reauthorize ${account.id}`)
+    );
+  });
+
   it('rolls back the account when storing its tokens fails', () => {
     const db = openDb(':memory:');
     const sqlite = (db as unknown as { $client: { exec(sql: string): void } }).$client;

@@ -41,6 +41,25 @@ export class AccountRegistry {
     return account;
   }
 
+  /** Fail before OAuth when a new account would exceed the current plan. */
+  assertCanAddAccount(): void {
+    const existing = this.listAccounts();
+    try {
+      assertWithinLimit('accounts', existing.length, getEntitlements().maxAccounts);
+    } catch (err) {
+      if (!(err instanceof EmailError)) throw err;
+      const reconnect =
+        existing.length === 1
+          ? `To reconnect ${existing[0]!.email}, rerun this command with ` +
+            `"--reauthorize ${existing[0]!.id}".`
+          : 'To reconnect an existing account, rerun this command with "--reauthorize <account-id>".';
+      throw new EmailError(
+        err.code,
+        `${err.message} ${reconnect}`
+      );
+    }
+  }
+
   /** Resolve an account id, defaulting to the sole account when only one exists. */
   resolveAccountId(accountId?: string): string {
     if (accountId) return this.getAccount(accountId).id;
