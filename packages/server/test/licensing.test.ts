@@ -13,6 +13,8 @@ import {
   saveLeaseToken,
 } from '../src/licensing/entitlements.js';
 import { loadInstanceId, refreshLicense } from '../src/licensing/refresher.js';
+import { activateLicense } from '../src/licensing/activation.js';
+import { readStoredConfig, setStoredConfig } from '../src/config.js';
 import { openDb } from '../src/storage/db.js';
 
 function makeKeypair(): { privateKey: KeyObject; publicKeyB64: string } {
@@ -311,6 +313,30 @@ describe('refreshLicense', () => {
     });
     expect(result).toMatchObject({ outcome: 'bad_lease', cachedLeaseActive: true });
     expect(readLeaseRow(db)?.token).toBe(cached);
+  });
+});
+
+describe('activateLicense', () => {
+  const oldKey = `fluxmail_lic_${'ab'.repeat(20)}`;
+  const newKey = `fluxmail_lic_${'cd'.repeat(20)}`;
+
+  it('preserves the stored key when the replacement is rejected', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'fluxmail-activation-'));
+    setStoredConfig(dir, 'FLUXMAIL_LICENSE_KEY', oldKey);
+    const db = openDb(':memory:');
+    const { fetchImpl } = fakeFetch(() =>
+      Response.json({ error: 'license_not_found' }, { status: 404 })
+    );
+
+    const result = await activateLicense(db, {
+      licenseKey: newKey,
+      serverUrl: 'https://license.invalid',
+      dataDir: dir,
+      fetchImpl,
+    });
+
+    expect(result.outcome).toBe('not_found');
+    expect(readStoredConfig(dir).FLUXMAIL_LICENSE_KEY).toBe(oldKey);
   });
 });
 

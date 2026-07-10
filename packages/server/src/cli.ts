@@ -16,6 +16,7 @@ import { createApp } from './http/app.js';
 import { buildMcpServer } from './mcp/buildServer.js';
 import { runLoopbackFlow } from './accounts/googleAuth.js';
 import { createApiKey, listApiKeys, revokeApiKey } from './storage/apiKeys.js';
+import { activateLicense } from './licensing/activation.js';
 import { LICENSE_KEY_PATTERN } from './licensing/client.js';
 import { licensePublicKeys, verifyLease } from './licensing/lease.js';
 import { clearLease, getEntitlements, readLeaseRow } from './licensing/entitlements.js';
@@ -206,12 +207,11 @@ license
       process.exitCode = 1;
       return;
     }
-    setStoredConfig(dataDir, 'FLUXMAIL_LICENSE_KEY', key);
     const ctx = createContext();
-    const result = await refreshLicense(ctx.db, {
+    const result = await activateLicense(ctx.db, {
       licenseKey: key,
       serverUrl: ctx.config.licenseServerUrl,
-      dataDir: ctx.config.dataDir,
+      dataDir,
     });
     if (result.outcome === 'refreshed') {
       console.log(`License activated: up to ${result.lease.maxAccounts} accounts.`);
