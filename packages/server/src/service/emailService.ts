@@ -255,10 +255,16 @@ export class EmailService {
   ): Promise<ScheduledSendInfo> {
     const sendAt = resolveSendAt(sendAtIso);
     const { draft, resolvedId } = await this.withProvider(accountId, async (p, id, account) => {
-      const message =
-        'draftId' in input
-          ? await p.getDraft(input.draftId)
-          : await p.createDraft(await this.resolveRecipients(p, account, input));
+      let message: Message;
+      if ('draftId' in input) {
+        message = await p.getDraft(input.draftId);
+      } else {
+        const resolved = await this.resolveRecipients(p, account, input);
+        if (!resolved.to?.length && !resolved.cc?.length && !resolved.bcc?.length) {
+          throw new EmailError('invalid_request', 'Cannot schedule a message with no recipients');
+        }
+        message = await p.createDraft(resolved);
+      }
       return { draft: message, resolvedId: id };
     });
     if (!draft.draftId) {

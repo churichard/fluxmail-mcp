@@ -280,6 +280,34 @@ describe('EmailService scheduling', () => {
     expect(service.listScheduled()).toHaveLength(1);
   });
 
+  it('rejects recipientless content before creating a draft', async () => {
+    const createDraft = vi.fn();
+    const { service } = schedulingService({ createDraft });
+
+    await expect(
+      service.scheduleSend(undefined, { subject: 'Nobody', body: { text: 'hi' } }, soon)
+    ).rejects.toMatchObject({ code: 'invalid_request' });
+
+    expect(createDraft).not.toHaveBeenCalled();
+    expect(service.listScheduled()).toHaveLength(0);
+  });
+
+  it('accepts a reply after deriving its recipient', async () => {
+    const getMessage = vi.fn().mockResolvedValue(original);
+    const createDraft = vi.fn().mockResolvedValue(draftMessage);
+    const { service } = schedulingService({ getMessage, createDraft });
+
+    await service.scheduleSend(
+      undefined,
+      { replyToMessageId: original.id, subject: 'Re: Hello', body: { text: 'hi' } },
+      soon
+    );
+
+    expect(createDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ to: [{ email: 'ann@example.com', name: 'Ann' }] })
+    );
+  });
+
   it('schedules an existing draft after verifying it exists', async () => {
     const getDraft = vi.fn().mockResolvedValue(draftMessage);
     const { service } = schedulingService({ getDraft });
