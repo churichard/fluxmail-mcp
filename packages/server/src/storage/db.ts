@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const accounts = sqliteTable(
   'accounts',
@@ -41,6 +41,31 @@ export const licenseLease = sqliteTable('license_lease', {
   updatedAt: integer('updated_at').notNull(),
 });
 
+export const scheduledSends = sqliteTable(
+  'scheduled_sends',
+  {
+    id: text('id').primaryKey(),
+    accountId: text('account_id')
+      .notNull()
+      .references(() => accounts.id, { onDelete: 'cascade' }),
+    draftId: text('draft_id').notNull(),
+    /** Epoch milliseconds. */
+    sendAt: integer('send_at').notNull(),
+    createdAt: integer('created_at').notNull(),
+    status: text('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    sentMessageId: text('sent_message_id'),
+    sentThreadId: text('sent_thread_id'),
+    /** Display snapshots taken at schedule time so listing never hits the provider. */
+    subject: text('subject'),
+    toRecipients: text('to_recipients'),
+    claimToken: text('claim_token'),
+    claimUntil: integer('claim_until'),
+  },
+  (table) => [index('scheduled_sends_pending_due').on(table.status, table.sendAt)]
+);
+
 export type FluxmailDb = BetterSQLite3Database;
 
 const BOOTSTRAP_SQL = `
@@ -71,6 +96,24 @@ CREATE TABLE IF NOT EXISTS license_lease (
   token TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS scheduled_sends (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  draft_id TEXT NOT NULL,
+  send_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  sent_message_id TEXT,
+  sent_thread_id TEXT,
+  subject TEXT,
+  to_recipients TEXT,
+  claim_token TEXT,
+  claim_until INTEGER
+);
+CREATE INDEX IF NOT EXISTS scheduled_sends_pending_due
+  ON scheduled_sends(status, send_at);
 `;
 
 export function openDb(dbPath: string): FluxmailDb {
@@ -78,5 +121,10 @@ export function openDb(dbPath: string): FluxmailDb {
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('foreign_keys = ON');
   sqlite.exec(BOOTSTRAP_SQL);
+  const columns = new Set(
+    (sqlite.prepare('PRAGMA table_info(scheduled_sends)').all() as Array<{ name: string }>).map((column) => column.name)
+  );
+  if (!columns.has('claim_token')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_token TEXT');
+  if (!columns.has('claim_until')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_until INTEGER');
   return drizzle(sqlite);
 }

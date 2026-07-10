@@ -21,6 +21,7 @@ import { LICENSE_KEY_PATTERN } from './licensing/client.js';
 import { licensePublicKeys, verifyLease } from './licensing/lease.js';
 import { clearLease, getEntitlements, readLeaseRow } from './licensing/entitlements.js';
 import { refreshLicense, startLicenseRefresher } from './licensing/refresher.js';
+import { countPending } from './storage/scheduledSends.js';
 
 const program = new Command();
 program.name('fluxmail').description('Fluxmail, a self-hosted MCP server for your email').version('0.1.0');
@@ -31,6 +32,7 @@ program
   .action(() => {
     const ctx = createContext();
     const app = createApp(ctx);
+    ctx.scheduler.start();
     serve({ fetch: app.fetch, port: ctx.config.port }, () => {
       console.log(`Fluxmail listening on ${ctx.config.baseUrl}`);
       console.log(`  MCP endpoint:   ${ctx.config.baseUrl}/mcp`);
@@ -62,10 +64,13 @@ program
   .action(async () => {
     const ctx = createContext();
     const server = buildMcpServer(ctx.service);
+    ctx.scheduler.start();
     await server.connect(new StdioServerTransport());
     // stdout belongs to the MCP protocol; log to stderr only.
     startLicenseRefresher({ db: ctx.db, config: ctx.config, log: console.error });
     console.error('Fluxmail MCP server running on stdio');
+    const { pending } = countPending(ctx.db);
+    if (pending > 0) console.error(`Scheduled sends pending: ${pending}`);
   });
 
 const accounts = program.command('accounts').description('Manage connected email accounts');

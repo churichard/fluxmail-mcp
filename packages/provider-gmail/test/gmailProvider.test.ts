@@ -100,6 +100,61 @@ describe('GmailProvider list hydration', () => {
   });
 });
 
+describe('GmailProvider getDraft', () => {
+  function providerWithDraftsGet(draftsGet: ReturnType<typeof vi.fn>) {
+    const provider = new GmailProvider({
+      accountId: 'acct_1',
+      email: 'me@example.com',
+      auth: new OAuth2Client(),
+    });
+    const internals = provider as unknown as {
+      gmail: {
+        users: {
+          labels: { list: () => Promise<{ data: { labels: never[] } }> };
+          drafts: { get: typeof draftsGet };
+          messages: { get: ReturnType<typeof vi.fn> };
+        };
+      };
+    };
+    internals.gmail = {
+      users: {
+        labels: { list: vi.fn().mockResolvedValue({ data: { labels: [] } }) },
+        drafts: { get: draftsGet },
+        messages: {
+          get: vi.fn().mockResolvedValue({
+            data: {
+              id: 'msg_1',
+              threadId: 'thread_1',
+              internalDate: '1751976000000',
+              payload: { headers: [{ name: 'Subject', value: 'Later' }] },
+            },
+          }),
+        },
+      },
+    };
+    return provider;
+  }
+
+  it('fetches a draft and stamps the draft id on the message', async () => {
+    const draftsGet = vi.fn().mockResolvedValue({ data: { id: 'draft_1', message: { id: 'msg_1' } } });
+    const provider = providerWithDraftsGet(draftsGet);
+
+    await expect(provider.getDraft('draft_1')).resolves.toMatchObject({
+      id: 'msg_1',
+      draftId: 'draft_1',
+      subject: 'Later',
+    });
+    expect(draftsGet).toHaveBeenCalledWith({ userId: 'me', id: 'draft_1' });
+  });
+
+  it('maps a missing draft to not_found', async () => {
+    const draftsGet = vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { code: 404 }));
+    const provider = providerWithDraftsGet(draftsGet);
+
+    await expect(provider.getDraft('gone')).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
+
 describe('GmailProvider sender name', () => {
   it('uses the primary Gmail send-as display name when configured', async () => {
     const auth = new OAuth2Client();
