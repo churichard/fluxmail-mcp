@@ -19,7 +19,19 @@ import {
   type Thread,
 } from '@fluxmail/core';
 import type { AccountRegistry } from '../accounts/registry.js';
-import { FREE_TIER, type Entitlements } from '../licensing/entitlements.js';
+import { getEntitlements, type Entitlements } from '../licensing/entitlements.js';
+import type { FluxmailDb } from '../storage/db.js';
+import {
+  cancelScheduledSend,
+  countPending,
+  createScheduledSend,
+  findPendingByDraft,
+  getScheduledSend,
+  listScheduledSends,
+  markSent,
+  type ScheduledSendRow,
+  type ScheduledSendStatus,
+} from '../storage/scheduledSends.js';
 
 export interface SendInput extends DraftInput {
   /** With replyToMessageId: compute recipients from the original (reply-all semantics). */
@@ -43,6 +55,57 @@ export interface ServiceStatus {
   >;
   entitlements: Entitlements;
   providersAvailable: string[];
+  scheduled: { pending: number; nextSendAt?: string };
+}
+
+export interface ScheduledSendInfo {
+  scheduleId: string;
+  accountId: string;
+  draftId: string;
+  /** ISO 8601 UTC. */
+  sendAt: string;
+  status: ScheduledSendStatus;
+  attempts: number;
+  subject?: string;
+  to?: string;
+  lastError?: string;
+  sentMessageId?: string;
+  sentThreadId?: string;
+}
+
+const SCHEDULE_GRACE_MS = 60_000;
+const SCHEDULE_MAX_HORIZON_MS = 365 * 24 * 3_600_000;
+
+/** Parse and validate a sendAt timestamp; returns epoch ms. */
+export function resolveSendAt(sendAtIso: string, now = Date.now()): number {
+  // Require an ISO 8601 shape: Date.parse alone is lenient enough to accept junk.
+  const sendAt = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(sendAtIso) ? Date.parse(sendAtIso) : NaN;
+  if (Number.isNaN(sendAt)) {
+    throw new EmailError('invalid_request', `Could not parse sendAt: "${sendAtIso}" (expected ISO 8601)`);
+  }
+  if (sendAt < now - SCHEDULE_GRACE_MS) {
+    throw new EmailError('invalid_request', 'sendAt is in the past; leave it out to send now');
+  }
+  if (sendAt > now + SCHEDULE_MAX_HORIZON_MS) {
+    throw new EmailError('invalid_request', 'sendAt is more than a year away');
+  }
+  return sendAt;
+}
+
+function toScheduledInfo(row: ScheduledSendRow): ScheduledSendInfo {
+  return {
+    scheduleId: row.id,
+    accountId: row.accountId,
+    draftId: row.draftId,
+    sendAt: new Date(row.sendAt).toISOString(),
+    status: row.status,
+    attempts: row.attempts,
+    ...(row.subject !== null ? { subject: row.subject } : {}),
+    ...(row.toRecipients !== null ? { to: row.toRecipients } : {}),
+    ...(row.lastError !== null ? { lastError: row.lastError } : {}),
+    ...(row.sentMessageId !== null ? { sentMessageId: row.sentMessageId } : {}),
+    ...(row.sentThreadId !== null ? { sentThreadId: row.sentThreadId } : {}),
+  };
 }
 
 /**
@@ -51,10 +114,12 @@ export interface ServiceStatus {
  * REST API / CLI) are thin wrappers over this service.
  */
 export class EmailService {
+  /** Wired to SendScheduler.wake() in long-lived processes; a no-op for one-shot CLI commands. */
+  onScheduleChanged: () => void = () => {};
+
   constructor(
     private readonly registry: AccountRegistry,
-    /** Effective plan limits, usually () => getEntitlements(db); defaults to free tier. */
-    private readonly entitlements: () => Entitlements = () => FREE_TIER
+    private readonly db: FluxmailDb
   ) {}
 
   /** Route a call to the right provider, recording auth failures on the account. */
@@ -117,8 +182,17 @@ export class EmailService {
           status,
           ...(errors.has(id) ? { error: errors.get(id)! } : {}),
         })),
-      entitlements: this.entitlements(),
+      entitlements: getEntitlements(this.db),
       providersAvailable: ['gmail'],
+      scheduled: this.scheduledStatus(),
+    };
+  }
+
+  private scheduledStatus(): ServiceStatus['scheduled'] {
+    const { pending, nextSendAt } = countPending(this.db);
+    return {
+      pending,
+      ...(nextSendAt !== undefined ? { nextSendAt: new Date(nextSendAt).toISOString() } : {}),
     };
   }
 
@@ -155,10 +229,70 @@ export class EmailService {
   }
 
   send(accountId: string | undefined, input: SendInput | { draftId: string }): Promise<SendResult> {
-    return this.withProvider(accountId, async (p, _id, account) => {
-      if ('draftId' in input) return p.send({ draftId: input.draftId });
+    return this.withProvider(accountId, async (p, resolvedId, account) => {
+      if ('draftId' in input) {
+        const result = await p.send({ draftId: input.draftId });
+        // Sending a scheduled draft now supersedes its schedule.
+        const pending = findPendingByDraft(this.db, resolvedId, input.draftId);
+        if (pending) {
+          markSent(this.db, pending.id, result);
+          this.onScheduleChanged();
+        }
+        return result;
+      }
       return p.send(await this.resolveRecipients(p, account, input));
     });
+  }
+
+  /**
+   * Draft-backed scheduled send: the content becomes a real provider draft
+   * immediately; only the schedule (draft id + fire time) is stored locally.
+   */
+  async scheduleSend(
+    accountId: string | undefined,
+    input: SendInput | { draftId: string },
+    sendAtIso: string
+  ): Promise<ScheduledSendInfo> {
+    const sendAt = resolveSendAt(sendAtIso);
+    const { draft, resolvedId } = await this.withProvider(accountId, async (p, id, account) => {
+      const message =
+        'draftId' in input
+          ? await p.getDraft(input.draftId)
+          : await p.createDraft(await this.resolveRecipients(p, account, input));
+      return { draft: message, resolvedId: id };
+    });
+    if (!draft.draftId) {
+      throw new EmailError('provider_unavailable', 'Provider did not return a draft id');
+    }
+    const row = createScheduledSend(this.db, {
+      accountId: resolvedId,
+      draftId: draft.draftId,
+      sendAt,
+      ...(draft.subject !== undefined ? { subject: draft.subject } : {}),
+      ...(draft.to?.length ? { toRecipients: formatAddressList(draft.to) } : {}),
+    });
+    this.onScheduleChanged();
+    return toScheduledInfo(row);
+  }
+
+  listScheduled(accountId?: string): ScheduledSendInfo[] {
+    // Only resolve when a filter was given: listing must work across accounts.
+    const resolvedId = accountId === undefined ? undefined : this.registry.resolveAccountId(accountId);
+    return listScheduledSends(this.db, resolvedId).map(toScheduledInfo);
+  }
+
+  /** Cancels a pending schedule; the provider draft is kept. */
+  cancelScheduled(scheduleId: string): { scheduleId: string; draftId: string; draftKept: true } {
+    const row = getScheduledSend(this.db, scheduleId);
+    if (!row) throw new EmailError('not_found', `No scheduled send with id ${scheduleId}`);
+    if (row.status !== 'pending') {
+      throw new EmailError('invalid_request', `Scheduled send ${scheduleId} is already ${row.status}`);
+    }
+    if (!cancelScheduledSend(this.db, scheduleId)) {
+      throw new EmailError('invalid_request', `Scheduled send ${scheduleId} has already started sending`);
+    }
+    this.onScheduleChanged();
+    return { scheduleId, draftId: row.draftId, draftKept: true };
   }
 
   /**

@@ -36,6 +36,8 @@ export interface EmailProvider {
   listFolders(): Promise<Folder[]>;
 
   createDraft(d: DraftInput): Promise<Message>;
+  /** Fetch a draft by draft id (message with draftId populated). */
+  getDraft(draftId: string): Promise<Message>;
   updateDraft(draftId: string, d: DraftInput): Promise<Message>;
   deleteDraft(draftId: string): Promise<void>;
   send(input: DraftInput | { draftId: string }): Promise<SendResult>;

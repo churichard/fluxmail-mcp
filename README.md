@@ -108,6 +108,8 @@ Open Settings -> Plugins -> MCPs -> Add server, then enter:
 
 If the app cannot find `fluxmail`, use the absolute path from `which fluxmail` as the command.
 
+Save, then make sure to restart the app in order for the changes to be picked up.
+
 </details>
 
 <details>
@@ -227,6 +229,8 @@ Open Settings -> Plugins -> MCPs -> Add server, then enter:
 - URL: `http://localhost:8977/mcp`
 - Header name: `Authorization`
 - Header value: `Bearer fmk_...`
+
+Save, then make sure to restart the app in order for the changes to be picked up.
 
 </details>
 
@@ -374,6 +378,8 @@ For a personal setup, `fluxmail config set` is the simplest: set `GOOGLE_CLIENT_
 | `FLUXMAIL_LICENSE_KEY` | (none) | Paid-tier license key; usually set via `fluxmail license activate` |
 
 ## CLI
+
+Running under Docker (Option B)? Prefix any of these with `docker compose exec fluxmail` so the command runs inside the container, e.g. `docker compose exec fluxmail fluxmail accounts list`.
 
 ```
 fluxmail serve                      # HTTP server (MCP at /mcp)

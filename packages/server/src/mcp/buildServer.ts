@@ -368,13 +368,53 @@ export function buildMcpServer(service: EmailService): McpServer {
         'browser automation or leaving a draft when the user asked to send. Three modes: direct (to + subject ' +
         '+ body), sending an existing draft (draftId), or replying (replyToMessageId, optionally replyAll) ' +
         'where recipients, subject, and threading are derived from the original. Confirm with the user when ' +
-        'intent is ambiguous.',
-      inputSchema: { draftId: idParam.optional().describe('Send this existing draft'), ...draftShape },
+        'intent is ambiguous. Add sendAt to any mode to schedule instead of sending now.',
+      inputSchema: {
+        draftId: idParam.optional().describe('Send this existing draft'),
+        ...draftShape,
+        sendAt: z
+          .string()
+          .datetime({ offset: true })
+          .optional()
+          .describe(
+            'Schedule delivery instead of sending now: ISO 8601 with timezone offset or Z ' +
+              '(e.g. 2026-07-11T09:00:00-07:00). Fluxmail saves the message as a real draft in the mailbox ' +
+              'and sends it at this time; the server must be running then (anything missed while it was ' +
+              'down goes out at the next startup). Returns a scheduleId for list/cancel.'
+          ),
+      },
       annotations: { destructiveHint: true },
     },
-    handle(async (args: DraftArgs & { draftId?: string }) =>
-      service.send(args.accountId, toSendRequest(args))
-    )
+    handle(async (args: DraftArgs & { draftId?: string; sendAt?: string }) => {
+      const { sendAt, ...sendArgs } = args;
+      return sendAt !== undefined
+        ? service.scheduleSend(args.accountId, toSendRequest(sendArgs), sendAt)
+        : service.send(args.accountId, toSendRequest(sendArgs));
+    })
+  );
+
+  server.registerTool(
+    'list_scheduled_emails',
+    {
+      description:
+        'List scheduled sends: pending ones first (with sendAt), then past ones (sent, failed, canceled). ' +
+        'For failed entries, lastError says what went wrong. Pending sends only fire while the ' +
+        'Fluxmail server is running.',
+      inputSchema: { accountId: accountIdParam },
+      annotations: { readOnlyHint: true },
+    },
+    handle(async (args: { accountId?: string }) => service.listScheduled(args.accountId))
+  );
+
+  server.registerTool(
+    'cancel_scheduled_email',
+    {
+      description:
+        'Cancel a pending scheduled send by scheduleId (from send_email with sendAt, or list_scheduled_emails). ' +
+        'The draft stays in the Drafts folder, so the content is not lost.',
+      inputSchema: { scheduleId: idParam },
+    },
+    handle(async (args: { scheduleId: string }) => service.cancelScheduled(args.scheduleId))
   );
 
   server.registerTool(

@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EmailError, type Message } from '@fluxmail/core';
-import { buildForwardBody, EmailService } from '../src/service/emailService.js';
+import { buildForwardBody, EmailService, resolveSendAt } from '../src/service/emailService.js';
+import { accounts, openDb, type FluxmailDb } from '../src/storage/db.js';
+
+function testDb(): FluxmailDb {
+  const db = openDb(':memory:');
+  db.insert(accounts)
+    .values({ id: 'acct_1', provider: 'gmail', email: 'me@example.com', status: 'active', createdAt: Date.now() })
+    .run();
+  return db;
+}
 
 const original: Message = {
   id: 'm1',
@@ -82,7 +91,7 @@ describe('EmailService.forward', () => {
       getProvider: () => provider,
       markStatus: vi.fn(),
     };
-    const service = new EmailService(registry as never);
+    const service = new EmailService(registry as never, testDb());
 
     await service.forward(undefined, {
       messageId: message.id,
@@ -117,7 +126,7 @@ describe('EmailService account state', () => {
       }),
       getProvider,
     };
-    const service = new EmailService(registry as never);
+    const service = new EmailService(registry as never, testDb());
 
     await expect(service.listFolders()).rejects.toMatchObject({ code: 'invalid_request' });
     expect(getProvider).not.toHaveBeenCalled();
@@ -149,7 +158,7 @@ describe('EmailService.status', () => {
       getProvider: () => ({ testConnection }),
       markStatus,
     };
-    return { service: new EmailService(registry as never), markStatus };
+    return { service: new EmailService(registry as never, testDb()), markStatus };
   }
 
   it('marks an account when a live connection check finds expired authorization', async () => {
@@ -187,5 +196,157 @@ describe('EmailService.status', () => {
       ],
     });
     expect(markStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveSendAt', () => {
+  const now = Date.parse('2026-07-10T12:00:00.000Z');
+
+  it('accepts a future ISO timestamp with offset', () => {
+    expect(resolveSendAt('2026-07-11T09:00:00-07:00', now)).toBe(Date.parse('2026-07-11T16:00:00Z'));
+  });
+
+  it('accepts a timestamp within the past-grace window', () => {
+    expect(resolveSendAt('2026-07-10T11:59:30.000Z', now)).toBe(now - 30_000);
+  });
+
+  it('rejects a past timestamp', () => {
+    expect(() => resolveSendAt('2026-07-10T11:00:00.000Z', now)).toThrow(/in the past/);
+  });
+
+  it('rejects a timestamp more than a year away', () => {
+    expect(() => resolveSendAt('2027-08-01T00:00:00.000Z', now)).toThrow(/more than a year/);
+  });
+
+  it('rejects garbage', () => {
+    expect(() => resolveSendAt('tomorrow at 9', now)).toThrow(/Could not parse/);
+  });
+});
+
+describe('EmailService scheduling', () => {
+  const soon = new Date(Date.now() + 3_600_000).toISOString();
+
+  function schedulingService(provider: Record<string, unknown>) {
+    const db = testDb();
+    const account = {
+      id: 'acct_1',
+      provider: 'gmail',
+      email: 'me@example.com',
+      status: 'active',
+      capabilities: {},
+    };
+    const registry = {
+      resolveAccountId: () => 'acct_1',
+      getAccount: () => account,
+      listAccounts: () => [account],
+      getProvider: () => provider,
+      markStatus: vi.fn(),
+    };
+    const service = new EmailService(registry as never, db);
+    const onScheduleChanged = vi.fn();
+    service.onScheduleChanged = onScheduleChanged;
+    return { service, db, onScheduleChanged };
+  }
+
+  const draftMessage: Message = {
+    ...original,
+    draftId: 'draft_1',
+    to: [{ email: 'bob@example.com' }],
+    subject: 'Later',
+    flags: { read: true, starred: false, draft: true },
+  };
+
+  it('schedules new content by creating a draft and storing a schedule row', async () => {
+    const createDraft = vi.fn().mockResolvedValue(draftMessage);
+    const { service, onScheduleChanged } = schedulingService({ createDraft });
+
+    const info = await service.scheduleSend(
+      undefined,
+      { to: [{ email: 'bob@example.com' }], subject: 'Later', body: { text: 'hi' } },
+      soon
+    );
+
+    expect(createDraft).toHaveBeenCalled();
+    expect(info).toMatchObject({
+      draftId: 'draft_1',
+      accountId: 'acct_1',
+      status: 'pending',
+      subject: 'Later',
+      to: 'bob@example.com',
+      sendAt: new Date(soon).toISOString(),
+    });
+    expect(info.scheduleId).toMatch(/^sch_/);
+    expect(onScheduleChanged).toHaveBeenCalled();
+    expect(service.listScheduled()).toHaveLength(1);
+  });
+
+  it('schedules an existing draft after verifying it exists', async () => {
+    const getDraft = vi.fn().mockResolvedValue(draftMessage);
+    const { service } = schedulingService({ getDraft });
+
+    const info = await service.scheduleSend(undefined, { draftId: 'draft_1' }, soon);
+
+    expect(getDraft).toHaveBeenCalledWith('draft_1');
+    expect(info.draftId).toBe('draft_1');
+  });
+
+  it('rejects scheduling a missing draft', async () => {
+    const getDraft = vi.fn().mockRejectedValue(new EmailError('not_found', 'no such draft'));
+    const { service } = schedulingService({ getDraft });
+
+    await expect(service.scheduleSend(undefined, { draftId: 'nope' }, soon)).rejects.toMatchObject({
+      code: 'not_found',
+    });
+    expect(service.listScheduled()).toHaveLength(0);
+  });
+
+  it('rejects a second pending schedule for the same draft', async () => {
+    const getDraft = vi.fn().mockResolvedValue(draftMessage);
+    const { service } = schedulingService({ getDraft });
+
+    await service.scheduleSend(undefined, { draftId: 'draft_1' }, soon);
+    await expect(service.scheduleSend(undefined, { draftId: 'draft_1' }, soon)).rejects.toMatchObject({
+      code: 'invalid_request',
+    });
+  });
+
+  it('marks the schedule sent when the draft is sent manually', async () => {
+    const getDraft = vi.fn().mockResolvedValue(draftMessage);
+    const send = vi.fn().mockResolvedValue({ id: 'sent_1', threadId: 'thread_1' });
+    const { service, onScheduleChanged } = schedulingService({ getDraft, send });
+
+    const info = await service.scheduleSend(undefined, { draftId: 'draft_1' }, soon);
+    onScheduleChanged.mockClear();
+    await service.send(undefined, { draftId: 'draft_1' });
+
+    const [row] = service.listScheduled();
+    expect(row).toMatchObject({ scheduleId: info.scheduleId, status: 'sent', sentMessageId: 'sent_1' });
+    expect(onScheduleChanged).toHaveBeenCalled();
+  });
+
+  it('cancels a pending schedule and keeps the draft', async () => {
+    const getDraft = vi.fn().mockResolvedValue(draftMessage);
+    const deleteDraft = vi.fn();
+    const { service } = schedulingService({ getDraft, deleteDraft });
+
+    const info = await service.scheduleSend(undefined, { draftId: 'draft_1' }, soon);
+    const result = service.cancelScheduled(info.scheduleId);
+
+    expect(result).toEqual({ scheduleId: info.scheduleId, draftId: 'draft_1', draftKept: true });
+    expect(deleteDraft).not.toHaveBeenCalled();
+    expect(service.listScheduled()[0]).toMatchObject({ status: 'canceled' });
+    expect(() => service.cancelScheduled(info.scheduleId)).toThrow(/already canceled/);
+    expect(() => service.cancelScheduled('sch_missing')).toThrow(/No scheduled send/);
+  });
+
+  it('reports pending schedules in status()', async () => {
+    const getDraft = vi.fn().mockResolvedValue(draftMessage);
+    const { service } = schedulingService({ getDraft, testConnection: vi.fn() });
+
+    await service.scheduleSend(undefined, { draftId: 'draft_1' }, soon);
+
+    await expect(service.status()).resolves.toMatchObject({
+      scheduled: { pending: 1, nextSendAt: new Date(soon).toISOString() },
+    });
   });
 });

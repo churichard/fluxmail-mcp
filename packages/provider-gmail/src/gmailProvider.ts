@@ -412,6 +412,11 @@ export class GmailProvider implements EmailProvider {
     return this.draftToMessage(res.data);
   }
 
+  async getDraft(draftId: string): Promise<Message> {
+    const res = await withRetry(() => this.gmail.users.drafts.get({ userId: 'me', id: draftId }));
+    return this.draftToMessage(res.data);
+  }
+
   async updateDraft(draftId: string, d: DraftInput): Promise<Message> {
     // Replacing a reply draft's content must not detach it from its thread:
     // carry the draft's threading over unless the caller re-derives it.
