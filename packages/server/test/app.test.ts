@@ -22,6 +22,7 @@ function appDeps(authMode: FluxmailConfig['authMode']): AppDeps {
       oauthPort: 8976,
       oauthHost: '127.0.0.1',
       authMode,
+      licenseServerUrl: 'https://license.invalid',
       google: { clientId: 'client-id', clientSecret: 'client-secret' },
     },
     db: openDb(':memory:'),

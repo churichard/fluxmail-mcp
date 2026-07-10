@@ -19,6 +19,7 @@ function testConfig(): FluxmailConfig {
     oauthPort: 8976,
     oauthHost: '127.0.0.1',
     authMode: 'apikey',
+    licenseServerUrl: 'https://license.invalid',
     google: { clientId: 'id', clientSecret: 'secret' },
   };
 }

@@ -97,7 +97,21 @@ Add to `claude_desktop_config.json` (Settings → Developer → Edit Config):
 </details>
 
 <details>
-<summary>Codex (CLI and IDE)</summary>
+<summary>ChatGPT / Codex app</summary>
+
+Open Settings -> Plugins -> MCPs -> Add server, then enter:
+
+- Name: `Fluxmail`
+- Type: `STDIO`
+- Command to launch: `fluxmail`
+- Argument: `stdio`
+
+If the app cannot find `fluxmail`, use the absolute path from `which fluxmail` as the command.
+
+</details>
+
+<details>
+<summary>Codex CLI</summary>
 
 ```bash
 codex mcp add fluxmail -- fluxmail stdio
@@ -204,18 +218,27 @@ claude mcp add --transport http fluxmail http://localhost:8977/mcp \
 </details>
 
 <details>
-<summary>Codex (CLI and IDE)</summary>
+<summary>ChatGPT / Codex app</summary>
 
-Add to `~/.codex/config.toml` (the bearer token is read from an environment variable):
+Open Settings -> Plugins -> MCPs -> Add server, then enter:
+
+- Name: `Fluxmail`
+- Type: `Streamable HTTP`
+- URL: `http://localhost:8977/mcp`
+- Header name: `Authorization`
+- Header value: `Bearer fmk_...`
+
+</details>
+
+<details>
+<summary>Codex CLI</summary>
+
+Add the following to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.fluxmail]
 url = "http://localhost:8977/mcp"
-bearer_token_env_var = "FLUXMAIL_API_KEY"
-```
-
-```bash
-export FLUXMAIL_API_KEY=fmk_...
+http_headers = { Authorization = "Bearer fmk_..." }
 ```
 
 </details>
@@ -291,9 +314,13 @@ Add to `.vscode/mcp.json` in a workspace, or run "MCP: Add Server" from the comm
 </details>
 
 <details>
-<summary>ChatGPT (developer mode)</summary>
+<summary>ChatGPT chats (developer mode)</summary>
 
-ChatGPT connectors require a publicly reachable HTTPS server and support only OAuth or no authentication; they cannot send a bearer API key. To use Fluxmail with ChatGPT today, deploy it behind HTTPS with `FLUXMAIL_AUTH=none` and restrict access at the network layer (VPN, tunnel, or IP allowlist), since the MCP endpoint itself will accept unauthenticated requests. Then enable developer mode (Settings → Apps & Connectors → Advanced) and create a connector pointing at `https://your-host/mcp`.
+The instructions above configure Fluxmail for Codex inside the ChatGPT app. Developer-mode apps used from regular ChatGPT chats have a separate connection setup.
+
+ChatGPT cannot connect directly to `localhost`. For a local Docker server, use OpenAI's [Secure MCP Tunnel](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt-beta#h_8e76ef4c26) rather than exposing the server to the public internet. You can also deploy Fluxmail at a public HTTPS URL.
+
+ChatGPT connectors support OAuth or no authentication; they cannot send Fluxmail's static bearer API key. Until Fluxmail supports MCP OAuth, run it with `FLUXMAIL_AUTH=none` only behind the secure tunnel or a network boundary you control. Then enable developer mode (Settings → Apps → Advanced Settings) and create an app pointing at your `/mcp` URL.
 
 MCP OAuth support, which would remove this limitation, is on the roadmap.
 
@@ -344,6 +371,7 @@ For a personal setup, `fluxmail config set` is the simplest: set `GOOGLE_CLIENT_
 | `FLUXMAIL_AUTH` | `apikey` | `none` disables MCP auth (trusted networks only) |
 | `FLUXMAIL_OAUTH_PORT` | `8976` | Loopback port for the CLI OAuth flow |
 | `FLUXMAIL_OAUTH_HOST` | `127.0.0.1` | OAuth listener bind address (`0.0.0.0` in Docker) |
+| `FLUXMAIL_LICENSE_KEY` | (none) | Paid-tier license key; usually set via `fluxmail license activate` |
 
 ## CLI
 
@@ -357,6 +385,8 @@ fluxmail apikey create --name <name>  # key for the HTTP endpoint (shown once); 
 fluxmail apikey list | revoke <id>
 fluxmail config set <KEY> <value>   # persist settings in the data dir
 fluxmail config list | unset <KEY>
+fluxmail license activate <key>     # unlock paid-tier limits
+fluxmail license status | deactivate
 fluxmail status
 ```
 
@@ -373,4 +403,4 @@ MCP tools are thin wrappers over `EmailService`, which owns account routing, rep
 
 ## Plans
 
-Self-hosting is free with one connected account and one API key. A paid subscription that unlocks more accounts, backed by a hosted license service, is planned, along with Outlook, IMAP, and scheduled send.
+Self-hosting is free with one connected account and any number of API keys. A paid subscription that unlocks more accounts, backed by a hosted license service, is planned, along with Outlook, IMAP, and scheduled send.

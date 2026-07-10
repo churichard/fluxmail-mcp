@@ -16,6 +16,10 @@ import { createApp } from './http/app.js';
 import { buildMcpServer } from './mcp/buildServer.js';
 import { runLoopbackFlow } from './accounts/googleAuth.js';
 import { createApiKey, listApiKeys, revokeApiKey } from './storage/apiKeys.js';
+import { LICENSE_KEY_PATTERN } from './licensing/client.js';
+import { licensePublicKeys, verifyLease } from './licensing/lease.js';
+import { clearLease, getEntitlements, readLeaseRow } from './licensing/entitlements.js';
+import { refreshLicense, startLicenseRefresher } from './licensing/refresher.js';
 
 const program = new Command();
 program.name('fluxmail').description('Fluxmail, a self-hosted MCP server for your email').version('0.1.0');
@@ -39,6 +43,15 @@ program
           ? `  Accounts:       ${accounts.map((a) => `${a.email} (${a.status})`).join(', ')}`
           : '  Accounts:       none (run "fluxmail accounts add gmail")'
       );
+      const entitlements = getEntitlements(ctx.db);
+      console.log(
+        `  Plan:           ${
+          entitlements.tier === 'paid'
+            ? `paid (up to ${entitlements.maxAccounts} accounts)`
+            : 'free tier (1 account)'
+        }`
+      );
+      startLicenseRefresher({ db: ctx.db, config: ctx.config, log: console.log });
     });
   });
 
@@ -50,6 +63,7 @@ program
     const server = buildMcpServer(ctx.service);
     await server.connect(new StdioServerTransport());
     // stdout belongs to the MCP protocol; log to stderr only.
+    startLicenseRefresher({ db: ctx.db, config: ctx.config, log: console.error });
     console.error('Fluxmail MCP server running on stdio');
   });
 
@@ -167,6 +181,94 @@ apikey
   .action((keyId: string) => {
     const ctx = createContext();
     console.log(revokeApiKey(ctx.db, keyId) ? `Revoked ${keyId}` : `No key with id ${keyId}`);
+  });
+
+const license = program.command('license').description('Manage the paid-tier license');
+
+license
+  .command('activate')
+  .argument('<key>', 'License key (fluxmail_lic_…), shown once at purchase')
+  .description('Store a license key and validate it with the license server')
+  .action(async (key: string) => {
+    if (!LICENSE_KEY_PATTERN.test(key)) {
+      console.error(
+        'That does not look like a Fluxmail license key (expected "fluxmail_lic_" followed by 40 hex characters).'
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const dataDir = resolveDataDir();
+    const overridingKey = process.env.FLUXMAIL_LICENSE_KEY?.trim();
+    if (overridingKey && overridingKey !== key) {
+      console.error(
+        'FLUXMAIL_LICENSE_KEY is already set by the shell or a .env file, which takes precedence over stored settings. Remove it before activating a different key.'
+      );
+      process.exitCode = 1;
+      return;
+    }
+    setStoredConfig(dataDir, 'FLUXMAIL_LICENSE_KEY', key);
+    const ctx = createContext();
+    const result = await refreshLicense(ctx.db, {
+      licenseKey: key,
+      serverUrl: ctx.config.licenseServerUrl,
+      dataDir: ctx.config.dataDir,
+    });
+    if (result.outcome === 'refreshed') {
+      console.log(`License activated: up to ${result.lease.maxAccounts} accounts.`);
+      console.log(
+        `The lease is valid until ${result.lease.expiresAt} and renews automatically while the server runs.`
+      );
+      return;
+    }
+    console.error(result.message);
+    if (result.outcome === 'outage') {
+      console.error('The key is saved; validation will be retried automatically once the server can reach it.');
+    } else {
+      process.exitCode = 1;
+    }
+  });
+
+license
+  .command('status')
+  .description('Show the configured license and cached lease')
+  .action(() => {
+    const ctx = createContext();
+    if (ctx.config.licenseKey) {
+      console.log(`License key: ${maskStoredConfigValue('FLUXMAIL_LICENSE_KEY', ctx.config.licenseKey)}`);
+    } else {
+      console.log('No license key configured. Run "fluxmail license activate <key>" after purchasing one.');
+    }
+    const row = readLeaseRow(ctx.db);
+    if (row) {
+      console.log(`Last validated: ${new Date(row.updatedAt).toISOString()}`);
+      try {
+        const lease = verifyLease(row.token, licensePublicKeys());
+        console.log(`Lease valid until ${lease.expiresAt}: up to ${lease.maxAccounts} accounts.`);
+      } catch (err) {
+        console.log(`Cached lease is not usable (${err instanceof Error ? err.message : String(err)}).`);
+      }
+    } else {
+      console.log('No cached lease.');
+    }
+    console.log(`Current plan: ${getEntitlements(ctx.db).tier}`);
+  });
+
+license
+  .command('deactivate')
+  .description('Remove the stored license key and cached lease (back to free-tier limits)')
+  .action(() => {
+    const dataDir = resolveDataDir();
+    const removed = unsetStoredConfig(dataDir, 'FLUXMAIL_LICENSE_KEY');
+    const ctx = createContext();
+    clearLease(ctx.db);
+    console.log(
+      removed
+        ? 'License removed; this instance is back to free-tier limits.'
+        : 'No stored license key; cleared any cached lease.'
+    );
+    if (ctx.config.licenseKey) {
+      console.log('Note: FLUXMAIL_LICENSE_KEY is still set in the environment or a .env file.');
+    }
   });
 
 const configCmd = program

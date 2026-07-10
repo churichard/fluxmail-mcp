@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { apiKeys, type FluxmailDb } from './db.js';
-import { assertWithinLimit, getEntitlements } from '../licensing/entitlements.js';
 
 export interface ApiKeyInfo {
   id: string;
@@ -19,11 +18,7 @@ export function createApiKey(db: FluxmailDb, name: string): { key: string; info:
   const id = `key_${randomBytes(8).toString('hex')}`;
   const key = `fmk_${randomBytes(24).toString('hex')}`;
   const createdAt = Date.now();
-  db.transaction((tx) => {
-    const keyCount = tx.select().from(apiKeys).all().length;
-    assertWithinLimit('api keys', keyCount, getEntitlements().maxApiKeys);
-    tx.insert(apiKeys).values({ id, name, keyHash: hashKey(key), createdAt }).run();
-  });
+  db.insert(apiKeys).values({ id, name, keyHash: hashKey(key), createdAt }).run();
   return { key, info: { id, name, createdAt, lastUsedAt: null } };
 }
 

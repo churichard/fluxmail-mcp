@@ -33,6 +33,14 @@ export const apiKeys = sqliteTable('api_keys', {
   lastUsedAt: integer('last_used_at'),
 });
 
+export const licenseLease = sqliteTable('license_lease', {
+  /** Single-row table; the row id is always 'current'. */
+  id: text('id').primaryKey(),
+  /** Signed entitlement lease exactly as issued by the license server. */
+  token: text('token').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
 export type FluxmailDb = BetterSQLite3Database;
 
 const BOOTSTRAP_SQL = `
@@ -57,6 +65,11 @@ CREATE TABLE IF NOT EXISTS api_keys (
   key_hash TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
   last_used_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS license_lease (
+  id TEXT PRIMARY KEY,
+  token TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 `;
 

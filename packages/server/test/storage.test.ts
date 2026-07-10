@@ -4,7 +4,7 @@ import { EmailError } from '@fluxmail/core';
 import { decryptString, encryptString } from '../src/storage/crypto.js';
 import { accounts, openDb } from '../src/storage/db.js';
 import { createApiKey, listApiKeys, revokeApiKey, verifyApiKey } from '../src/storage/apiKeys.js';
-import { assertWithinLimit, FREE_TIER } from '../src/licensing/entitlements.js';
+import { assertAccountLimit, FREE_TIER } from '../src/licensing/entitlements.js';
 
 describe('crypto', () => {
   const key = randomBytes(32);
@@ -40,10 +40,11 @@ describe('api keys', () => {
     expect(verifyApiKey(db, key)).toBe(false);
   });
 
-  it('enforces the free-tier key limit', () => {
+  it('allows multiple keys', () => {
     const db = openDb(':memory:');
     createApiKey(db, 'first');
-    expect(() => createApiKey(db, 'second')).toThrow(EmailError);
+    createApiKey(db, 'second');
+    expect(listApiKeys(db)).toHaveLength(2);
   });
 });
 
@@ -76,16 +77,22 @@ describe('account storage', () => {
 
 describe('entitlements', () => {
   it('free tier allows 1 account', () => {
-    expect(() => assertWithinLimit('accounts', 0, FREE_TIER.maxAccounts)).not.toThrow();
-    expect(() => assertWithinLimit('accounts', 1, FREE_TIER.maxAccounts)).toThrow(/free tier/);
+    expect(() => assertAccountLimit(0, FREE_TIER)).not.toThrow();
+    expect(() => assertAccountLimit(1, FREE_TIER)).toThrow(/free tier/);
   });
 
   it('throws entitlement_exceeded', () => {
     try {
-      assertWithinLimit('accounts', 1, 1);
+      assertAccountLimit(1, FREE_TIER);
       expect.unreachable();
     } catch (err) {
       expect((err as EmailError).code).toBe('entitlement_exceeded');
     }
+  });
+
+  it('names the paid tier limit when a license is active', () => {
+    expect(() => assertAccountLimit(5, { maxAccounts: 5, tier: 'paid' })).toThrow(
+      /Your license allows 5 accounts/
+    );
   });
 });

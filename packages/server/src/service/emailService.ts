@@ -19,7 +19,7 @@ import {
   type Thread,
 } from '@fluxmail/core';
 import type { AccountRegistry } from '../accounts/registry.js';
-import { getEntitlements, type Entitlements } from '../licensing/entitlements.js';
+import { FREE_TIER, type Entitlements } from '../licensing/entitlements.js';
 
 export interface SendInput extends DraftInput {
   /** With replyToMessageId: compute recipients from the original (reply-all semantics). */
@@ -51,7 +51,11 @@ export interface ServiceStatus {
  * REST API / CLI) are thin wrappers over this service.
  */
 export class EmailService {
-  constructor(private readonly registry: AccountRegistry) {}
+  constructor(
+    private readonly registry: AccountRegistry,
+    /** Effective plan limits, usually () => getEntitlements(db); defaults to free tier. */
+    private readonly entitlements: () => Entitlements = () => FREE_TIER
+  ) {}
 
   /** Route a call to the right provider, recording auth failures on the account. */
   private async withProvider<T>(
@@ -113,7 +117,7 @@ export class EmailService {
           status,
           ...(errors.has(id) ? { error: errors.get(id)! } : {}),
         })),
-      entitlements: getEntitlements(),
+      entitlements: this.entitlements(),
       providersAvailable: ['gmail'],
     };
   }

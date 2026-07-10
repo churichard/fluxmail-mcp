@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { DEFAULT_LICENSE_SERVER_URL } from './licensing/client.js';
 
 export interface FluxmailConfig {
   dataDir: string;
@@ -17,6 +18,10 @@ export interface FluxmailConfig {
   oauthHost: string;
   /** 'apikey' (default) requires a bearer token on /mcp; 'none' is for trusted networks only. */
   authMode: 'apikey' | 'none';
+  /** Paid-tier license key (fluxmail_lic_…); absent means free tier. */
+  licenseKey?: string;
+  /** Base URL of the hosted license server. */
+  licenseServerUrl: string;
   google?: {
     clientId: string;
     clientSecret: string;
@@ -230,7 +235,11 @@ export function loadConfig(): FluxmailConfig {
     oauthPort,
     oauthHost: process.env.FLUXMAIL_OAUTH_HOST ?? '127.0.0.1',
     authMode: authModeEnv,
+    licenseServerUrl: (process.env.FLUXMAIL_LICENSE_SERVER_URL ?? DEFAULT_LICENSE_SERVER_URL).replace(/\/+$/, ''),
   };
+
+  const licenseKey = process.env.FLUXMAIL_LICENSE_KEY?.trim();
+  if (licenseKey) config.licenseKey = licenseKey;
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;

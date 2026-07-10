@@ -6,7 +6,7 @@ import { GmailProvider, GMAIL_CAPABILITIES } from '@fluxmail/provider-gmail';
 import type { FluxmailConfig } from '../config.js';
 import { accounts, oauthTokens, type FluxmailDb } from '../storage/db.js';
 import { decryptString, encryptString } from '../storage/crypto.js';
-import { assertWithinLimit, getEntitlements } from '../licensing/entitlements.js';
+import { assertAccountLimit, getEntitlements } from '../licensing/entitlements.js';
 import { requireGoogleConfig } from './googleAuth.js';
 
 export class AccountRegistry {
@@ -45,7 +45,7 @@ export class AccountRegistry {
   assertCanAddAccount(): void {
     const existing = this.listAccounts();
     try {
-      assertWithinLimit('accounts', existing.length, getEntitlements().maxAccounts);
+      assertAccountLimit(existing.length, getEntitlements(this.db));
     } catch (err) {
       if (!(err instanceof EmailError)) throw err;
       const reconnect =
@@ -174,7 +174,7 @@ export class AccountRegistry {
     const id = `acct_${randomBytes(6).toString('hex')}`;
     this.db.transaction((tx) => {
       const accountCount = tx.select().from(accounts).all().length;
-      assertWithinLimit('accounts', accountCount, getEntitlements().maxAccounts);
+      assertAccountLimit(accountCount, getEntitlements(tx));
       tx.insert(accounts)
         .values({
           id,
