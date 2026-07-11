@@ -19,8 +19,9 @@ import {
   type Thread,
 } from '@fluxmail/core';
 import type { AccountRegistry } from '../accounts/registry.js';
-import { getEntitlements, type Entitlements } from '../licensing/entitlements.js';
+import { assertWithinQuota, checkLicenseState, type Entitlements } from '../licensing/entitlements.js';
 import type { FluxmailDb } from '../storage/db.js';
+import { listMembers } from '../storage/members.js';
 import {
   cancelScheduledSend,
   countPending,
@@ -38,6 +39,14 @@ export interface SendInput extends DraftInput {
   replyAll?: boolean;
 }
 
+/** The mailboxes an API key may reach: everything for admin keys, shared + owned for member keys. */
+export interface AccessScope {
+  /** Member the key is scoped to; null grants unscoped admin access. */
+  memberId: string | null;
+}
+
+const ADMIN_SCOPE: AccessScope = { memberId: null };
+
 export interface ForwardInput {
   messageId: string;
   to: EmailAddress[];
@@ -49,11 +58,15 @@ export interface ForwardInput {
 
 export interface ServiceStatus {
   accounts: Array<
-    Pick<Account, 'id' | 'provider' | 'email' | 'status'> & {
+    Pick<Account, 'id' | 'provider' | 'email' | 'status' | 'memberId'> & {
       error?: { code: string; message: string };
     }
   >;
-  entitlements: Entitlements;
+  /** Instance-wide fields are only returned to administrators. */
+  members?: { count: number };
+  entitlements?: Entitlements;
+  /** Renewal warning while the license is in grace or has lapsed. */
+  licenseWarning?: string;
   providersAvailable: string[];
   scheduled: { pending: number; nextSendAt?: string };
 }
@@ -119,15 +132,70 @@ export class EmailService {
 
   constructor(
     private readonly registry: AccountRegistry,
-    private readonly db: FluxmailDb
+    private readonly db: FluxmailDb,
+    private readonly scope: AccessScope = ADMIN_SCOPE
   ) {}
+
+  /**
+   * A view of this service restricted to one member's mailboxes (shared + owned).
+   * The HTTP layer scopes each request to the authenticated API key's member;
+   * unscoped admin keys keep full access.
+   */
+  withScope(scope: AccessScope): EmailService {
+    const scoped = new EmailService(this.registry, this.db, scope);
+    scoped.onScheduleChanged = () => this.onScheduleChanged();
+    return scoped;
+  }
+
+  /** Shared mailboxes and, for member keys, the member's own mailboxes. */
+  private canAccess(account: Account): boolean {
+    return (
+      this.scope.memberId === null ||
+      account.memberId == null ||
+      account.memberId === this.scope.memberId
+    );
+  }
+
+  private accessibleAccounts(): Account[] {
+    const all = this.registry.listAccounts();
+    return this.scope.memberId === null ? all : all.filter((a) => this.canAccess(a));
+  }
+
+  /**
+   * Resolve an account id within the current scope. A member-scoped key defaults
+   * to its sole accessible mailbox and can never reach another member's mailbox;
+   * inaccessible ids surface as not_found so a key cannot probe for their existence.
+   */
+  private resolveScopedAccountId(accountId?: string): string {
+    if (accountId !== undefined) {
+      const account = this.registry.getAccount(accountId);
+      if (!this.canAccess(account)) {
+        throw new EmailError('not_found', `No account with id "${accountId}"`);
+      }
+      return account.id;
+    }
+    if (this.scope.memberId === null) return this.registry.resolveAccountId();
+    const accessible = this.accessibleAccounts();
+    if (accessible.length === 0) {
+      throw new EmailError('invalid_request', 'No email accounts are available for this member.');
+    }
+    if (accessible.length > 1) {
+      throw new EmailError(
+        'invalid_request',
+        `Multiple accounts are available; specify accountId. Available: ${accessible
+          .map((a) => `${a.id} (${a.email})`)
+          .join(', ')}`
+      );
+    }
+    return accessible[0]!.id;
+  }
 
   /** Route a call to the right provider, recording auth failures on the account. */
   private async withProvider<T>(
     accountId: string | undefined,
     fn: (provider: ReturnType<AccountRegistry['getProvider']>, resolvedId: string, account: Account) => Promise<T>
   ): Promise<T> {
-    const resolvedId = this.registry.resolveAccountId(accountId);
+    const resolvedId = this.resolveScopedAccountId(accountId);
     const account = this.registry.getAccount(resolvedId);
     if (account.status === 'disabled') {
       throw new EmailError('invalid_request', `Account ${resolvedId} is disabled`);
@@ -145,11 +213,11 @@ export class EmailService {
   }
 
   listAccounts(): Account[] {
-    return this.registry.listAccounts();
+    return this.accessibleAccounts();
   }
 
   async status(): Promise<ServiceStatus> {
-    const accounts = this.registry.listAccounts();
+    const accounts = this.accessibleAccounts();
     const errors = new Map<string, { code: string; message: string }>();
     await Promise.all(
       accounts
@@ -172,26 +240,67 @@ export class EmailService {
         })
     );
 
+    const admin = this.scope.memberId === null;
+    const license = admin ? checkLicenseState(this.db) : undefined;
     return {
-      accounts: this.registry
-        .listAccounts()
-        .map(({ id, provider, email, status }) => ({
+      // Re-read so statuses reflect any markStatus writes from the live checks above.
+      accounts: this.accessibleAccounts()
+        .map(({ id, provider, email, status, memberId }) => ({
           id,
           provider,
           email,
           status,
+          ...(memberId ? { memberId } : {}),
           ...(errors.has(id) ? { error: errors.get(id)! } : {}),
         })),
-      entitlements: getEntitlements(this.db),
+      ...(admin
+        ? {
+            members: { count: listMembers(this.db).length },
+            entitlements: license!.entitlements,
+            ...(license!.warning ? { licenseWarning: license!.warning } : {}),
+          }
+        : {}),
       providersAvailable: ['gmail'],
       scheduled: this.scheduledStatus(),
     };
   }
 
+  /**
+   * Gate for MCP tool calls: throws once a lapsed license leaves the instance
+   * over the entitled caps; returns a renewal warning to attach to results
+   * while the license is in its grace period or has lapsed.
+   */
+  enforceQuota(): string | undefined {
+    if (this.scope.memberId !== null) {
+      const state = checkLicenseState(this.db);
+      if (state.overQuota) {
+        throw new EmailError(
+          'entitlement_exceeded',
+          'This Fluxmail instance is over its plan limits. Ask an administrator to renew the license or reduce usage.'
+        );
+      }
+      // License dates and renewal state are instance administration details.
+      return undefined;
+    }
+    return assertWithinQuota(this.db).warning;
+  }
+
   private scheduledStatus(): ServiceStatus['scheduled'] {
-    const { pending, nextSendAt } = countPending(this.db);
+    if (this.scope.memberId === null) {
+      const { pending, nextSendAt } = countPending(this.db);
+      return {
+        pending,
+        ...(nextSendAt !== undefined ? { nextSendAt: new Date(nextSendAt).toISOString() } : {}),
+      };
+    }
+    const accessible = new Set(this.accessibleAccounts().map((account) => account.id));
+    const active = listScheduledSends(this.db).filter(
+      (row) =>
+        accessible.has(row.accountId) && (row.status === 'pending' || row.status === 'sending')
+    );
+    const nextSendAt = active.length ? Math.min(...active.map((row) => row.sendAt)) : undefined;
     return {
-      pending,
+      pending: active.length,
       ...(nextSendAt !== undefined ? { nextSendAt: new Date(nextSendAt).toISOString() } : {}),
     };
   }
@@ -282,15 +391,23 @@ export class EmailService {
   }
 
   listScheduled(accountId?: string): ScheduledSendInfo[] {
-    // Only resolve when a filter was given: listing must work across accounts.
-    const resolvedId = accountId === undefined ? undefined : this.registry.resolveAccountId(accountId);
-    return listScheduledSends(this.db, resolvedId).map(toScheduledInfo);
+    if (accountId !== undefined) {
+      return listScheduledSends(this.db, this.resolveScopedAccountId(accountId)).map(toScheduledInfo);
+    }
+    // Listing must work across accounts, but a member key only sees its own mailboxes'.
+    const rows = listScheduledSends(this.db);
+    if (this.scope.memberId === null) return rows.map(toScheduledInfo);
+    const accessible = new Set(this.accessibleAccounts().map((a) => a.id));
+    return rows.filter((r) => accessible.has(r.accountId)).map(toScheduledInfo);
   }
 
   /** Cancels a pending schedule; the provider draft is kept. */
   cancelScheduled(scheduleId: string): { scheduleId: string; draftId: string; draftKept: true } {
     const row = getScheduledSend(this.db, scheduleId);
-    if (!row) throw new EmailError('not_found', `No scheduled send with id ${scheduleId}`);
+    // A member key cannot see (or cancel) schedules on mailboxes it cannot reach.
+    if (!row || !this.canAccess(this.registry.getAccount(row.accountId))) {
+      throw new EmailError('not_found', `No scheduled send with id ${scheduleId}`);
+    }
     if (row.status !== 'pending') {
       throw new EmailError('invalid_request', `Scheduled send ${scheduleId} is already ${row.status}`);
     }

@@ -25,13 +25,15 @@ async function settle() {
 describe('SendScheduler', () => {
   let db: FluxmailDb;
   let send: ReturnType<typeof vi.fn>;
+  let enforceQuota: ReturnType<typeof vi.fn>;
   let scheduler: SendScheduler;
 
   beforeEach(() => {
     vi.useFakeTimers();
     db = testDb();
     send = vi.fn().mockResolvedValue({ id: 'sent_1', threadId: 'thread_1' });
-    scheduler = new SendScheduler(db, { send });
+    enforceQuota = vi.fn().mockReturnValue(undefined);
+    scheduler = new SendScheduler(db, { send, enforceQuota });
   });
 
   afterEach(() => {
@@ -134,7 +136,7 @@ describe('SendScheduler', () => {
     let release!: (result: { id: string; threadId: string }) => void;
     send.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
     createScheduledSend(db, { accountId: 'acct_1', draftId: 'draft_1', sendAt: Date.now() - 1_000 });
-    const competingScheduler = new SendScheduler(db, { send });
+    const competingScheduler = new SendScheduler(db, { send, enforceQuota });
 
     scheduler.start();
     competingScheduler.start();
@@ -178,5 +180,44 @@ describe('SendScheduler', () => {
     await settle();
     expect(vi.getTimerCount()).toBe(0);
     expect(listPending(db)).toHaveLength(0);
+  });
+
+  it('holds due sends while over the plan quota and resumes once it clears', async () => {
+    enforceQuota.mockImplementation(() => {
+      throw new EmailError('entitlement_exceeded', 'over the plan quota');
+    });
+    const row = createScheduledSend(db, { accountId: 'acct_1', draftId: 'draft_1', sendAt: Date.now() - 1_000 });
+    scheduler.start();
+    await settle();
+
+    // Held: still pending, no attempt consumed, the reason recorded.
+    expect(send).not.toHaveBeenCalled();
+    expect(getScheduledSend(db, row.id)).toMatchObject({
+      status: 'pending',
+      attempts: 0,
+      lastError: 'over the plan quota',
+    });
+
+    // License renewed (or usage trimmed): the next re-check sends it.
+    enforceQuota.mockReturnValue(undefined);
+    await vi.advanceTimersByTimeAsync(15 * 60_000 + 1_000);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(getScheduledSend(db, row.id)).toMatchObject({ status: 'sent' });
+  });
+
+  it('rechecks held sends immediately when woken after a license refresh', async () => {
+    enforceQuota.mockImplementation(() => {
+      throw new EmailError('entitlement_exceeded', 'over the plan quota');
+    });
+    createScheduledSend(db, { accountId: 'acct_1', draftId: 'draft_1', sendAt: Date.now() - 1_000 });
+    scheduler.start();
+    await settle();
+    expect(send).not.toHaveBeenCalled();
+
+    enforceQuota.mockReturnValue(undefined);
+    scheduler.wake();
+    await settle();
+
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

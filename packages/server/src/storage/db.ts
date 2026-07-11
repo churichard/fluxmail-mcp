@@ -2,6 +2,17 @@ import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
+export const members = sqliteTable(
+  'members',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    email: text('email'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [uniqueIndex('members_email_unique').on(table.email)]
+);
+
 export const accounts = sqliteTable(
   'accounts',
   {
@@ -11,6 +22,8 @@ export const accounts = sqliteTable(
     displayName: text('display_name'),
     status: text('status').notNull().default('active'),
     createdAt: integer('created_at').notNull(),
+    /** Owning member; NULL means the mailbox is shared across the instance. */
+    memberId: text('member_id').references(() => members.id, { onDelete: 'set null' }),
   },
   (table) => [uniqueIndex('accounts_provider_email_unique').on(table.provider, table.email)]
 );
@@ -31,6 +44,8 @@ export const apiKeys = sqliteTable('api_keys', {
   keyHash: text('key_hash').notNull().unique(),
   createdAt: integer('created_at').notNull(),
   lastUsedAt: integer('last_used_at'),
+  /** Member the key was issued to; NULL means an unscoped admin key. */
+  memberId: text('member_id').references(() => members.id, { onDelete: 'set null' }),
 });
 
 export const licenseLease = sqliteTable('license_lease', {
@@ -69,13 +84,21 @@ export const scheduledSends = sqliteTable(
 export type FluxmailDb = BetterSQLite3Database;
 
 const BOOTSTRAP_SQL = `
+CREATE TABLE IF NOT EXISTS members (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS members_email_unique ON members(email);
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   provider TEXT NOT NULL,
   email TEXT NOT NULL,
   display_name TEXT,
   status TEXT NOT NULL DEFAULT 'active',
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  member_id TEXT REFERENCES members(id) ON DELETE SET NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_provider_email_unique
   ON accounts(provider, email);
@@ -89,7 +112,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
   name TEXT NOT NULL,
   key_hash TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
-  last_used_at INTEGER
+  last_used_at INTEGER,
+  member_id TEXT REFERENCES members(id) ON DELETE SET NULL
 );
 CREATE TABLE IF NOT EXISTS license_lease (
   id TEXT PRIMARY KEY,
@@ -116,15 +140,26 @@ CREATE INDEX IF NOT EXISTS scheduled_sends_pending_due
   ON scheduled_sends(status, send_at);
 `;
 
+function tableColumns(sqlite: Database.Database, table: string): Set<string> {
+  return new Set(
+    (sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name)
+  );
+}
+
 export function openDb(dbPath: string): FluxmailDb {
   const sqlite = new Database(dbPath);
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('foreign_keys = ON');
   sqlite.exec(BOOTSTRAP_SQL);
-  const columns = new Set(
-    (sqlite.prepare('PRAGMA table_info(scheduled_sends)').all() as Array<{ name: string }>).map((column) => column.name)
-  );
-  if (!columns.has('claim_token')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_token TEXT');
-  if (!columns.has('claim_until')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_until INTEGER');
+  const scheduledCols = tableColumns(sqlite, 'scheduled_sends');
+  if (!scheduledCols.has('claim_token')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_token TEXT');
+  if (!scheduledCols.has('claim_until')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_until INTEGER');
+  // Pre-members databases: NULL means shared mailbox / unscoped key, so old rows need no backfill.
+  if (!tableColumns(sqlite, 'accounts').has('member_id')) {
+    sqlite.exec('ALTER TABLE accounts ADD COLUMN member_id TEXT REFERENCES members(id) ON DELETE SET NULL');
+  }
+  if (!tableColumns(sqlite, 'api_keys').has('member_id')) {
+    sqlite.exec('ALTER TABLE api_keys ADD COLUMN member_id TEXT REFERENCES members(id) ON DELETE SET NULL');
+  }
   return drizzle(sqlite);
 }

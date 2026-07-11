@@ -5,7 +5,7 @@ Fluxmail is a self-hosted MCP server that connects AI agents to your email. It t
 - 14 MCP tools, served over stdio (Claude Desktop, Claude Code) or Streamable HTTP (Docker, remote deployments)
 - One provider-agnostic model (folders, threads, drafts, a structured query language), so nothing above the provider layer knows it is talking to Gmail
 - A single Docker container with SQLite storage; OAuth tokens are encrypted at rest with AES-256-GCM
-- Free to self-host with one connected account; a paid plan for multiple accounts is planned
+- Free to self-host on the Personal plan (3 mailboxes, 1 member); paid plans add mailboxes and team members
 
 ## Getting started
 
@@ -375,7 +375,7 @@ For a personal setup, `fluxmail config set` is the simplest: set `GOOGLE_CLIENT_
 | `FLUXMAIL_AUTH` | `apikey` | `none` disables MCP auth (trusted networks only) |
 | `FLUXMAIL_OAUTH_PORT` | `8976` | Loopback port for the CLI OAuth flow |
 | `FLUXMAIL_OAUTH_HOST` | `127.0.0.1` | OAuth listener bind address (`0.0.0.0` in Docker) |
-| `FLUXMAIL_LICENSE_KEY` | (none) | Paid-tier license key; usually set via `fluxmail license activate` |
+| `FLUXMAIL_LICENSE_KEY` | (none) | Paid-plan license key; usually set via `fluxmail license activate` |
 
 ## CLI
 
@@ -384,14 +384,18 @@ Running under Docker (Option B)? Prefix any of these with `docker compose exec f
 ```
 fluxmail serve                      # HTTP server (MCP at /mcp)
 fluxmail stdio                      # stdio MCP server
-fluxmail accounts add gmail         # OAuth consent flow
+fluxmail accounts add gmail         # OAuth consent flow; add --member <id-or-email> to set an owner
 fluxmail accounts add gmail --reauthorize <account-id>
 fluxmail accounts list | remove <id>
+fluxmail accounts assign <id> --member <id-or-email>   # or --shared
+fluxmail members add --name <name> [--email <email>]   # people using this instance
+fluxmail members list | remove <id>
 fluxmail apikey create --name <name>  # key for the HTTP endpoint (shown once); name it after the client using it
+fluxmail apikey create --name <name> --member <id-or-email>
 fluxmail apikey list | revoke <id>
 fluxmail config set <KEY> <value>   # persist settings in the data dir
 fluxmail config list | unset <KEY>
-fluxmail license activate <key>     # unlock paid-tier limits
+fluxmail license activate <key>     # unlock paid-plan limits
 fluxmail license status | deactivate
 fluxmail status
 ```
@@ -409,4 +413,6 @@ MCP tools are thin wrappers over `EmailService`, which owns account routing, rep
 
 ## Plans
 
-Self-hosting is free with one connected account and any number of API keys. A paid subscription that unlocks more accounts, backed by a hosted license service, is planned, along with Outlook, IMAP, and scheduled send.
+Self-hosting is free on the **Personal** plan: 3 connected mailboxes and 1 member. Paid plans (Pro, Team, Enterprise) raise those limits for teams that share one instance — each person connects their own mailboxes, and a mailbox can also be shared. See [fluxmail.ai](https://fluxmail.ai) for current pricing.
+
+A paid plan is unlocked with `fluxmail license activate <key>`. One license activates one instance, and enforcement keeps working offline. If the license lapses, the instance drops back to Personal limits. Deactivating, downgrading, or lapsing never deletes accounts or data.

@@ -4,10 +4,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { verifyLease, licensePublicKeys, type LeasePayload } from '../src/licensing/lease.js';
-import { validateLicense } from '../src/licensing/client.js';
+import { releaseLicense, validateLicense } from '../src/licensing/client.js';
 import {
   clearLease,
-  FREE_TIER,
+  GRACE_PERIOD_MS,
+  PERSONAL_TIER,
   getEntitlements,
   readLeaseRow,
   saveLeaseToken,
@@ -27,8 +28,10 @@ function makeKeypair(): { privateKey: KeyObject; publicKeyB64: string } {
 
 function leasePayload(overrides: Partial<Record<keyof LeasePayload, unknown>> = {}): Record<string, unknown> {
   return {
-    v: 1,
+    v: 2,
     licenseId: 'd2f7c1e0-0000-4000-8000-000000000000',
+    plan: 'pro',
+    maxMembers: 3,
     maxAccounts: 5,
     issuedAt: new Date(Date.now() - 1000).toISOString(),
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
@@ -84,9 +87,11 @@ describe('verifyLease', () => {
     expect(() => verifyLease(token, [keys.publicKeyB64])).toThrow(/JSON/);
   });
 
-  it('rejects unknown payload versions', () => {
-    const token = signLease(keys.privateKey, leasePayload({ v: 2 }));
-    expect(() => verifyLease(token, [keys.publicKeyB64])).toThrow(/version/);
+  it('rejects unknown payload versions (v1 was never shipped)', () => {
+    for (const v of [1, 3]) {
+      const token = signLease(keys.privateKey, leasePayload({ v }));
+      expect(() => verifyLease(token, [keys.publicKeyB64])).toThrow(/version/);
+    }
   });
 
   it('rejects an expired lease', () => {
@@ -97,10 +102,28 @@ describe('verifyLease', () => {
     expect(() => verifyLease(token, [keys.publicKeyB64])).toThrow(/expired/);
   });
 
+  it('returns an expired lease with allowExpired for grace handling', () => {
+    const payload = leasePayload({ expiresAt: new Date(Date.now() - 1000).toISOString() });
+    const token = signLease(keys.privateKey, payload);
+    expect(verifyLease(token, [keys.publicKeyB64], new Date(), { allowExpired: true })).toEqual(payload);
+    // Signature failures still throw even with allowExpired.
+    const rogue = makeKeypair();
+    expect(() =>
+      verifyLease(signLease(rogue.privateKey, payload), [keys.publicKeyB64], new Date(), { allowExpired: true })
+    ).toThrow(/signature/);
+  });
+
   it('rejects invalid limit fields', () => {
-    for (const bad of [{ maxAccounts: 0 }, { maxAccounts: '5' }]) {
+    for (const bad of [{ maxAccounts: 0 }, { maxAccounts: '5' }, { maxMembers: 0 }, { maxMembers: '5' }]) {
       const token = signLease(keys.privateKey, leasePayload(bad));
       expect(() => verifyLease(token, [keys.publicKeyB64])).toThrow(/invalid max/);
+    }
+  });
+
+  it('rejects a missing or empty plan', () => {
+    for (const bad of [{ plan: '' }, { plan: undefined }]) {
+      const token = signLease(keys.privateKey, leasePayload(bad));
+      expect(() => verifyLease(token, [keys.publicKeyB64])).toThrow(/plan/);
     }
   });
 
@@ -157,11 +180,12 @@ describe('validateLicense', () => {
       [400, { error: 'invalid_request' }, { kind: 'invalid_request' }],
       [404, { error: 'license_not_found' }, { kind: 'license_not_found' }],
       [403, { error: 'license_inactive', status: 'revoked' }, { kind: 'license_inactive', status: 'revoked' }],
+      [409, { error: 'license_in_use' }, { kind: 'license_in_use' }],
     ];
     for (const [status, body, expected] of cases) {
       const { fetchImpl } = fakeFetch(() => Response.json(body, { status }));
       await expect(
-        validateLicense({ serverUrl: 'https://license.invalid', licenseKey, fetchImpl })
+        validateLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl })
       ).resolves.toEqual(expected);
     }
   });
@@ -169,50 +193,94 @@ describe('validateLicense', () => {
   it('treats 500s, network failures, and bad payloads as outages', async () => {
     const server500 = fakeFetch(() => Response.json({ error: 'internal_error' }, { status: 500 }));
     await expect(
-      validateLicense({ serverUrl: 'https://license.invalid', licenseKey, fetchImpl: server500.fetchImpl })
+      validateLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl: server500.fetchImpl })
     ).resolves.toMatchObject({ kind: 'outage' });
 
     const network = (async () => {
       throw new Error('getaddrinfo ENOTFOUND');
     }) as unknown as typeof fetch;
     await expect(
-      validateLicense({ serverUrl: 'https://license.invalid', licenseKey, fetchImpl: network })
+      validateLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl: network })
     ).resolves.toMatchObject({ kind: 'outage', detail: expect.stringContaining('ENOTFOUND') });
 
     const missingLease = fakeFetch(() => Response.json({ entitlements: {} }));
     await expect(
-      validateLicense({ serverUrl: 'https://license.invalid', licenseKey, fetchImpl: missingLease.fetchImpl })
+      validateLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl: missingLease.fetchImpl })
     ).resolves.toMatchObject({ kind: 'outage', detail: expect.stringContaining('lease') });
+  });
+});
+
+describe('releaseLicense', () => {
+  const licenseKey = `fluxmail_lic_${'ab'.repeat(20)}`;
+
+  it('posts to the deactivate endpoint and reports success', async () => {
+    const { fetchImpl, calls } = fakeFetch(() => Response.json({ released: true }));
+    await expect(
+      releaseLicense({ serverUrl: 'https://license.invalid/', licenseKey, instanceId: 'inst-1', fetchImpl })
+    ).resolves.toBe(true);
+    expect(calls[0]?.url).toBe('https://license.invalid/api/v1/licenses/deactivate');
+    expect(calls[0]?.body).toEqual({ licenseKey, instanceId: 'inst-1' });
+  });
+
+  it('returns false on server errors and network failures', async () => {
+    const { fetchImpl } = fakeFetch(() => Response.json({}, { status: 500 }));
+    await expect(
+      releaseLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl })
+    ).resolves.toBe(false);
+
+    const network = (async () => {
+      throw new Error('connect ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    await expect(
+      releaseLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl: network })
+    ).resolves.toBe(false);
   });
 });
 
 describe('getEntitlements', () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it('returns free-tier limits with no cached lease', () => {
-    expect(getEntitlements(openDb(':memory:'))).toEqual(FREE_TIER);
+  it('returns Personal-plan limits with no cached lease', () => {
+    expect(getEntitlements(openDb(':memory:'))).toEqual(PERSONAL_TIER);
   });
 
-  it('returns paid limits from a valid cached lease', () => {
+  it('returns the plan and caps from a valid cached lease', () => {
     vi.stubEnv('FLUXMAIL_LICENSE_PUBLIC_KEYS', keys.publicKeyB64);
     const db = openDb(':memory:');
-    const payload = leasePayload({ maxAccounts: 7 });
+    const payload = leasePayload({ plan: 'team', maxMembers: 5, maxAccounts: 7 });
     saveLeaseToken(db, signLease(keys.privateKey, payload));
     expect(getEntitlements(db)).toEqual({
+      plan: 'team',
+      licensed: true,
+      inGrace: false,
+      maxMembers: 5,
       maxAccounts: 7,
-      tier: 'paid',
       leaseExpiresAt: payload.expiresAt,
     });
   });
 
-  it('degrades to free-tier limits when the cached lease has expired', () => {
+  it('keeps paid limits through the grace period after the lease expires', () => {
     vi.stubEnv('FLUXMAIL_LICENSE_PUBLIC_KEYS', keys.publicKeyB64);
     const db = openDb(':memory:');
-    saveLeaseToken(
-      db,
-      signLease(keys.privateKey, leasePayload({ expiresAt: new Date(Date.now() - 1000).toISOString() }))
-    );
-    expect(getEntitlements(db)).toEqual(FREE_TIER);
+    const expiresAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    saveLeaseToken(db, signLease(keys.privateKey, leasePayload({ expiresAt })));
+    expect(getEntitlements(db)).toEqual({
+      plan: 'pro',
+      licensed: true,
+      inGrace: true,
+      maxMembers: 3,
+      maxAccounts: 5,
+      leaseExpiresAt: expiresAt,
+      graceUntil: new Date(Date.parse(expiresAt) + GRACE_PERIOD_MS).toISOString(),
+    });
+  });
+
+  it('lapses to Personal-plan limits once the grace period ends', () => {
+    vi.stubEnv('FLUXMAIL_LICENSE_PUBLIC_KEYS', keys.publicKeyB64);
+    const db = openDb(':memory:');
+    const expiresAt = new Date(Date.now() - GRACE_PERIOD_MS - 1000).toISOString();
+    saveLeaseToken(db, signLease(keys.privateKey, leasePayload({ expiresAt })));
+    expect(getEntitlements(db)).toEqual(PERSONAL_TIER);
   });
 
   it('ignores a cached lease tampered with in the database', () => {
@@ -221,7 +289,7 @@ describe('getEntitlements', () => {
     const [, signature] = signLease(keys.privateKey, leasePayload()).split('.');
     const forged = Buffer.from(JSON.stringify(leasePayload({ maxAccounts: 999 }))).toString('base64url');
     saveLeaseToken(db, `${forged}.${signature}`);
-    expect(getEntitlements(db)).toEqual(FREE_TIER);
+    expect(getEntitlements(db)).toEqual(PERSONAL_TIER);
   });
 
   it('clearLease removes the cached lease', () => {
@@ -230,7 +298,7 @@ describe('getEntitlements', () => {
     saveLeaseToken(db, signLease(keys.privateKey, leasePayload()));
     clearLease(db);
     expect(readLeaseRow(db)).toBeUndefined();
-    expect(getEntitlements(db)).toEqual(FREE_TIER);
+    expect(getEntitlements(db)).toEqual(PERSONAL_TIER);
   });
 });
 
@@ -273,6 +341,24 @@ describe('refreshLicense', () => {
       fetchImpl,
     });
     expect(result).toMatchObject({ outcome: 'inactive', cachedLeaseActive: true });
+    expect(readLeaseRow(db)?.token).toBe(cached);
+  });
+
+  it('reports a license bound to another instance without touching the cache', async () => {
+    vi.stubEnv('FLUXMAIL_LICENSE_PUBLIC_KEYS', keys.publicKeyB64);
+    const db = openDb(':memory:');
+    const cached = signLease(keys.privateKey, leasePayload());
+    saveLeaseToken(db, cached);
+    const { fetchImpl } = fakeFetch(() => Response.json({ error: 'license_in_use' }, { status: 409 }));
+
+    const result = await refreshLicense(db, {
+      licenseKey,
+      serverUrl: 'https://license.invalid',
+      dataDir: dataDir(),
+      fetchImpl,
+    });
+    expect(result).toMatchObject({ outcome: 'in_use', cachedLeaseActive: true });
+    expect((result as { message: string }).message).toMatch(/another Fluxmail instance/);
     expect(readLeaseRow(db)?.token).toBe(cached);
   });
 

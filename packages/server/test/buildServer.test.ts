@@ -4,8 +4,17 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { EmailError } from '@fluxmail/core';
 import type { EmailService } from '../src/service/emailService.js';
 import { buildMcpServer, resolveAttachmentSavePath, saveAttachment, toSendRequest } from '../src/mcp/buildServer.js';
+
+async function connectMcp(service: Partial<EmailService>) {
+  const server = buildMcpServer(service as EmailService);
+  const client = new Client({ name: 'test', version: '0.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  return client;
+}
 
 describe('resolveAttachmentSavePath', () => {
   it('uses only the basename of an attachment filename for directory saves', () => {
@@ -81,12 +90,8 @@ describe('toSendRequest', () => {
 });
 
 describe('scheduled send tools', () => {
-  async function connect(service: Partial<EmailService>) {
-    const server = buildMcpServer(service as EmailService);
-    const client = new Client({ name: 'test', version: '0.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    return client;
+  function connect(service: Partial<EmailService>) {
+    return connectMcp({ enforceQuota: () => undefined, ...service });
   }
 
   it('registers the scheduling tools', async () => {
@@ -150,5 +155,37 @@ describe('scheduled send tools', () => {
 
     expect(result.isError).toBe(true);
     expect(scheduleSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('plan quota gate', () => {
+  it('blocks tool calls while over quota but keeps get_status available', async () => {
+    const listAccounts = vi.fn().mockReturnValue([]);
+    const status = vi.fn().mockResolvedValue({ accounts: [] });
+    const enforceQuota = vi.fn(() => {
+      throw new EmailError('entitlement_exceeded', 'Renew the license or remove mailboxes/members');
+    });
+    const client = await connectMcp({ listAccounts, status, enforceQuota } as Partial<EmailService>);
+
+    const blocked = await client.callTool({ name: 'list_accounts', arguments: {} });
+    expect(blocked.isError).toBe(true);
+    expect(JSON.stringify(blocked.content)).toContain('entitlement_exceeded');
+    expect(listAccounts).not.toHaveBeenCalled();
+
+    const diagnostics = await client.callTool({ name: 'get_status', arguments: {} });
+    expect(diagnostics.isError).toBeFalsy();
+    expect(status).toHaveBeenCalled();
+  });
+
+  it('appends the renewal warning to tool results while the license is in grace', async () => {
+    const listAccounts = vi.fn().mockReturnValue([]);
+    const enforceQuota = vi.fn().mockReturnValue('The Fluxmail license expired yesterday');
+    const client = await connectMcp({ listAccounts, enforceQuota } as Partial<EmailService>);
+
+    const result = await client.callTool({ name: 'list_accounts', arguments: {} });
+    expect(result.isError).toBeFalsy();
+    const texts = (result.content as Array<{ text: string }>).map((c) => c.text);
+    expect(texts).toHaveLength(2);
+    expect(texts[1]).toBe('Note: The Fluxmail license expired yesterday');
   });
 });

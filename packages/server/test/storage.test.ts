@@ -4,7 +4,21 @@ import { EmailError } from '@fluxmail/core';
 import { decryptString, encryptString } from '../src/storage/crypto.js';
 import { accounts, openDb } from '../src/storage/db.js';
 import { createApiKey, listApiKeys, revokeApiKey, verifyApiKey } from '../src/storage/apiKeys.js';
-import { assertAccountLimit, FREE_TIER } from '../src/licensing/entitlements.js';
+import { addMember, removeMember } from '../src/storage/members.js';
+import {
+  assertAccountLimit,
+  assertMemberLimit,
+  PERSONAL_TIER,
+  type Entitlements,
+} from '../src/licensing/entitlements.js';
+
+const paidPlan: Entitlements = {
+  plan: 'team',
+  licensed: true,
+  inGrace: false,
+  maxMembers: 5,
+  maxAccounts: 5,
+};
 
 describe('crypto', () => {
   const key = randomBytes(32);
@@ -46,6 +60,23 @@ describe('api keys', () => {
     createApiKey(db, 'second');
     expect(listApiKeys(db)).toHaveLength(2);
   });
+
+  it('issues a key to a member and revokes it when the member is removed', () => {
+    const db = openDb(':memory:');
+    const member = addMember(db, { name: 'Alice' });
+    const { key, info } = createApiKey(db, 'alice-key', member.id);
+    expect(info.memberId).toBe(member.id);
+    expect(listApiKeys(db)[0]?.memberId).toBe(member.id);
+
+    removeMember(db, member.id);
+    expect(listApiKeys(db)).toHaveLength(0);
+    expect(verifyApiKey(db, key)).toBe(false);
+  });
+
+  it('rejects an unknown member', () => {
+    const db = openDb(':memory:');
+    expect(() => createApiKey(db, 'key', 'member_nope')).toThrow(/No member with id/);
+  });
 });
 
 describe('account storage', () => {
@@ -76,23 +107,24 @@ describe('account storage', () => {
 });
 
 describe('entitlements', () => {
-  it('free tier allows 1 account', () => {
-    expect(() => assertAccountLimit(0, FREE_TIER)).not.toThrow();
-    expect(() => assertAccountLimit(1, FREE_TIER)).toThrow(/free tier/);
+  it('the Personal plan allows 3 mailboxes and 1 member', () => {
+    expect(() => assertAccountLimit(2, PERSONAL_TIER)).not.toThrow();
+    expect(() => assertAccountLimit(3, PERSONAL_TIER)).toThrow(/Personal plan allows 3 connected mailboxes/);
+    expect(() => assertMemberLimit(0, PERSONAL_TIER)).not.toThrow();
+    expect(() => assertMemberLimit(1, PERSONAL_TIER)).toThrow(/Personal plan allows 1 member/);
   });
 
   it('throws entitlement_exceeded', () => {
     try {
-      assertAccountLimit(1, FREE_TIER);
+      assertAccountLimit(3, PERSONAL_TIER);
       expect.unreachable();
     } catch (err) {
       expect((err as EmailError).code).toBe('entitlement_exceeded');
     }
   });
 
-  it('names the paid tier limit when a license is active', () => {
-    expect(() => assertAccountLimit(5, { maxAccounts: 5, tier: 'paid' })).toThrow(
-      /Your license allows 5 accounts/
-    );
+  it('names the plan from the lease when a license is active', () => {
+    expect(() => assertAccountLimit(5, paidPlan)).toThrow(/Your team plan allows 5 connected mailboxes/);
+    expect(() => assertMemberLimit(5, paidPlan)).toThrow(/Your team plan allows 5 members/);
   });
 });

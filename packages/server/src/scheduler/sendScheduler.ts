@@ -4,6 +4,7 @@ import {
   claimScheduledSend,
   completeClaim,
   failClaim,
+  holdPending,
   listActive,
   listClaimable,
   retryClaim,
@@ -13,6 +14,8 @@ import {
 /** The slice of EmailService the scheduler needs. */
 export interface ScheduledSender {
   send(accountId: string | undefined, input: { draftId: string }): Promise<SendResult>;
+  /** Throws while a lapsed license leaves the instance over the plan quota. */
+  enforceQuota(): string | undefined;
 }
 
 /** Re-check at least this often while anything is pending (heals clock jumps and laptop sleep). */
@@ -36,6 +39,8 @@ export class SendScheduler {
   private rerun = false;
   /** Retry gates for transient failures; in-memory only (a restart just retries immediately). */
   private backoff = new Map<string, { attempt: number; notBefore: number }>();
+  /** While over the plan quota, due sends are held and re-checked no sooner than this. */
+  private quotaHoldUntil = 0;
 
   constructor(
     private readonly db: FluxmailDb,
@@ -68,9 +73,23 @@ export class SendScheduler {
     this.processing = true;
     try {
       const now = Date.now();
-      const due = listClaimable(this.db, now)
+      let due = listClaimable(this.db, now)
         .filter((r) => r.sendAt <= now && (this.backoff.get(r.id)?.notBefore ?? 0) <= now)
         .sort((a, b) => a.sendAt - b.sendAt);
+      if (due.length) {
+        try {
+          this.service.enforceQuota();
+          this.quotaHoldUntil = 0;
+        } catch (err) {
+          // Over quota after a license lapse: hold due sends (pending, no
+          // attempt consumed) and re-check later; they fire once the license
+          // is renewed or usage is trimmed to fit the plan.
+          this.quotaHoldUntil = now + MAX_ARM_MS;
+          const message = err instanceof Error ? err.message : String(err);
+          for (const row of due) holdPending(this.db, row.id, message);
+          due = [];
+        }
+      }
       for (const row of due) await this.fire(row);
     } finally {
       this.processing = false;
@@ -121,10 +140,13 @@ export class SendScheduler {
     this.timer = undefined;
     const pending = listActive(this.db);
     if (!pending.length) return;
-    const next = Math.min(
-      ...pending.map((r) =>
-        Math.max(r.sendAt, r.claimUntil ?? 0, this.backoff.get(r.id)?.notBefore ?? 0)
-      )
+    const next = Math.max(
+      Math.min(
+        ...pending.map((r) =>
+          Math.max(r.sendAt, r.claimUntil ?? 0, this.backoff.get(r.id)?.notBefore ?? 0)
+        )
+      ),
+      this.quotaHoldUntil
     );
     const delay = Math.min(Math.max(next - Date.now(), 0), MAX_ARM_MS);
     this.timer = setTimeout(() => void this.tick(), delay);

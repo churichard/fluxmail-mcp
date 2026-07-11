@@ -7,9 +7,14 @@ import { createPublicKey, verify as verifySignature, type KeyObject } from 'node
  * before parsing and never re-serialize the JSON.
  */
 export interface LeasePayload {
-  /** Payload version; this client understands only 1. */
-  v: 1;
+  /** Payload version; this client understands only 2. */
+  v: 2;
   licenseId: string;
+  /** Lowercase plan name for display ("pro", "team", …); clients never switch on it. */
+  plan: string;
+  /** People who may use this instance. */
+  maxMembers: number;
+  /** Connected mailboxes on this instance. */
   maxAccounts: number;
   /** ISO 8601 */
   issuedAt: string;
@@ -60,9 +65,16 @@ function decodePublicKey(base64Spki: string): KeyObject | undefined {
 /**
  * Verify a lease token against the accepted public keys and return its payload.
  * Throws with a human-readable reason on any failure; callers on enforcement
- * paths catch and fall back to free-tier limits.
+ * paths catch and fall back to Personal-plan limits. With allowExpired, an
+ * expired-but-authentic lease is returned so the caller can apply the grace
+ * period; signature and shape failures still throw.
  */
-export function verifyLease(token: string, publicKeys: readonly string[], now = new Date()): LeasePayload {
+export function verifyLease(
+  token: string,
+  publicKeys: readonly string[],
+  now = new Date(),
+  opts: { allowExpired?: boolean } = {}
+): LeasePayload {
   const parts = token.split('.');
   if (parts.length !== 2 || !BASE64URL.test(parts[0]!) || !BASE64URL.test(parts[1]!)) {
     throw new Error('malformed lease token');
@@ -93,18 +105,20 @@ export function verifyLease(token: string, publicKeys: readonly string[], now = 
     throw new Error('lease payload is not an object');
   }
   const payload = parsed as Record<string, unknown>;
-  if (payload.v !== 1) {
+  if (payload.v !== 2) {
     throw new Error(`unsupported lease version ${JSON.stringify(payload.v)}`);
   }
   if (typeof payload.licenseId !== 'string' || !payload.licenseId) {
     throw new Error('lease payload has no licenseId');
   }
-  if (
-    typeof payload.maxAccounts !== 'number' ||
-    !Number.isInteger(payload.maxAccounts) ||
-    payload.maxAccounts < 1
-  ) {
-    throw new Error('lease payload has an invalid maxAccounts');
+  if (typeof payload.plan !== 'string' || !payload.plan) {
+    throw new Error('lease payload has no plan');
+  }
+  for (const field of ['maxMembers', 'maxAccounts'] as const) {
+    const value = payload[field];
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+      throw new Error(`lease payload has an invalid ${field}`);
+    }
   }
   for (const field of ['issuedAt', 'expiresAt'] as const) {
     const value = payload[field];
@@ -112,7 +126,7 @@ export function verifyLease(token: string, publicKeys: readonly string[], now = 
       throw new Error(`lease payload has an invalid ${field}`);
     }
   }
-  if (Date.parse(payload.expiresAt as string) <= now.getTime()) {
+  if (!opts.allowExpired && Date.parse(payload.expiresAt as string) <= now.getTime()) {
     throw new Error(`lease expired at ${payload.expiresAt as string}`);
   }
   return payload as unknown as LeasePayload;

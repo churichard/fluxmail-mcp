@@ -18,6 +18,8 @@ export interface Account {
   displayName?: string;
   status: 'active' | 'auth_error' | 'disabled';
   capabilities: Capabilities;
+  /** Owning member on the instance; absent means the mailbox is shared. */
+  memberId?: string;
 }
 
 export interface EmailAddress {

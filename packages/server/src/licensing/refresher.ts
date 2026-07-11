@@ -15,7 +15,7 @@ const OUTAGE_RETRY_MS = 60 * 60 * 1000;
 export type RefreshResult =
   | { outcome: 'refreshed'; lease: LeasePayload }
   | {
-      outcome: 'invalid_key' | 'not_found' | 'inactive' | 'bad_lease' | 'outage';
+      outcome: 'invalid_key' | 'not_found' | 'inactive' | 'in_use' | 'bad_lease' | 'outage';
       message: string;
       /** True while a previously cached lease still grants paid limits. */
       cachedLeaseActive: boolean;
@@ -56,7 +56,7 @@ export async function refreshLicense(db: FluxmailDb, opts: RefreshOptions): Prom
     instanceId: loadInstanceId(opts.dataDir),
     ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
   });
-  const cachedLeaseActive = () => getEntitlements(db).tier === 'paid';
+  const cachedLeaseActive = () => getEntitlements(db).licensed;
 
   switch (result.kind) {
     case 'valid': {
@@ -94,6 +94,14 @@ export async function refreshLicense(db: FluxmailDb, opts: RefreshOptions): Prom
         message: `The license is no longer active (${result.status}).`,
         cachedLeaseActive: cachedLeaseActive(),
       };
+    case 'license_in_use':
+      return {
+        outcome: 'in_use',
+        message:
+          'This license is already active on another Fluxmail instance. ' +
+          'Run "fluxmail license deactivate" there first, or manage instances from your Fluxmail account.',
+        cachedLeaseActive: cachedLeaseActive(),
+      };
     case 'outage':
       return {
         outcome: 'outage',
@@ -113,6 +121,8 @@ export function startLicenseRefresher(deps: {
   db: FluxmailDb;
   config: FluxmailConfig;
   log?: (line: string) => void;
+  /** Notify long-lived services that renewed entitlements are available. */
+  onRefreshed?: () => void;
 }): () => void {
   const { db, config } = deps;
   const log = deps.log ?? (() => {});
@@ -143,13 +153,14 @@ export function startLicenseRefresher(deps: {
     }
     if (result.outcome === 'refreshed') {
       log(`License validated; lease renewed until ${result.lease.expiresAt}`);
+      deps.onRefreshed?.();
       schedule(VALIDATE_INTERVAL_MS);
     } else {
       log(
         `License validation: ${result.message}` +
           (result.cachedLeaseActive
             ? ' The cached lease keeps paid limits for now.'
-            : ' Running with free-tier limits.')
+            : ' Running with Personal-plan limits.')
       );
       schedule(result.outcome === 'outage' ? OUTAGE_RETRY_MS : VALIDATE_INTERVAL_MS);
     }

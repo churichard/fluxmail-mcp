@@ -1,7 +1,8 @@
 /**
- * HTTP client for the hosted license server's validate endpoint. The contract
- * of record lives in the license-server repo (MCP Licensing — License
- * Validation Contract); request/response shapes here must match it.
+ * HTTP client for the hosted license server's validate and deactivate
+ * endpoints. The contract of record is docs/license-validation-contract.md in
+ * this repo, implemented by the private license-server repo; request/response
+ * shapes here must match it.
  */
 
 export const DEFAULT_LICENSE_SERVER_URL = 'https://fluxmail.ai';
@@ -17,14 +18,16 @@ export type ValidateOutcome =
   | { kind: 'license_not_found' }
   /** 403: subscription ended ("canceled" | "revoked" | "expired"). Degrade when the cached lease runs out. */
   | { kind: 'license_inactive'; status: string }
+  /** 409: the license is bound to a different instance; deactivate it there first. */
+  | { kind: 'license_in_use' }
   /** 5xx, network failure, or an unintelligible response: keep the cached lease and retry later. */
   | { kind: 'outage'; detail: string };
 
 export interface ValidateOptions {
   serverUrl: string;
   licenseKey: string;
-  /** Stable random id per install, so the server can spot key sharing. */
-  instanceId?: string;
+  /** Stable random id per install; the server binds each license to one instance. */
+  instanceId: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }
@@ -37,10 +40,7 @@ export async function validateLicense(opts: ValidateOptions): Promise<ValidateOu
     response = await doFetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        licenseKey: opts.licenseKey,
-        ...(opts.instanceId ? { instanceId: opts.instanceId } : {}),
-      }),
+      body: JSON.stringify({ licenseKey: opts.licenseKey, instanceId: opts.instanceId }),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
     });
   } catch (err) {
@@ -72,7 +72,30 @@ export async function validateLicense(opts: ValidateOptions): Promise<ValidateOu
       const status = field('status');
       return { kind: 'license_inactive', status: typeof status === 'string' ? status : 'inactive' };
     }
+    case 409:
+      return { kind: 'license_in_use' };
     default:
       return { kind: 'outage', detail: `license server returned HTTP ${response.status}` };
+  }
+}
+
+/**
+ * Best-effort release of this instance's license binding, so the key can be
+ * activated elsewhere. Returns false when the server could not be reached or
+ * declined; callers proceed with local deactivation either way.
+ */
+export async function releaseLicense(opts: ValidateOptions): Promise<boolean> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const url = `${opts.serverUrl.replace(/\/+$/, '')}/api/v1/licenses/deactivate`;
+  try {
+    const response = await doFetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ licenseKey: opts.licenseKey, instanceId: opts.instanceId }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
   }
 }

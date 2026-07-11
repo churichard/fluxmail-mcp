@@ -7,6 +7,7 @@ import type { FluxmailConfig } from '../config.js';
 import { accounts, oauthTokens, type FluxmailDb } from '../storage/db.js';
 import { decryptString, encryptString } from '../storage/crypto.js';
 import { assertAccountLimit, getEntitlements } from '../licensing/entitlements.js';
+import { getMember } from '../storage/members.js';
 import { requireGoogleConfig } from './googleAuth.js';
 
 export class AccountRegistry {
@@ -32,6 +33,7 @@ export class AccountRegistry {
         ...(row.displayName ? { displayName: row.displayName } : {}),
         status: row.status as Account['status'],
         capabilities: GMAIL_CAPABILITIES,
+        ...(row.memberId ? { memberId: row.memberId } : {}),
       }));
   }
 
@@ -155,11 +157,14 @@ export class AccountRegistry {
     return provider;
   }
 
-  addGmailAccount(email: string, tokens: Credentials, displayName?: string): Account {
+  addGmailAccount(email: string, tokens: Credentials, displayName?: string, memberId?: string): Account {
+    // Validate up front for a clean not_found instead of a FK constraint error.
+    if (memberId) getMember(this.db, memberId);
     const existing = this.db.select().from(accounts).all();
     const duplicate = existing.find((a) => a.provider === 'gmail' && a.email === email);
     if (duplicate) {
-      // Re-authenticating an existing account: refresh tokens, clear error state.
+      // Re-authenticating an existing account: refresh tokens, clear error
+      // state. Ownership is untouched; reassign with assignAccountMember.
       this.db.transaction((tx) => {
         this.writeTokens(tx, duplicate.id, tokens);
         tx.update(accounts)
@@ -183,11 +188,20 @@ export class AccountRegistry {
           displayName: displayName ?? null,
           status: 'active',
           createdAt: Date.now(),
+          memberId: memberId ?? null,
         })
         .run();
       this.writeTokens(tx, id, tokens);
     });
     return this.getAccount(id);
+  }
+
+  /** Assign a mailbox to a member, or make it shared again (memberId = null). */
+  assignAccountMember(accountId: string, memberId: string | null): Account {
+    this.getAccount(accountId);
+    if (memberId) getMember(this.db, memberId);
+    this.db.update(accounts).set({ memberId }).where(eq(accounts.id, accountId)).run();
+    return this.getAccount(accountId);
   }
 
   removeAccount(accountId: string): void {

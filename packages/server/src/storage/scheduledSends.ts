@@ -213,6 +213,14 @@ export function markFailed(db: FluxmailDb, id: string, error: string): void {
   db.update(scheduledSends).set({ status: 'failed', lastError: error }).where(eq(scheduledSends.id, id)).run();
 }
 
+/** Record why a pending send is held (e.g. plan quota) without consuming an attempt. */
+export function holdPending(db: FluxmailDb, id: string, error: string): void {
+  db.update(scheduledSends)
+    .set({ lastError: error })
+    .where(and(eq(scheduledSends.id, id), eq(scheduledSends.status, 'pending')))
+    .run();
+}
+
 /** Record a retryable failure: bump attempts, keep the row pending. */
 export function recordAttempt(db: FluxmailDb, id: string, error: string): void {
   const row = db.select().from(scheduledSends).where(eq(scheduledSends.id, id)).get();

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EmailError, type Message } from '@fluxmail/core';
 import { buildForwardBody, EmailService, resolveSendAt } from '../src/service/emailService.js';
-import { accounts, openDb, type FluxmailDb } from '../src/storage/db.js';
+import { accounts, members, openDb, type FluxmailDb } from '../src/storage/db.js';
+import { createScheduledSend } from '../src/storage/scheduledSends.js';
 
 function testDb(): FluxmailDb {
   const db = openDb(':memory:');
@@ -130,6 +131,136 @@ describe('EmailService account state', () => {
 
     await expect(service.listFolders()).rejects.toMatchObject({ code: 'invalid_request' });
     expect(getProvider).not.toHaveBeenCalled();
+  });
+});
+
+describe('EmailService member scope', () => {
+  const shared = { id: 'acct_shared', provider: 'gmail', email: 'shared@example.com', status: 'active', capabilities: {} };
+  const ann = { id: 'acct_ann', provider: 'gmail', email: 'ann@example.com', status: 'active', capabilities: {}, memberId: 'member_ann' };
+  const bob = { id: 'acct_bob', provider: 'gmail', email: 'bob@example.com', status: 'active', capabilities: {}, memberId: 'member_bob' };
+
+  function scopedRegistry(all: Array<Record<string, unknown>>, listFolders = vi.fn().mockResolvedValue([])) {
+    const byId = new Map(all.map((a) => [a.id as string, a]));
+    return {
+      listFolders,
+      registry: {
+        listAccounts: () => all,
+        getAccount: (id: string) => {
+          const account = byId.get(id);
+          if (!account) throw new EmailError('not_found', `No account with id "${id}"`);
+          return account;
+        },
+        resolveAccountId: (id?: string) => {
+          if (id) return byId.get(id)?.id;
+          if (all.length === 1) return all[0]!.id;
+          throw new EmailError('invalid_request', 'Multiple accounts are connected; specify accountId.');
+        },
+        getProvider: () => ({ listFolders, testConnection: vi.fn().mockResolvedValue(undefined) }),
+        markStatus: vi.fn(),
+      },
+    };
+  }
+
+  it('lists only shared and owned mailboxes for a member key', () => {
+    const { registry } = scopedRegistry([shared, ann, bob]);
+    const service = new EmailService(registry as never, testDb()).withScope({ memberId: 'member_ann' });
+
+    expect(service.listAccounts().map((a) => a.id)).toEqual(['acct_shared', 'acct_ann']);
+  });
+
+  it('reaches shared and owned mailboxes but hides another member\'s as not_found', async () => {
+    const { registry, listFolders } = scopedRegistry([shared, ann, bob]);
+    const service = new EmailService(registry as never, testDb()).withScope({ memberId: 'member_ann' });
+
+    await expect(service.listFolders('acct_shared')).resolves.toEqual([]);
+    await expect(service.listFolders('acct_ann')).resolves.toEqual([]);
+    await expect(service.listFolders('acct_bob')).rejects.toMatchObject({
+      code: 'not_found',
+      message: 'No account with id "acct_bob"',
+    });
+    // The provider is never reached for the forbidden mailbox.
+    expect(listFolders).toHaveBeenCalledTimes(2);
+  });
+
+  it('defaults a member key to its sole accessible mailbox', async () => {
+    const { registry } = scopedRegistry([bob, ann]);
+    const service = new EmailService(registry as never, testDb()).withScope({ memberId: 'member_ann' });
+
+    await expect(service.listFolders()).resolves.toEqual([]);
+  });
+
+  it('requires an explicit accountId when a member can reach more than one mailbox', async () => {
+    const { registry } = scopedRegistry([shared, ann]);
+    const service = new EmailService(registry as never, testDb()).withScope({ memberId: 'member_ann' });
+
+    await expect(service.listFolders()).rejects.toMatchObject({ code: 'invalid_request' });
+  });
+
+  it('keeps full access for an unscoped admin key', () => {
+    const { registry } = scopedRegistry([shared, ann, bob]);
+    const service = new EmailService(registry as never, testDb());
+
+    expect(service.listAccounts().map((a) => a.id)).toEqual(['acct_shared', 'acct_ann', 'acct_bob']);
+  });
+
+  it('isolates scheduled sends between members', () => {
+    const db = openDb(':memory:');
+    db.insert(members).values([
+      { id: 'member_ann', name: 'Ann', email: null, createdAt: Date.now() },
+      { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
+    ]).run();
+    db.insert(accounts).values([
+      { id: 'acct_ann', provider: 'gmail', email: 'ann@example.com', status: 'active', createdAt: Date.now(), memberId: 'member_ann' },
+      { id: 'acct_bob', provider: 'gmail', email: 'bob@example.com', status: 'active', createdAt: Date.now(), memberId: 'member_bob' },
+    ]).run();
+    const annSchedule = createScheduledSend(db, { accountId: 'acct_ann', draftId: 'draft_ann', sendAt: Date.now() + 3_600_000 });
+    const bobSchedule = createScheduledSend(db, { accountId: 'acct_bob', draftId: 'draft_bob', sendAt: Date.now() + 3_600_000 });
+
+    const { registry } = scopedRegistry([ann, bob]);
+    const service = new EmailService(registry as never, db).withScope({ memberId: 'member_ann' });
+
+    expect(service.listScheduled().map((s) => s.scheduleId)).toEqual([annSchedule.id]);
+    expect(() => service.cancelScheduled(bobSchedule.id)).toThrow(/No scheduled send/);
+    expect(service.cancelScheduled(annSchedule.id)).toMatchObject({ scheduleId: annSchedule.id });
+  });
+
+  it('keeps instance-wide status details out of member responses', async () => {
+    const db = openDb(':memory:');
+    db.insert(members).values([
+      { id: 'member_ann', name: 'Ann', email: null, createdAt: Date.now() },
+      { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
+    ]).run();
+    db.insert(accounts).values([
+      { id: 'acct_ann', provider: 'gmail', email: 'ann@example.com', status: 'active', createdAt: Date.now(), memberId: 'member_ann' },
+      { id: 'acct_bob', provider: 'gmail', email: 'bob@example.com', status: 'active', createdAt: Date.now(), memberId: 'member_bob' },
+    ]).run();
+    const annSendAt = Date.now() + 7_200_000;
+    createScheduledSend(db, { accountId: 'acct_ann', draftId: 'draft_ann', sendAt: annSendAt });
+    createScheduledSend(db, { accountId: 'acct_bob', draftId: 'draft_bob', sendAt: Date.now() + 3_600_000 });
+
+    const { registry } = scopedRegistry([ann, bob]);
+    const service = new EmailService(registry as never, db).withScope({ memberId: 'member_ann' });
+    const status = await service.status();
+
+    expect(status.accounts.map((account) => account.id)).toEqual(['acct_ann']);
+    expect(status.scheduled).toEqual({ pending: 1, nextSendAt: new Date(annSendAt).toISOString() });
+    expect(status).not.toHaveProperty('members');
+    expect(status).not.toHaveProperty('entitlements');
+    expect(status).not.toHaveProperty('licenseWarning');
+  });
+
+  it('does not expose instance usage in member quota errors', () => {
+    const db = openDb(':memory:');
+    db.insert(members).values([
+      { id: 'member_ann', name: 'Ann', email: null, createdAt: Date.now() },
+      { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
+    ]).run();
+    const { registry } = scopedRegistry([ann, bob]);
+    const service = new EmailService(registry as never, db).withScope({ memberId: 'member_ann' });
+
+    expect(() => service.enforceQuota()).toThrow(
+      'This Fluxmail instance is over its plan limits. Ask an administrator to renew the license or reduce usage.'
+    );
   });
 });
 

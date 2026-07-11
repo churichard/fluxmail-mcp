@@ -4,6 +4,7 @@ import type { FluxmailConfig } from '../src/config.js';
 import { createApp, type AppDeps } from '../src/http/app.js';
 import { createApiKey } from '../src/storage/apiKeys.js';
 import { openDb } from '../src/storage/db.js';
+import { addMember } from '../src/storage/members.js';
 import { exchangeCode } from '../src/accounts/googleAuth.js';
 import { VERSION } from '../src/version.js';
 
@@ -70,6 +71,20 @@ describe('HTTP app', () => {
       error: { code: -32700, message: 'Parse error' },
       id: null,
     });
+  });
+
+  it('only lets admin keys start the server-hosted OAuth flow', async () => {
+    const deps = appDeps('apikey');
+    const member = addMember(deps.db, { name: 'Alice' });
+    const { key: memberKey } = createApiKey(deps.db, 'alice-key', member.id);
+    const { key: adminKey } = createApiKey(deps.db, 'admin-key');
+    const app = createApp(deps);
+
+    const denied = await app.request(`/auth/google?key=${encodeURIComponent(memberKey)}`);
+    expect(denied.status).toBe(401);
+
+    const allowed = await app.request(`/auth/google?key=${encodeURIComponent(adminKey)}`);
+    expect(allowed.status).toBe(302);
   });
 
   it('reports why the OAuth callback failed instead of a blank 500', async () => {

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { EmailError } from '@fluxmail/core';
 import { AccountRegistry } from '../src/accounts/registry.js';
 import { openDb, oauthTokens } from '../src/storage/db.js';
+import { addMember } from '../src/storage/members.js';
 import { decryptString } from '../src/storage/crypto.js';
 import type { FluxmailConfig } from '../src/config.js';
 
@@ -41,24 +42,68 @@ describe('AccountRegistry', () => {
     expect(JSON.parse(decryptString(config.encryptionKey, row!.encryptedTokens)).refresh_token).toBe('rt_secret');
   });
 
-  it('enforces the free-tier account limit', () => {
+  it('enforces the Personal-plan mailbox limit', () => {
     const registry = new AccountRegistry(openDb(':memory:'), testConfig());
     registry.addGmailAccount('one@example.com', tokens);
+    registry.addGmailAccount('two@example.com', tokens);
+    registry.addGmailAccount('three@example.com', tokens);
     try {
-      registry.addGmailAccount('two@example.com', tokens);
+      registry.addGmailAccount('four@example.com', tokens);
       expect.unreachable();
     } catch (err) {
       expect((err as EmailError).code).toBe('entitlement_exceeded');
+      expect((err as EmailError).message).toMatch(/Personal plan allows 3 connected mailboxes/);
     }
   });
 
-  it('detects the account limit before starting an OAuth flow', () => {
+  it('detects the mailbox limit before starting an OAuth flow', () => {
     const registry = new AccountRegistry(openDb(':memory:'), testConfig());
-    const account = registry.addGmailAccount('one@example.com', tokens);
+    registry.addGmailAccount('one@example.com', tokens);
+    registry.addGmailAccount('two@example.com', tokens);
+    registry.addGmailAccount('three@example.com', tokens);
 
     expect(() => registry.assertCanAddAccount()).toThrow(
-      new RegExp(`free tier allows 1 account.*--reauthorize ${account.id}`)
+      /Personal plan allows 3 connected mailboxes.*--reauthorize <account-id>/
     );
+  });
+
+  it('stores and reports the owning member of a mailbox', () => {
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const member = addMember(db, { name: 'Alice', email: 'alice@example.com' });
+
+    const account = registry.addGmailAccount('one@example.com', tokens, undefined, member.id);
+    expect(account.memberId).toBe(member.id);
+    expect(registry.listAccounts()[0]?.memberId).toBe(member.id);
+  });
+
+  it('rejects an unknown member when adding a mailbox', () => {
+    const registry = new AccountRegistry(openDb(':memory:'), testConfig());
+    expect(() => registry.addGmailAccount('one@example.com', tokens, undefined, 'member_nope')).toThrow(
+      /No member with id/
+    );
+  });
+
+  it('assignAccountMember moves a mailbox between a member and shared', () => {
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const member = addMember(db, { name: 'Alice' });
+    const account = registry.addGmailAccount('one@example.com', tokens);
+    expect(account.memberId).toBeUndefined();
+
+    expect(registry.assignAccountMember(account.id, member.id).memberId).toBe(member.id);
+    expect(registry.assignAccountMember(account.id, null).memberId).toBeUndefined();
+  });
+
+  it('re-authenticating keeps the existing owner', () => {
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const member = addMember(db, { name: 'Alice' });
+    const first = registry.addGmailAccount('me@example.com', tokens, undefined, member.id);
+
+    const second = registry.addGmailAccount('me@example.com', { ...tokens, refresh_token: 'rt_new' });
+    expect(second.id).toBe(first.id);
+    expect(second.memberId).toBe(member.id);
   });
 
   it('rolls back the account when storing its tokens fails', () => {

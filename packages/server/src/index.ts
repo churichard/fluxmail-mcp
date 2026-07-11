@@ -18,13 +18,26 @@ export { openDb } from './storage/db.js';
 export { encryptString, decryptString } from './storage/crypto.js';
 export {
   getEntitlements,
+  checkLicenseState,
   assertAccountLimit,
+  assertMemberLimit,
+  assertWithinQuota,
   readLeaseRow,
   saveLeaseToken,
   clearLease,
-  FREE_TIER,
+  PERSONAL_TIER,
+  GRACE_PERIOD_MS,
   type Entitlements,
+  type LicenseState,
 } from './licensing/entitlements.js';
+export {
+  addMember,
+  getMember,
+  findMember,
+  listMembers,
+  removeMember,
+  type MemberInfo,
+} from './storage/members.js';
 export {
   verifyLease,
   licensePublicKeys,
@@ -33,6 +46,7 @@ export {
 } from './licensing/lease.js';
 export {
   validateLicense,
+  releaseLicense,
   DEFAULT_LICENSE_SERVER_URL,
   LICENSE_KEY_PATTERN,
   type ValidateOutcome,

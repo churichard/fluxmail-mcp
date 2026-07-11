@@ -7,8 +7,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { FluxmailConfig } from '../config.js';
 import type { FluxmailDb } from '../storage/db.js';
 import type { AccountRegistry } from '../accounts/registry.js';
-import type { EmailService } from '../service/emailService.js';
-import { verifyApiKey } from '../storage/apiKeys.js';
+import type { AccessScope, EmailService } from '../service/emailService.js';
+import { authenticateApiKey } from '../storage/apiKeys.js';
 import { buildMcpServer } from '../mcp/buildServer.js';
 import { buildAuthUrl, createOAuthClient, exchangeCode } from '../accounts/googleAuth.js';
 import { VERSION } from '../version.js';
@@ -27,21 +27,34 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
   const app = new Hono<{ Bindings: HttpBindings }>();
   const oauthStates = new Map<string, number>();
 
-  const authorized = (
+  // Connecting a mailbox is instance administration: only unscoped admin keys
+  // qualify; member-scoped keys are confined to mailbox access over MCP.
+  const adminAuthorized = (
     c: { req: { header(name: string): string | undefined; query(name: string): string | undefined } },
     allowQueryKey = false
   ): boolean => {
     if (config.authMode === 'none') return true;
     const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
     const key = bearer ?? (allowQueryKey ? c.req.query('key') : undefined);
-    return !!key && verifyApiKey(db, key);
+    if (!key) return false;
+    return authenticateApiKey(db, key)?.memberId === null;
+  };
+
+  // Authenticate an MCP request and resolve the mailbox scope its key authorizes.
+  // A member-scoped key is confined to shared and owned mailboxes; an admin key
+  // (or authMode 'none') gets unscoped access.
+  const scopeForRequest = (c: { req: { header(name: string): string | undefined } }): AccessScope | null => {
+    if (config.authMode === 'none') return { memberId: null };
+    const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
+    return bearer ? authenticateApiKey(db, bearer) : null;
   };
 
   app.get('/healthz', (c) => c.json({ ok: true, name: 'fluxmail', version: VERSION }));
 
   // Stateless Streamable HTTP: a fresh server+transport pair per request.
   app.post('/mcp', async (c) => {
-    if (!authorized(c)) {
+    const scope = scopeForRequest(c);
+    if (!scope) {
       return c.json(
         { jsonrpc: '2.0', error: { code: -32001, message: 'Unauthorized: pass an API key as a Bearer token' }, id: null },
         401
@@ -53,7 +66,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     } catch {
       return c.json({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }, 400);
     }
-    const server = buildMcpServer(service);
+    const server = buildMcpServer(service.withScope(scope));
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -77,8 +90,8 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
 
   // Server-hosted OAuth flow (for remote deployments; the CLI uses a loopback flow instead).
   app.get('/auth/google', (c) => {
-    if (!authorized(c, true)) {
-      return c.text('Unauthorized: append ?key=<your API key>', 401);
+    if (!adminAuthorized(c, true)) {
+      return c.text('Unauthorized: append ?key=<an admin API key>', 401);
     }
     const now = Date.now();
     for (const [state, expiry] of oauthStates) {
