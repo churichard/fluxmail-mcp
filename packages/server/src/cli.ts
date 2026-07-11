@@ -20,9 +20,10 @@ import { LICENSE_KEY_PATTERN } from './licensing/client.js';
 import { licensePublicKeys, verifyLease } from './licensing/lease.js';
 import { clearLease, getEntitlements, readLeaseRow } from './licensing/entitlements.js';
 import { refreshLicense, startLicenseRefresher } from './licensing/refresher.js';
+import { VERSION } from './version.js';
 
 const program = new Command();
-program.name('fluxmail').description('Fluxmail, a self-hosted MCP server for your email').version('0.1.0');
+program.name('fluxmail').description('Fluxmail, a self-hosted MCP server for your email').version(VERSION);
 
 program
   .command('serve')

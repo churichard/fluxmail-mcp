@@ -11,6 +11,7 @@ import type { EmailService } from '../service/emailService.js';
 import { verifyApiKey } from '../storage/apiKeys.js';
 import { buildMcpServer } from '../mcp/buildServer.js';
 import { buildAuthUrl, createOAuthClient, exchangeCode } from '../accounts/googleAuth.js';
+import { VERSION } from '../version.js';
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -36,7 +37,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     return !!key && verifyApiKey(db, key);
   };
 
-  app.get('/healthz', (c) => c.json({ ok: true, name: 'fluxmail', version: '0.1.0' }));
+  app.get('/healthz', (c) => c.json({ ok: true, name: 'fluxmail', version: VERSION }));
 
   // Stateless Streamable HTTP: a fresh server+transport pair per request.
   app.post('/mcp', async (c) => {
