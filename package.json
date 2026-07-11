@@ -12,7 +12,8 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "dev": "pnpm --filter fluxmail dev"
+    "dev": "pnpm --filter fluxmail dev",
+    "publish:all": "node scripts/publish.mjs"
   },
   "devDependencies": {
     "typescript": "^5.8.3",
