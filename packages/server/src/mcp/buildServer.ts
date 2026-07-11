@@ -1,5 +1,6 @@
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { VERSION } from '../version.js';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -221,7 +222,7 @@ function emailQuery(args: Record<string, unknown>): EmailQuery {
 
 export function buildMcpServer(service: EmailService): McpServer {
   const server = new McpServer(
-    { name: 'fluxmail', title: 'Fluxmail Email', version: '0.1.0' },
+    { name: 'fluxmail', title: 'Fluxmail Email', version: VERSION },
     {
       instructions:
         'Fluxmail is the user\'s email integration, already authenticated against their real mailboxes. ' +

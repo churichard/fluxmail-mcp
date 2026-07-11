@@ -5,6 +5,7 @@ import { createApp, type AppDeps } from '../src/http/app.js';
 import { createApiKey } from '../src/storage/apiKeys.js';
 import { openDb } from '../src/storage/db.js';
 import { exchangeCode } from '../src/accounts/googleAuth.js';
+import { VERSION } from '../src/version.js';
 
 vi.mock('../src/accounts/googleAuth.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/accounts/googleAuth.js')>()),
@@ -32,6 +33,17 @@ function appDeps(authMode: FluxmailConfig['authMode']): AppDeps {
 }
 
 describe('HTTP app', () => {
+  it('reports the package version on the health endpoint', async () => {
+    const response = await createApp(appDeps('none')).request('/healthz');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      name: 'fluxmail',
+      version: VERSION,
+    });
+  });
+
   it('rejects query-string API keys on the MCP endpoint', async () => {
     const deps = appDeps('apikey');
     const { key } = createApiKey(deps.db, 'test');
