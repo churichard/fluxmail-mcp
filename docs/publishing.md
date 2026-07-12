@@ -1,6 +1,18 @@
 # Publishing
 
-The release command publishes all three workspace packages to npm and the Docker image to GitHub Container Registry. Give every package the same version before running it.
+The release command publishes all four workspace packages to npm and the Docker image to GitHub Container Registry. Prepare a release by bumping every package to the same version:
+
+```bash
+# Increment the current version
+pnpm version:bump patch
+
+# Or set a specific version
+pnpm version:bump 1.0.0
+```
+
+The bump command also updates the private root package so every `package.json` stays in sync. It accepts `major`, `minor`, `patch`, and pnpm's prerelease increments. It changes the manifests without creating a Git commit or tag, so you can review and commit the version bump yourself.
+
+Once the version bump is committed, run the release command from a clean working tree:
 
 ```bash
 # Sign in once on your machine
