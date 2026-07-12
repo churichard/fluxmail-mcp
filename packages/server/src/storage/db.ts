@@ -37,6 +37,42 @@ export const oauthTokens = sqliteTable('oauth_tokens', {
   updatedAt: integer('updated_at').notNull(),
 });
 
+export const accountCredentials = sqliteTable('account_credentials', {
+  accountId: text('account_id')
+    .primaryKey()
+    .references(() => accounts.id, { onDelete: 'cascade' }),
+  /** AES-256-GCM encrypted provider-specific credentials. */
+  encryptedCredentials: text('encrypted_credentials').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const imapMessages = sqliteTable(
+  'imap_messages',
+  {
+    id: text('id').primaryKey(),
+    accountId: text('account_id')
+      .notNull()
+      .references(() => accounts.id, { onDelete: 'cascade' }),
+    mailboxPath: text('mailbox_path').notNull(),
+    uidValidity: text('uid_validity').notNull(),
+    uid: integer('uid').notNull(),
+    messageId: text('message_id'),
+    inReplyTo: text('in_reply_to'),
+    references: text('reference_ids'),
+    threadId: text('thread_id').notNull(),
+    draftId: text('draft_id'),
+    subject: text('subject'),
+    date: text('date'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('imap_messages_location_unique').on(table.accountId, table.mailboxPath, table.uidValidity, table.uid),
+    index('imap_messages_message_id').on(table.accountId, table.messageId),
+    index('imap_messages_thread_id').on(table.accountId, table.threadId),
+    uniqueIndex('imap_messages_draft_id_unique').on(table.accountId, table.draftId),
+  ],
+);
+
 export const apiKeys = sqliteTable('api_keys', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -107,6 +143,34 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
   encrypted_tokens TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS account_credentials (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  encrypted_credentials TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS imap_messages (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  mailbox_path TEXT NOT NULL,
+  uid_validity TEXT NOT NULL,
+  uid INTEGER NOT NULL,
+  message_id TEXT,
+  in_reply_to TEXT,
+  reference_ids TEXT,
+  thread_id TEXT NOT NULL,
+  draft_id TEXT,
+  subject TEXT,
+  date TEXT,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS imap_messages_location_unique
+  ON imap_messages(account_id, mailbox_path, uid_validity, uid);
+CREATE INDEX IF NOT EXISTS imap_messages_message_id
+  ON imap_messages(account_id, message_id);
+CREATE INDEX IF NOT EXISTS imap_messages_thread_id
+  ON imap_messages(account_id, thread_id);
+CREATE UNIQUE INDEX IF NOT EXISTS imap_messages_draft_id_unique
+  ON imap_messages(account_id, draft_id);
 CREATE TABLE IF NOT EXISTS api_keys (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -151,6 +215,16 @@ export function openDb(dbPath: string): FluxmailDb {
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('foreign_keys = ON');
   sqlite.exec(BOOTSTRAP_SQL);
+  // Keep the generic credential row in sync if an older binary updated the
+  // legacy Gmail token table before this version reopened the database.
+  sqlite.exec(`
+    INSERT INTO account_credentials (account_id, encrypted_credentials, updated_at)
+    SELECT account_id, encrypted_tokens, updated_at FROM oauth_tokens WHERE true
+    ON CONFLICT(account_id) DO UPDATE SET
+      encrypted_credentials = excluded.encrypted_credentials,
+      updated_at = excluded.updated_at
+    WHERE excluded.updated_at > account_credentials.updated_at
+  `);
   const scheduledCols = tableColumns(sqlite, 'scheduled_sends');
   if (!scheduledCols.has('claim_token')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_token TEXT');
   if (!scheduledCols.has('claim_until')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_until INTEGER');

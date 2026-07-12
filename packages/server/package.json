@@ -1,7 +1,7 @@
 {
   "name": "fluxmail",
   "version": "0.1.0",
-  "description": "Fluxmail MCP server: unified email tools over Gmail (Outlook and IMAP planned)",
+  "description": "Fluxmail MCP server: unified email tools over Gmail and IMAP/SMTP",
   "homepage": "https://github.com/churichard/fluxmail-mcp#readme",
   "repository": {
     "type": "git",
@@ -41,6 +41,7 @@
   "dependencies": {
     "@fluxmail/core": "workspace:*",
     "@fluxmail/provider-gmail": "workspace:*",
+    "@fluxmail/provider-imap": "workspace:*",
     "@hono/node-server": "^1.14.3",
     "@modelcontextprotocol/sdk": "^1.13.0",
     "better-sqlite3": "^11.10.0",
@@ -52,6 +53,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^22.15.0"
+    "@types/node": "^22.15.0",
+    "imapflow": "^1.4.7"
   }
 }

@@ -3,7 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
-const packages = ['packages/core', 'packages/provider-gmail', 'packages/server'];
+const packages = ['packages/core', 'packages/provider-gmail', 'packages/provider-imap', 'packages/server'];
 
 const options = parseArgs(process.argv.slice(2));
 const manifests = await Promise.all(packages.map(readManifest));

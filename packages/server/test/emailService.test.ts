@@ -331,7 +331,11 @@ describe('EmailService member scope', () => {
 });
 
 describe('EmailService.status', () => {
-  function statusService(initialStatus: 'active' | 'auth_error', testConnection: () => Promise<void>) {
+  function statusService(
+    initialStatus: 'active' | 'auth_error',
+    testConnection: () => Promise<void>,
+    getFolderWarnings?: () => Promise<Array<{ message: string }>>,
+  ) {
     const account = {
       id: 'acct_1',
       provider: 'gmail' as const,
@@ -349,7 +353,7 @@ describe('EmailService.status', () => {
     });
     const registry = {
       listAccounts: () => [account],
-      getProvider: () => ({ testConnection }),
+      getProvider: () => ({ testConnection, ...(getFolderWarnings ? { getFolderWarnings } : {}) }),
       markStatus,
     };
     return { service: new EmailService(registry as never, testDb()), markStatus };
@@ -390,6 +394,19 @@ describe('EmailService.status', () => {
       ],
     });
     expect(markStatus).not.toHaveBeenCalled();
+  });
+
+  it('includes non-fatal folder warnings for a connected account', async () => {
+    const { service } = statusService(
+      'active',
+      async () => {},
+      async () => [{ message: 'no trash folder could be resolved' }],
+    );
+
+    await expect(service.status()).resolves.toMatchObject({
+      accounts: [{ id: 'acct_1', status: 'active', warnings: ['no trash folder could be resolved'] }],
+      providersAvailable: ['gmail', 'imap'],
+    });
   });
 });
 

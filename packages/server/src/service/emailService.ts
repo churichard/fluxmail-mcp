@@ -60,6 +60,7 @@ export interface ServiceStatus {
   accounts: Array<
     Pick<Account, 'id' | 'provider' | 'email' | 'status' | 'memberId'> & {
       error?: { code: string; message: string };
+      warnings?: string[];
     }
   >;
   /** Instance-wide fields are only returned to administrators. */
@@ -215,12 +216,24 @@ export class EmailService {
   async status(): Promise<ServiceStatus> {
     const accounts = this.accessibleAccounts();
     const errors = new Map<string, { code: string; message: string }>();
+    const warnings = new Map<string, string[]>();
     await Promise.all(
       accounts
         .filter((account) => account.status !== 'disabled')
         .map(async (account) => {
           try {
             await this.registry.getProvider(account.id).testConnection();
+            const provider = this.registry.getProvider(account.id) as ReturnType<AccountRegistry['getProvider']> & {
+              getFolderWarnings?: () => Promise<Array<{ message: string }>>;
+            };
+            if (provider.getFolderWarnings) {
+              const folderWarnings = await provider.getFolderWarnings();
+              if (folderWarnings.length)
+                warnings.set(
+                  account.id,
+                  folderWarnings.map((warning) => warning.message),
+                );
+            }
             if (account.status === 'auth_error') this.registry.markStatus(account.id, 'active');
           } catch (err) {
             if (isEmailError(err) && err.code === 'auth_expired') {
@@ -247,6 +260,7 @@ export class EmailService {
         status,
         ...(memberId ? { memberId } : {}),
         ...(errors.has(id) ? { error: errors.get(id)! } : {}),
+        ...(warnings.has(id) ? { warnings: warnings.get(id)! } : {}),
       })),
       ...(admin
         ? {
@@ -255,7 +269,7 @@ export class EmailService {
             ...(license!.warning ? { licenseWarning: license!.warning } : {}),
           }
         : {}),
-      providersAvailable: ['gmail'],
+      providersAvailable: ['gmail', 'imap'],
       scheduled: this.scheduledStatus(),
     };
   }
