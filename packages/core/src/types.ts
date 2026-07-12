@@ -34,6 +34,8 @@ export interface Folder {
   /** Display path, e.g. "Projects/2026". */
   name: string;
   role?: FolderRole;
+  /** How an IMAP folder role was resolved. */
+  roleSource?: 'user' | 'extension' | 'name';
   unreadCount?: number;
 }
 
@@ -121,6 +123,8 @@ export interface DraftInput {
 export interface SendResult {
   id: string;
   threadId: string;
+  /** Non-fatal provider outcomes, such as a delivered message whose Sent copy could not be saved. */
+  warnings?: string[];
 }
 
 export type ModifyAction =

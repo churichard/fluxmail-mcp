@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EmailError } from '@fluxmail/core';
 import { accounts, openDb, type FluxmailDb } from '../src/storage/db.js';
@@ -48,6 +51,38 @@ describe('SendScheduler', () => {
 
     expect(send).toHaveBeenCalledWith('acct_1', { draftId: 'draft_1' });
     expect(getScheduledSend(db, row.id)).toMatchObject({ status: 'sent', sentMessageId: 'sent_1' });
+  });
+
+  it('restores and sends a pending row after the database is reopened', async () => {
+    scheduler.stop();
+    const dbPath = path.join(mkdtempSync(path.join(tmpdir(), 'fluxmail-scheduler-restart-')), 'fluxmail.db');
+    const first = openDb(dbPath);
+    first
+      .insert(accounts)
+      .values({
+        id: 'acct_restart',
+        provider: 'imap',
+        email: 'me@example.com',
+        status: 'active',
+        createdAt: Date.now(),
+      })
+      .run();
+    const row = createScheduledSend(first, {
+      accountId: 'acct_restart',
+      draftId: 'draft_restart',
+      sendAt: Date.now() - 1_000,
+    });
+    (first as unknown as { $client: { close(): void } }).$client.close();
+
+    const reopened = openDb(dbPath);
+    scheduler = new SendScheduler(reopened, { send, enforceQuota });
+    scheduler.start();
+    await settle();
+
+    expect(send).toHaveBeenCalledWith('acct_restart', { draftId: 'draft_restart' });
+    expect(getScheduledSend(reopened, row.id)).toMatchObject({ status: 'sent', sentMessageId: 'sent_1' });
+    scheduler.stop();
+    (reopened as unknown as { $client: { close(): void } }).$client.close();
   });
 
   it('fires a future schedule only when its time comes', async () => {
@@ -173,6 +208,25 @@ describe('SendScheduler', () => {
     await vi.advanceTimersByTimeAsync(31_000); // past the 30s first backoff
     expect(send).toHaveBeenCalledTimes(2);
     expect(getScheduledSend(db, row.id)).toMatchObject({ status: 'sent' });
+  });
+
+  it('does not retry a delivered message that returns a Sent-copy warning', async () => {
+    send.mockResolvedValue({
+      id: 'smtp_delivery',
+      threadId: 'thread_delivery',
+      warnings: ['Message delivered, but Fluxmail could not save the Sent copy.'],
+    });
+    const row = createScheduledSend(db, {
+      accountId: 'acct_1',
+      draftId: 'draft_1',
+      sendAt: Date.now() - 1_000,
+    });
+    scheduler.start();
+    await settle();
+
+    expect(getScheduledSend(db, row.id)).toMatchObject({ status: 'sent', sentMessageId: 'smtp_delivery' });
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it('arms no timer when nothing is pending', async () => {

@@ -2,10 +2,11 @@ import { randomBytes } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { EmailError } from '@fluxmail/core';
 import { AccountRegistry } from '../src/accounts/registry.js';
-import { openDb, oauthTokens } from '../src/storage/db.js';
+import { accountCredentials, oauthTokens, openDb } from '../src/storage/db.js';
 import { addMember } from '../src/storage/members.js';
 import { decryptString } from '../src/storage/crypto.js';
 import type { FluxmailConfig } from '../src/config.js';
@@ -26,6 +27,17 @@ function testConfig(): FluxmailConfig {
 }
 
 const tokens = { refresh_token: 'rt_secret', access_token: 'at', expiry_date: 123 };
+const imapCredentials = {
+  imap: { host: 'imap.example.com', port: 993, security: 'tls' as const, user: 'me', password: 'imap_secret' },
+  smtp: {
+    host: 'smtp.example.com',
+    port: 587,
+    security: 'starttls' as const,
+    user: 'me',
+    password: 'smtp_secret',
+  },
+  saveSent: true,
+};
 
 describe('AccountRegistry', () => {
   it('adds an account and stores tokens encrypted', () => {
@@ -37,9 +49,10 @@ describe('AccountRegistry', () => {
     expect(account.provider).toBe('gmail');
     expect(account.status).toBe('active');
 
-    const row = db.select().from(oauthTokens).get();
-    expect(row?.encryptedTokens).not.toContain('rt_secret');
-    expect(JSON.parse(decryptString(config.encryptionKey, row!.encryptedTokens)).refresh_token).toBe('rt_secret');
+    const row = db.select().from(accountCredentials).get();
+    expect(row?.encryptedCredentials).not.toContain('rt_secret');
+    expect(JSON.parse(decryptString(config.encryptionKey, row!.encryptedCredentials)).refresh_token).toBe('rt_secret');
+    expect(db.select().from(oauthTokens).get()?.encryptedTokens).toBe(row?.encryptedCredentials);
   });
 
   it('enforces the Personal-plan mailbox limit', () => {
@@ -54,6 +67,88 @@ describe('AccountRegistry', () => {
       expect((err as EmailError).code).toBe('entitlement_exceeded');
       expect((err as EmailError).message).toMatch(/Personal plan allows 3 connected mailboxes/);
     }
+  });
+
+  it('adds an IMAP account with encrypted credentials and IMAP capabilities', () => {
+    const config = testConfig();
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, config);
+    const account = registry.addImapAccount('me@example.com', imapCredentials);
+
+    expect(account).toMatchObject({
+      provider: 'imap',
+      capabilities: { labels: false, serverThreads: false, serverSearch: 'basic', snippets: false },
+    });
+    const row = db.select().from(accountCredentials).get();
+    expect(row?.encryptedCredentials).not.toContain('imap_secret');
+    expect(JSON.parse(decryptString(config.encryptionKey, row!.encryptedCredentials))).toEqual(imapCredentials);
+  });
+
+  it('updates IMAP folder configuration and evicts the cached provider', () => {
+    const config = testConfig();
+    const registry = new AccountRegistry(openDb(':memory:'), config);
+    const account = registry.addImapAccount('me@example.com', imapCredentials);
+    const firstProvider = registry.getProvider(account.id);
+    const updated = { ...imapCredentials, folderOverrides: { sent: 'Sent Items', drafts: 'Drafts' } };
+
+    registry.saveImapCredentials(account.id, updated);
+
+    expect(registry.loadImapCredentials(account.id)).toEqual(updated);
+    expect(registry.getProvider(account.id)).not.toBe(firstProvider);
+  });
+
+  it('reauthorizes an IMAP account without changing its id or owner', () => {
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const member = addMember(db, { name: 'Alice' });
+    const first = registry.addImapAccount('me@example.com', imapCredentials, 'Old Name', member.id);
+    const updated = {
+      ...imapCredentials,
+      imap: { ...imapCredentials.imap, password: 'new_imap_secret' },
+    };
+
+    const second = registry.addImapAccount('me@example.com', updated, 'New Name', undefined, first.id);
+
+    expect(second).toMatchObject({ id: first.id, memberId: member.id, displayName: 'New Name' });
+    expect(registry.loadImapCredentials(first.id)).toEqual(updated);
+  });
+
+  it('rejects reauthorization for a different IMAP mailbox', () => {
+    const registry = new AccountRegistry(openDb(':memory:'), testConfig());
+    const account = registry.addImapAccount('me@example.com', imapCredentials);
+    expect(() =>
+      registry.addImapAccount('other@example.com', imapCredentials, undefined, undefined, account.id),
+    ).toThrow(/does not match IMAP mailbox/);
+  });
+
+  it('migrates legacy Gmail OAuth rows into generic credentials', () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-credentials-'));
+    const dbPath = path.join(dataDir, 'fluxmail.db');
+    const sqlite = new Database(dbPath);
+    sqlite.exec(`
+      CREATE TABLE accounts (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        email TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE oauth_tokens (
+        account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+        encrypted_tokens TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO accounts VALUES ('acct_legacy', 'gmail', 'legacy@example.com', 'active', 1);
+      INSERT INTO oauth_tokens VALUES ('acct_legacy', 'encrypted-value', 2);
+    `);
+    sqlite.close();
+
+    const db = openDb(dbPath);
+    expect(db.select().from(accountCredentials).get()).toMatchObject({
+      accountId: 'acct_legacy',
+      encryptedCredentials: 'encrypted-value',
+      updatedAt: 2,
+    });
   });
 
   it('detects the mailbox limit before starting an OAuth flow', () => {
@@ -110,8 +205,8 @@ describe('AccountRegistry', () => {
     const db = openDb(':memory:');
     const sqlite = (db as unknown as { $client: { exec(sql: string): void } }).$client;
     sqlite.exec(`
-      CREATE TRIGGER reject_oauth_tokens
-      BEFORE INSERT ON oauth_tokens
+      CREATE TRIGGER reject_account_credentials
+      BEFORE INSERT ON account_credentials
       BEGIN
         SELECT RAISE(ABORT, 'token write failed');
       END;

@@ -1,6 +1,6 @@
 # Fluxmail
 
-Fluxmail is a self-hosted MCP server that connects AI agents to Gmail. It gives MCP clients a consistent set of tools to read, search, draft, send, and organize email.
+Fluxmail is a self-hosted MCP server that connects AI agents to Gmail and IMAP/SMTP mailboxes. It gives MCP clients a consistent set of tools to read, search, draft, send, and organize email.
 
 ## Install
 
@@ -21,6 +21,17 @@ fluxmail accounts add gmail
 ```
 
 The last command opens Google's consent flow in your browser.
+
+## Connect IMAP
+
+```bash
+fluxmail accounts add imap \
+  --email you@example.com \
+  --imap-host imap.example.com \
+  --smtp-host smtp.example.com
+```
+
+Fluxmail prompts for the password and stores it encrypted. Use `--imap-password-env <name>` for Docker or scripted setup.
 
 ## Connect an MCP client
 

@@ -3,20 +3,28 @@ import { eq } from 'drizzle-orm';
 import { OAuth2Client, type Credentials } from 'google-auth-library';
 import { EmailError, type Account, type EmailProvider, type Provider } from '@fluxmail/core';
 import { GmailProvider, GMAIL_CAPABILITIES } from '@fluxmail/provider-gmail';
+import { ImapProvider, IMAP_CAPABILITIES, type ImapCredentials } from '@fluxmail/provider-imap';
 import type { FluxmailConfig } from '../config.js';
-import { accounts, oauthTokens, type FluxmailDb } from '../storage/db.js';
+import { accountCredentials, accounts, oauthTokens, type FluxmailDb } from '../storage/db.js';
 import { decryptString, encryptString } from '../storage/crypto.js';
 import { assertAccountLimit, getEntitlements } from '../licensing/entitlements.js';
 import { getMember } from '../storage/members.js';
 import { requireGoogleConfig } from './googleAuth.js';
+import { SqliteImapStateStore } from '../storage/imapState.js';
 
 export class AccountRegistry {
-  private readonly providers = new Map<string, { provider: EmailProvider; encryptedTokens: string }>();
+  private readonly providers = new Map<string, { provider: EmailProvider; encryptedCredentials: string }>();
 
   constructor(
     private readonly db: FluxmailDb,
     private readonly config: FluxmailConfig,
   ) {}
+
+  private evictProvider(accountId: string): void {
+    const cached = this.providers.get(accountId)?.provider as EmailProvider & { close?: () => Promise<void> };
+    this.providers.delete(accountId);
+    void cached?.close?.();
+  }
 
   listAccounts(): Account[] {
     return this.db
@@ -29,7 +37,7 @@ export class AccountRegistry {
         email: row.email,
         ...(row.displayName ? { displayName: row.displayName } : {}),
         status: row.status as Account['status'],
-        capabilities: GMAIL_CAPABILITIES,
+        capabilities: row.provider === 'imap' ? IMAP_CAPABILITIES : GMAIL_CAPABILITIES,
         ...(row.memberId ? { memberId: row.memberId } : {}),
       }));
   }
@@ -62,7 +70,7 @@ export class AccountRegistry {
     if (all.length === 0) {
       throw new EmailError(
         'invalid_request',
-        'No email accounts are connected yet. Run "fluxmail accounts add gmail" to connect one.',
+        'No email accounts are connected yet. Run "fluxmail accounts add gmail" or "fluxmail accounts add imap".',
       );
     }
     if (all.length > 1) {
@@ -78,37 +86,47 @@ export class AccountRegistry {
 
   getProvider(accountId: string): EmailProvider {
     const account = this.getAccount(accountId);
-    if (account.provider !== 'gmail') {
-      throw new EmailError('unsupported_capability', `Provider "${account.provider}" is not supported yet`);
-    }
-    const tokenRow = this.loadTokenRow(accountId);
+    const credentialRow = this.loadCredentialRow(accountId);
     const cached = this.providers.get(accountId);
-    if (cached?.encryptedTokens === tokenRow.encryptedTokens) return cached.provider;
+    if (cached?.encryptedCredentials === credentialRow.encryptedCredentials) return cached.provider;
 
-    const stored = JSON.parse(decryptString(this.config.encryptionKey, tokenRow.encryptedTokens)) as Credentials;
-    const provider = this.buildGmailProvider(accountId, account.email, stored, account.displayName);
-    this.providers.set(accountId, { provider, encryptedTokens: tokenRow.encryptedTokens });
+    const stored = JSON.parse(decryptString(this.config.encryptionKey, credentialRow.encryptedCredentials)) as unknown;
+    const provider =
+      account.provider === 'gmail'
+        ? this.buildGmailProvider(accountId, account.email, stored as Credentials, account.displayName)
+        : account.provider === 'imap'
+          ? new ImapProvider({
+              accountId,
+              email: account.email,
+              ...(account.displayName ? { displayName: account.displayName } : {}),
+              credentials: stored as ImapCredentials,
+              store: new SqliteImapStateStore(this.db, accountId),
+            })
+          : undefined;
+    if (!provider)
+      throw new EmailError('unsupported_capability', `Provider "${account.provider}" is not supported yet`);
+    this.providers.set(accountId, { provider, encryptedCredentials: credentialRow.encryptedCredentials });
     return provider;
   }
 
-  private loadTokenRow(accountId: string): { encryptedTokens: string } {
-    const row = this.db.select().from(oauthTokens).where(eq(oauthTokens.accountId, accountId)).get();
+  private loadCredentialRow(accountId: string): { encryptedCredentials: string } {
+    const row = this.db.select().from(accountCredentials).where(eq(accountCredentials.accountId, accountId)).get();
     if (!row) throw new EmailError('auth_expired', `No stored credentials for account ${accountId}`);
     return row;
   }
 
   private loadTokens(accountId: string): Credentials {
-    const row = this.loadTokenRow(accountId);
-    return JSON.parse(decryptString(this.config.encryptionKey, row.encryptedTokens)) as Credentials;
+    const row = this.loadCredentialRow(accountId);
+    return JSON.parse(decryptString(this.config.encryptionKey, row.encryptedCredentials)) as Credentials;
   }
 
-  private writeTokens(db: Pick<FluxmailDb, 'insert'>, accountId: string, tokens: Credentials): string {
-    const encrypted = encryptString(this.config.encryptionKey, JSON.stringify(tokens));
-    db.insert(oauthTokens)
-      .values({ accountId, encryptedTokens: encrypted, updatedAt: Date.now() })
+  private writeCredentials(db: Pick<FluxmailDb, 'insert'>, accountId: string, credentials: unknown): string {
+    const encrypted = encryptString(this.config.encryptionKey, JSON.stringify(credentials));
+    db.insert(accountCredentials)
+      .values({ accountId, encryptedCredentials: encrypted, updatedAt: Date.now() })
       .onConflictDoUpdate({
-        target: oauthTokens.accountId,
-        set: { encryptedTokens: encrypted, updatedAt: Date.now() },
+        target: accountCredentials.accountId,
+        set: { encryptedCredentials: encrypted, updatedAt: Date.now() },
       })
       .run();
     return encrypted;
@@ -116,6 +134,19 @@ export class AccountRegistry {
 
   private saveTokens(accountId: string, tokens: Credentials): string {
     return this.writeTokens(this.db, accountId, tokens);
+  }
+
+  private writeTokens(db: Pick<FluxmailDb, 'insert'>, accountId: string, tokens: Credentials): string {
+    const encrypted = this.writeCredentials(db, accountId, tokens);
+    const updatedAt = Date.now();
+    db.insert(oauthTokens)
+      .values({ accountId, encryptedTokens: encrypted, updatedAt })
+      .onConflictDoUpdate({
+        target: oauthTokens.accountId,
+        set: { encryptedTokens: encrypted, updatedAt },
+      })
+      .run();
+    return encrypted;
   }
 
   private buildGmailProvider(
@@ -136,9 +167,9 @@ export class AccountRegistry {
     // google-auth-library refreshes access tokens transparently; persist them so
     // restarts don't need a refresh round-trip (and rotated refresh tokens survive).
     auth.on('tokens', (fresh) => {
-      const encryptedTokens = this.saveTokens(accountId, { ...this.loadTokens(accountId), ...fresh });
+      const encryptedCredentials = this.saveTokens(accountId, { ...this.loadTokens(accountId), ...fresh });
       const cached = this.providers.get(accountId);
-      if (cached?.provider === provider) cached.encryptedTokens = encryptedTokens;
+      if (cached?.provider === provider) cached.encryptedCredentials = encryptedCredentials;
     });
     return provider;
   }
@@ -158,7 +189,7 @@ export class AccountRegistry {
           .where(eq(accounts.id, duplicate.id))
           .run();
       });
-      this.providers.delete(duplicate.id);
+      this.evictProvider(duplicate.id);
       return this.getAccount(duplicate.id);
     }
 
@@ -182,6 +213,86 @@ export class AccountRegistry {
     return this.getAccount(id);
   }
 
+  async testImapCredentials(
+    email: string,
+    credentials: ImapCredentials,
+    displayName?: string,
+  ): Promise<Array<{ message: string }>> {
+    const provider = new ImapProvider({
+      accountId: 'imap_setup',
+      email,
+      ...(displayName ? { displayName } : {}),
+      credentials,
+      store: new SqliteImapStateStore(this.db, 'imap_setup'),
+    });
+    try {
+      await provider.testConnection();
+      return await provider.getFolderWarnings();
+    } finally {
+      await provider.close();
+    }
+  }
+
+  addImapAccount(
+    email: string,
+    credentials: ImapCredentials,
+    displayName?: string,
+    memberId?: string,
+    reauthorizeId?: string,
+  ): Account {
+    if (memberId) getMember(this.db, memberId);
+    const existingRows = this.db.select().from(accounts).all();
+    const duplicate = reauthorizeId
+      ? existingRows.find((row) => row.id === reauthorizeId)
+      : existingRows.find((row) => row.provider === 'imap' && row.email === email);
+    if (duplicate) {
+      if (duplicate.provider !== 'imap' || duplicate.email !== email) {
+        throw new EmailError('invalid_request', `Account ${duplicate.id} does not match IMAP mailbox ${email}.`);
+      }
+      this.db.transaction((tx) => {
+        this.writeCredentials(tx, duplicate.id, credentials);
+        tx.update(accounts)
+          .set({ status: 'active', ...(displayName ? { displayName } : {}) })
+          .where(eq(accounts.id, duplicate.id))
+          .run();
+      });
+      this.evictProvider(duplicate.id);
+      return this.getAccount(duplicate.id);
+    }
+
+    const id = `acct_${randomBytes(6).toString('hex')}`;
+    this.db.transaction((tx) => {
+      assertAccountLimit(tx.select().from(accounts).all().length, getEntitlements(tx));
+      tx.insert(accounts)
+        .values({
+          id,
+          provider: 'imap',
+          email,
+          displayName: displayName ?? null,
+          status: 'active',
+          createdAt: Date.now(),
+          memberId: memberId ?? null,
+        })
+        .run();
+      this.writeCredentials(tx, id, credentials);
+    });
+    return this.getAccount(id);
+  }
+
+  loadImapCredentials(accountId: string): ImapCredentials {
+    const account = this.getAccount(accountId);
+    if (account.provider !== 'imap')
+      throw new EmailError('invalid_request', `Account ${accountId} is not an IMAP account.`);
+    const row = this.loadCredentialRow(accountId);
+    return JSON.parse(decryptString(this.config.encryptionKey, row.encryptedCredentials)) as ImapCredentials;
+  }
+
+  saveImapCredentials(accountId: string, credentials: ImapCredentials): void {
+    this.loadImapCredentials(accountId);
+    this.writeCredentials(this.db, accountId, credentials);
+    this.evictProvider(accountId);
+  }
+
   /** Assign a mailbox to a member, or make it shared again (memberId = null). */
   assignAccountMember(accountId: string, memberId: string | null): Account {
     this.getAccount(accountId);
@@ -193,7 +304,7 @@ export class AccountRegistry {
   removeAccount(accountId: string): void {
     this.getAccount(accountId);
     this.db.delete(accounts).where(eq(accounts.id, accountId)).run();
-    this.providers.delete(accountId);
+    this.evictProvider(accountId);
   }
 
   markStatus(accountId: string, status: Account['status']): void {

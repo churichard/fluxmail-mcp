@@ -5,6 +5,7 @@ WORKDIR /app
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY packages/core/package.json packages/core/
 COPY packages/provider-gmail/package.json packages/provider-gmail/
+COPY packages/provider-imap/package.json packages/provider-imap/
 COPY packages/server/package.json packages/server/
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.base.json ./

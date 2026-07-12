@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { emitKeypressEvents } from 'node:readline';
 import { Command } from 'commander';
 import { serve } from '@hono/node-server';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -31,6 +32,90 @@ import { loadInstanceId, startLicenseRefresher } from './licensing/refresher.js'
 import { VERSION } from './version.js';
 import { countPending } from './storage/scheduledSends.js';
 import type { FluxmailDb } from './storage/db.js';
+import type { ImapCredentials, ImapSecurity } from '@fluxmail/provider-imap';
+
+interface AddAccountOptions {
+  reauthorize?: string;
+  member?: string;
+  email?: string;
+  displayName?: string;
+  imapHost?: string;
+  imapPort: string;
+  imapSecurity: string;
+  imapUser?: string;
+  imapPasswordEnv?: string;
+  smtpHost?: string;
+  smtpPort: string;
+  smtpSecurity: string;
+  smtpUser?: string;
+  smtpPasswordEnv?: string;
+  sentFolder?: string;
+  draftsFolder?: string;
+  trashFolder?: string;
+  archiveFolder?: string;
+  spamFolder?: string;
+  saveSent: boolean;
+}
+
+function connectionPort(value: string, option: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new EmailError('invalid_request', `${option} must be an integer between 1 and 65535.`);
+  }
+  return port;
+}
+
+function connectionSecurity(value: string, option: string): ImapSecurity {
+  if (value !== 'tls' && value !== 'starttls') {
+    throw new EmailError('invalid_request', `${option} must be "tls" or "starttls".`);
+  }
+  return value;
+}
+
+async function hiddenPrompt(label: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdin.setRawMode) {
+    throw new EmailError('invalid_request', `${label} must be supplied through a password environment variable.`);
+  }
+  emitKeypressEvents(process.stdin);
+  const wasRaw = process.stdin.isRaw;
+  const wasPaused = process.stdin.isPaused();
+  process.stdout.write(`${label}: `);
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  return new Promise<string>((resolve, reject) => {
+    let value = '';
+    const finish = (error?: Error) => {
+      process.stdin.off('keypress', onKeypress);
+      process.stdin.setRawMode(wasRaw);
+      if (wasPaused) process.stdin.pause();
+      process.stdout.write('\n');
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const onKeypress = (input: string, key: { name?: string; ctrl?: boolean }) => {
+      if (key.ctrl && key.name === 'c') return finish(new Error('Canceled'));
+      if (key.name === 'return' || key.name === 'enter') return finish();
+      if (key.name === 'backspace') {
+        if (value) {
+          value = value.slice(0, -1);
+          process.stdout.write('\b \b');
+        }
+        return;
+      }
+      if (key.ctrl || !input) return;
+      value += input;
+      process.stdout.write('*'.repeat([...input].length));
+    };
+    process.stdin.on('keypress', onKeypress);
+  });
+}
+
+async function accountSecret(envName: string | undefined, label: string): Promise<string> {
+  if (!envName) return hiddenPrompt(label);
+  const value = process.env[envName];
+  if (!value) throw new EmailError('invalid_request', `${envName} is not set or is empty.`);
+  return value;
+}
 
 function planLine(ent: Entitlements): string {
   const members = `${ent.maxMembers} member${ent.maxMembers === 1 ? '' : 's'}`;
@@ -64,7 +149,7 @@ program
       console.log(
         accounts.length
           ? `  Accounts:       ${accounts.map((a) => `${a.email} (${a.status})`).join(', ')}`
-          : '  Accounts:       none (run "fluxmail accounts add gmail")',
+          : '  Accounts:       none (run "fluxmail accounts add gmail" or "fluxmail accounts add imap")',
       );
       console.log(`  Plan:           ${planLine(getEntitlements(ctx.db))}`);
       warnLicense(ctx.db, console.log);
@@ -102,13 +187,31 @@ const accounts = program.command('accounts').description('Manage connected email
 
 accounts
   .command('add')
-  .argument('<provider>', 'Email provider (currently: gmail)')
+  .argument('<provider>', 'Email provider: gmail or imap')
   .option('--reauthorize <account-id>', 'Reconnect an existing account')
   .option('--member <member>', 'Member (id or email) who owns the new mailbox; omit for a shared mailbox')
-  .description('Connect an account via OAuth (opens a browser consent flow)')
-  .action(async (provider: string, opts: { reauthorize?: string; member?: string }) => {
-    if (provider !== 'gmail') {
-      console.error(`Provider "${provider}" is not supported yet. Available: gmail`);
+  .option('--email <address>', 'Mailbox address (required for IMAP)')
+  .option('--display-name <name>', 'Sender name for IMAP messages')
+  .option('--imap-host <host>', 'IMAP server hostname')
+  .option('--imap-port <port>', 'IMAP server port', '993')
+  .option('--imap-security <mode>', 'IMAP security: tls or starttls', 'tls')
+  .option('--imap-user <user>', 'IMAP username; defaults to the mailbox address')
+  .option('--imap-password-env <name>', 'Read the IMAP password from this environment variable')
+  .option('--smtp-host <host>', 'SMTP server hostname')
+  .option('--smtp-port <port>', 'SMTP server port', '587')
+  .option('--smtp-security <mode>', 'SMTP security: tls or starttls', 'starttls')
+  .option('--smtp-user <user>', 'SMTP username; defaults to the IMAP username')
+  .option('--smtp-password-env <name>', 'Read a separate SMTP password from this environment variable')
+  .option('--sent-folder <path>', 'Sent mailbox path')
+  .option('--drafts-folder <path>', 'Drafts mailbox path')
+  .option('--trash-folder <path>', 'Trash mailbox path')
+  .option('--archive-folder <path>', 'Archive mailbox path')
+  .option('--spam-folder <path>', 'Spam mailbox path')
+  .option('--no-save-sent', 'Do not append SMTP submissions to the Sent folder')
+  .description('Connect a Gmail or IMAP account')
+  .action(async (provider: string, opts: AddAccountOptions, command: Command) => {
+    if (provider !== 'gmail' && provider !== 'imap') {
+      console.error(`Provider "${provider}" is not supported. Available: gmail, imap`);
       process.exitCode = 1;
       return;
     }
@@ -128,6 +231,57 @@ accounts
         throw new EmailError('invalid_request', `Account ${existing.id} uses ${existing.provider}, not ${provider}.`);
       }
       if (!existing) ctx.registry.assertCanAddAccount();
+
+      if (provider === 'imap') {
+        const previousCredentials = existing ? ctx.registry.loadImapCredentials(existing.id) : undefined;
+        const email = opts.email?.trim();
+        if (!email || !email.includes('@'))
+          throw new EmailError('invalid_request', '--email must be a mailbox address.');
+        if (!opts.imapHost) throw new EmailError('invalid_request', '--imap-host is required for IMAP accounts.');
+        if (!opts.smtpHost) throw new EmailError('invalid_request', '--smtp-host is required for IMAP accounts.');
+        if (existing && existing.email !== email) {
+          throw new EmailError('invalid_request', `Account ${existing.id} belongs to ${existing.email}, not ${email}.`);
+        }
+        const imapPassword = await accountSecret(opts.imapPasswordEnv, 'IMAP password');
+        const smtpPassword = opts.smtpPasswordEnv
+          ? await accountSecret(opts.smtpPasswordEnv, 'SMTP password')
+          : imapPassword;
+        const imapUser = opts.imapUser ?? email;
+        const credentials: ImapCredentials = {
+          imap: {
+            host: opts.imapHost,
+            port: connectionPort(opts.imapPort, '--imap-port'),
+            security: connectionSecurity(opts.imapSecurity, '--imap-security'),
+            user: imapUser,
+            password: imapPassword,
+          },
+          smtp: {
+            host: opts.smtpHost,
+            port: connectionPort(opts.smtpPort, '--smtp-port'),
+            security: connectionSecurity(opts.smtpSecurity, '--smtp-security'),
+            user: opts.smtpUser ?? imapUser,
+            password: smtpPassword,
+          },
+          saveSent:
+            previousCredentials && command.getOptionValueSource('saveSent') === 'default'
+              ? previousCredentials.saveSent
+              : opts.saveSent,
+          folderOverrides: {
+            ...previousCredentials?.folderOverrides,
+            ...(opts.sentFolder ? { sent: opts.sentFolder } : {}),
+            ...(opts.draftsFolder ? { drafts: opts.draftsFolder } : {}),
+            ...(opts.trashFolder ? { trash: opts.trashFolder } : {}),
+            ...(opts.archiveFolder ? { archive: opts.archiveFolder } : {}),
+            ...(opts.spamFolder ? { spam: opts.spamFolder } : {}),
+          },
+        };
+        console.log('Checking IMAP and SMTP settings...');
+        const warnings = await ctx.registry.testImapCredentials(email, credentials, opts.displayName);
+        const account = ctx.registry.addImapAccount(email, credentials, opts.displayName, member?.id, opts.reauthorize);
+        console.log(`Connected ${account.email} (account id: ${account.id})`);
+        for (const warning of warnings) console.log(`Warning: ${warning.message}.`);
+        return;
+      }
 
       const account = await runLoopbackFlow(
         ctx.config,
@@ -165,6 +319,79 @@ accounts
   });
 
 accounts
+  .command('configure')
+  .argument('<accountId>')
+  .option('--sent-folder <path>', 'Sent path, or auto to clear the override')
+  .option('--drafts-folder <path>', 'Drafts path, or auto to clear the override')
+  .option('--trash-folder <path>', 'Trash path, or auto to clear the override')
+  .option('--archive-folder <path>', 'Archive path, or auto to clear the override')
+  .option('--spam-folder <path>', 'Spam path, or auto to clear the override')
+  .description('Set special folder paths for an IMAP account')
+  .action(
+    async (
+      accountId: string,
+      opts: {
+        sentFolder?: string;
+        draftsFolder?: string;
+        trashFolder?: string;
+        archiveFolder?: string;
+        spamFolder?: string;
+      },
+    ) => {
+      const ctx = createContext();
+      warnLicense(ctx.db);
+      try {
+        const changes = [
+          ['sent', opts.sentFolder],
+          ['drafts', opts.draftsFolder],
+          ['trash', opts.trashFolder],
+          ['archive', opts.archiveFolder],
+          ['spam', opts.spamFolder],
+        ] as const;
+        if (!changes.some(([, value]) => value !== undefined)) {
+          throw new EmailError('invalid_request', 'Pass at least one folder option.');
+        }
+        const credentials = ctx.registry.loadImapCredentials(accountId);
+        const provider = ctx.registry.getProvider(accountId) as ReturnType<typeof ctx.registry.getProvider> & {
+          close?: () => Promise<void>;
+        };
+        try {
+          const existingPaths = new Set((await provider.listFolders()).map((folder) => folder.id));
+          const overrides = { ...credentials.folderOverrides };
+          for (const [role, value] of changes) {
+            if (value === undefined) continue;
+            if (value === 'auto') delete overrides[role];
+            else {
+              if (!existingPaths.has(value)) {
+                throw new EmailError('not_found', `No selectable mailbox named "${value}".`);
+              }
+              overrides[role] = value;
+            }
+          }
+          credentials.folderOverrides = overrides;
+          ctx.registry.saveImapCredentials(accountId, credentials);
+          const checked = ctx.registry.getProvider(accountId) as typeof provider & {
+            getFolderWarnings?: () => Promise<Array<{ message: string }>>;
+          };
+          try {
+            console.log(`Updated folder settings for ${accountId}.`);
+            for (const warning of (await checked.getFolderWarnings?.()) ?? []) {
+              console.log(`Warning: ${warning.message}.`);
+            }
+          } finally {
+            await checked.close?.();
+          }
+        } finally {
+          await provider.close?.();
+        }
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    },
+  );
+
+accounts
   .command('list')
   .description('List connected accounts')
   .action(() => {
@@ -172,7 +399,7 @@ accounts
     warnLicense(ctx.db);
     const all = ctx.registry.listAccounts();
     if (!all.length) {
-      console.log('No accounts connected. Run "fluxmail accounts add gmail".');
+      console.log('No accounts connected. Run "fluxmail accounts add gmail" or "fluxmail accounts add imap".');
       return;
     }
     const memberNames = new Map(listMembers(ctx.db).map((m) => [m.id, m.name]));
