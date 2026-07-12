@@ -30,20 +30,8 @@ export {
   type Entitlements,
   type LicenseState,
 } from './licensing/entitlements.js';
-export {
-  addMember,
-  getMember,
-  findMember,
-  listMembers,
-  removeMember,
-  type MemberInfo,
-} from './storage/members.js';
-export {
-  verifyLease,
-  licensePublicKeys,
-  PINNED_LICENSE_PUBLIC_KEYS,
-  type LeasePayload,
-} from './licensing/lease.js';
+export { addMember, getMember, findMember, listMembers, removeMember, type MemberInfo } from './storage/members.js';
+export { verifyLease, licensePublicKeys, PINNED_LICENSE_PUBLIC_KEYS, type LeasePayload } from './licensing/lease.js';
 export {
   validateLicense,
   releaseLicense,
@@ -51,9 +39,4 @@ export {
   LICENSE_KEY_PATTERN,
   type ValidateOutcome,
 } from './licensing/client.js';
-export {
-  refreshLicense,
-  startLicenseRefresher,
-  loadInstanceId,
-  type RefreshResult,
-} from './licensing/refresher.js';
+export { refreshLicense, startLicenseRefresher, loadInstanceId, type RefreshResult } from './licensing/refresher.js';

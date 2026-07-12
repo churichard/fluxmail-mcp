@@ -22,14 +22,14 @@ released.
 
 Responses:
 
-| Status | Body | Client behavior |
-| --- | --- | --- |
-| 200 | `{ "lease": "<token>" }` | Verify the lease (below) and cache it. |
-| 400 | `{ "error": "invalid_request" }` | Surface a config error; keep any cached lease. |
-| 404 | `{ "error": "license_not_found" }` | Report a bad key; keep any cached lease. |
-| 403 | `{ "error": "license_inactive", "status": "canceled" \| "revoked" \| "expired" }` | Report it; degrade when the cached lease runs out. |
-| 409 | `{ "error": "license_in_use" }` | Report that the license is active on another instance; keep any cached lease. |
-| anything else | — | Treated as an outage: keep the cached lease, retry (hourly after an outage, otherwise daily). |
+| Status        | Body                                                                              | Client behavior                                                                               |
+| ------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 200           | `{ "lease": "<token>" }`                                                          | Verify the lease (below) and cache it.                                                        |
+| 400           | `{ "error": "invalid_request" }`                                                  | Surface a config error; keep any cached lease.                                                |
+| 404           | `{ "error": "license_not_found" }`                                                | Report a bad key; keep any cached lease.                                                      |
+| 403           | `{ "error": "license_inactive", "status": "canceled" \| "revoked" \| "expired" }` | Report it; degrade when the cached lease runs out.                                            |
+| 409           | `{ "error": "license_in_use" }`                                                   | Report that the license is active on another instance; keep any cached lease.                 |
+| anything else | —                                                                                 | Treated as an outage: keep the cached lease, retry (hourly after an outage, otherwise daily). |
 
 ### `POST /api/v1/licenses/deactivate`
 

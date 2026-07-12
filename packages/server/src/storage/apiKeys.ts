@@ -22,7 +22,9 @@ export function createApiKey(db: FluxmailDb, name: string, memberId?: string): {
   const id = `key_${randomBytes(8).toString('hex')}`;
   const key = `fmk_${randomBytes(24).toString('hex')}`;
   const createdAt = Date.now();
-  db.insert(apiKeys).values({ id, name, keyHash: hashKey(key), createdAt, memberId: memberId ?? null }).run();
+  db.insert(apiKeys)
+    .values({ id, name, keyHash: hashKey(key), createdAt, memberId: memberId ?? null })
+    .run();
   return { key, info: { id, name, createdAt, lastUsedAt: null, memberId: memberId ?? null } };
 }
 
@@ -36,7 +38,11 @@ export interface ApiKeyAuth {
  * honour `memberId`: a member-scoped key may only reach shared or owned mailboxes.
  */
 export function authenticateApiKey(db: FluxmailDb, key: string): ApiKeyAuth | null {
-  const row = db.select().from(apiKeys).where(eq(apiKeys.keyHash, hashKey(key))).get();
+  const row = db
+    .select()
+    .from(apiKeys)
+    .where(eq(apiKeys.keyHash, hashKey(key)))
+    .get();
   if (!row) return null;
   db.update(apiKeys).set({ lastUsedAt: Date.now() }).where(eq(apiKeys.id, row.id)).run();
   return { memberId: row.memberId };

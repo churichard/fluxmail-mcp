@@ -31,7 +31,7 @@ function toRow(r: Row): ScheduledSendRow {
 
 export function createScheduledSend(
   db: FluxmailDb,
-  input: { accountId: string; draftId: string; sendAt: number; subject?: string; toRecipients?: string }
+  input: { accountId: string; draftId: string; sendAt: number; subject?: string; toRecipients?: string },
 ): ScheduledSendRow {
   const id = `sch_${randomBytes(6).toString('hex')}`;
   const createdAt = Date.now();
@@ -43,14 +43,14 @@ export function createScheduledSend(
         and(
           eq(scheduledSends.accountId, input.accountId),
           eq(scheduledSends.draftId, input.draftId),
-          eq(scheduledSends.status, 'pending')
-        )
+          eq(scheduledSends.status, 'pending'),
+        ),
       )
       .get();
     if (existing) {
       throw new EmailError(
         'invalid_request',
-        `Draft ${input.draftId} is already scheduled to send at ${new Date(existing.sendAt).toISOString()}; cancel it first to reschedule`
+        `Draft ${input.draftId} is already scheduled to send at ${new Date(existing.sendAt).toISOString()}; cancel it first to reschedule`,
       );
     }
     const row = {
@@ -103,11 +103,7 @@ export function listActive(db: FluxmailDb): ScheduledSendRow[] {
     .map(toRow);
 }
 
-export function findPendingByDraft(
-  db: FluxmailDb,
-  accountId: string,
-  draftId: string
-): ScheduledSendRow | undefined {
+export function findPendingByDraft(db: FluxmailDb, accountId: string, draftId: string): ScheduledSendRow | undefined {
   const row = db
     .select()
     .from(scheduledSends)
@@ -115,8 +111,8 @@ export function findPendingByDraft(
       and(
         eq(scheduledSends.accountId, accountId),
         eq(scheduledSends.draftId, draftId),
-        eq(scheduledSends.status, 'pending')
-      )
+        eq(scheduledSends.status, 'pending'),
+      ),
     )
     .get();
   return row ? toRow(row) : undefined;
@@ -134,7 +130,7 @@ export function claimScheduledSend(
   db: FluxmailDb,
   id: string,
   now: number,
-  leaseMs: number
+  leaseMs: number,
 ): { row: ScheduledSendRow; token: string } | undefined {
   const token = randomBytes(12).toString('hex');
   const result = db
@@ -145,9 +141,9 @@ export function claimScheduledSend(
         eq(scheduledSends.id, id),
         or(
           eq(scheduledSends.status, 'pending'),
-          and(eq(scheduledSends.status, 'sending'), lte(scheduledSends.claimUntil, now))
-        )
-      )
+          and(eq(scheduledSends.status, 'sending'), lte(scheduledSends.claimUntil, now)),
+        ),
+      ),
     )
     .run();
   if (result.changes === 0) return undefined;
@@ -158,7 +154,7 @@ export function completeClaim(
   db: FluxmailDb,
   id: string,
   token: string,
-  result: { id: string; threadId: string }
+  result: { id: string; threadId: string },
 ): void {
   db.update(scheduledSends)
     .set({
@@ -202,8 +198,8 @@ export function listClaimable(db: FluxmailDb, now: number): ScheduledSendRow[] {
     .where(
       or(
         eq(scheduledSends.status, 'pending'),
-        and(eq(scheduledSends.status, 'sending'), lte(scheduledSends.claimUntil, now))
-      )
+        and(eq(scheduledSends.status, 'sending'), lte(scheduledSends.claimUntil, now)),
+      ),
     )
     .all()
     .map(toRow);

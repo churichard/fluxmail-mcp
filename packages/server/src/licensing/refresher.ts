@@ -160,7 +160,7 @@ export function startLicenseRefresher(deps: {
         `License validation: ${result.message}` +
           (result.cachedLeaseActive
             ? ' The cached lease keeps paid limits for now.'
-            : ' Running with Personal-plan limits.')
+            : ' Running with Personal-plan limits.'),
       );
       schedule(result.outcome === 'outage' ? OUTAGE_RETRY_MS : VALIDATE_INTERVAL_MS);
     }

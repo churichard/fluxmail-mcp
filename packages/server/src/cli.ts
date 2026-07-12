@@ -27,7 +27,7 @@ import {
   readLeaseRow,
   type Entitlements,
 } from './licensing/entitlements.js';
-import { loadInstanceId, refreshLicense, startLicenseRefresher } from './licensing/refresher.js';
+import { loadInstanceId, startLicenseRefresher } from './licensing/refresher.js';
 import { VERSION } from './version.js';
 import { countPending } from './storage/scheduledSends.js';
 import type { FluxmailDb } from './storage/db.js';
@@ -64,7 +64,7 @@ program
       console.log(
         accounts.length
           ? `  Accounts:       ${accounts.map((a) => `${a.email} (${a.status})`).join(', ')}`
-          : '  Accounts:       none (run "fluxmail accounts add gmail")'
+          : '  Accounts:       none (run "fluxmail accounts add gmail")',
       );
       console.log(`  Plan:           ${planLine(getEntitlements(ctx.db))}`);
       warnLicense(ctx.db, console.log);
@@ -118,17 +118,14 @@ accounts
       if (opts.reauthorize && opts.member) {
         throw new EmailError(
           'invalid_request',
-          '--member cannot be combined with --reauthorize; use "fluxmail accounts assign" to change ownership.'
+          '--member cannot be combined with --reauthorize; use "fluxmail accounts assign" to change ownership.',
         );
       }
       // Resolve before the OAuth flow so a typo fails fast.
       const member = opts.member ? findMember(ctx.db, opts.member) : undefined;
       const existing = opts.reauthorize ? ctx.registry.getAccount(opts.reauthorize) : undefined;
       if (existing && existing.provider !== provider) {
-        throw new EmailError(
-          'invalid_request',
-          `Account ${existing.id} uses ${existing.provider}, not ${provider}.`
-        );
+        throw new EmailError('invalid_request', `Account ${existing.id} uses ${existing.provider}, not ${provider}.`);
       }
       if (!existing) ctx.registry.assertCanAddAccount();
 
@@ -144,21 +141,21 @@ accounts
             throw new EmailError(
               'invalid_request',
               `Google authorized ${result.email}, but account ${existing.id} belongs to ${existing.email}. ` +
-                'Try again and choose the matching Google account.'
+                'Try again and choose the matching Google account.',
             );
           }
           return ctx.registry.addGmailAccount(result.email, result.tokens, result.displayName, member?.id);
-        }
+        },
       );
       console.log(
         `\nConnected ${account.email} (account id: ${account.id})` +
-          (member && account.memberId === member.id ? ` for member ${member.name}` : '')
+          (member && account.memberId === member.id ? ` for member ${member.name}` : ''),
       );
       if (member && account.memberId !== member.id) {
         // The mailbox was already connected; re-auth keeps its existing owner.
         console.log(
           `${account.email} was already connected, so its ownership is unchanged. ` +
-            `To assign it to ${member.name}, run "fluxmail accounts assign ${account.id} --member ${member.id}".`
+            `To assign it to ${member.name}, run "fluxmail accounts assign ${account.id} --member ${member.id}".`,
         );
       }
     } catch (err) {
@@ -211,11 +208,7 @@ accounts
       }
       const member = opts.member ? findMember(ctx.db, opts.member) : undefined;
       const account = ctx.registry.assignAccountMember(accountId, member?.id ?? null);
-      console.log(
-        member
-          ? `${account.email} is now owned by ${member.name}`
-          : `${account.email} is now shared`
-      );
+      console.log(member ? `${account.email} is now owned by ${member.name}` : `${account.email} is now shared`);
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -253,9 +246,7 @@ membersCmd
       return;
     }
     for (const m of all) {
-      console.log(
-        `${m.id}  ${m.name}  email=${m.email ?? '-'}  mailboxes=${m.accountCount}  keys=${m.apiKeyCount}`
-      );
+      console.log(`${m.id}  ${m.name}  email=${m.email ?? '-'}  mailboxes=${m.accountCount}  keys=${m.apiKeyCount}`);
     }
   });
 
@@ -269,7 +260,7 @@ membersCmd
     try {
       const { name, freedAccounts, revokedApiKeys } = removeMember(ctx.db, memberId);
       console.log(
-        `Removed ${name}. ${freedAccounts} mailbox(es) are now shared and ${revokedApiKeys} API key(s) revoked.`
+        `Removed ${name}. ${freedAccounts} mailbox(es) are now shared and ${revokedApiKeys} API key(s) revoked.`,
       );
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -291,7 +282,7 @@ apikey
       const member = opts.member ? findMember(ctx.db, opts.member) : undefined;
       const { key, info } = createApiKey(ctx.db, opts.name, member?.id);
       console.log(
-        `Created API key "${info.name}" (id: ${info.id})` + (member ? ` for member ${member.name}` : '') + '\n'
+        `Created API key "${info.name}" (id: ${info.id})` + (member ? ` for member ${member.name}` : '') + '\n',
       );
       console.log(`  ${key}\n`);
       console.log('Store it now; it cannot be shown again.');
@@ -317,7 +308,7 @@ apikey
       const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : 'never';
       const member = k.memberId ? (memberNames.get(k.memberId) ?? k.memberId) : '-';
       console.log(
-        `${k.id}  ${k.name}  member=${member}  created=${new Date(k.createdAt).toISOString()}  lastUsed=${lastUsed}`
+        `${k.id}  ${k.name}  member=${member}  created=${new Date(k.createdAt).toISOString()}  lastUsed=${lastUsed}`,
       );
     }
   });
@@ -341,7 +332,7 @@ license
   .action(async (key: string) => {
     if (!LICENSE_KEY_PATTERN.test(key)) {
       console.error(
-        'That does not look like a Fluxmail license key (expected "fluxmail_lic_" followed by 40 hex characters).'
+        'That does not look like a Fluxmail license key (expected "fluxmail_lic_" followed by 40 hex characters).',
       );
       process.exitCode = 1;
       return;
@@ -350,7 +341,7 @@ license
     const overridingKey = process.env.FLUXMAIL_LICENSE_KEY?.trim();
     if (overridingKey && overridingKey !== key) {
       console.error(
-        'FLUXMAIL_LICENSE_KEY is already set by the shell or a .env file, which takes precedence over stored settings. Remove it before activating a different key.'
+        'FLUXMAIL_LICENSE_KEY is already set by the shell or a .env file, which takes precedence over stored settings. Remove it before activating a different key.',
       );
       process.exitCode = 1;
       return;
@@ -365,11 +356,9 @@ license
       const { lease } = result;
       console.log(
         `License activated: ${lease.plan} plan, up to ${lease.maxAccounts} mailboxes and ` +
-          `${lease.maxMembers} member${lease.maxMembers === 1 ? '' : 's'}.`
+          `${lease.maxMembers} member${lease.maxMembers === 1 ? '' : 's'}.`,
       );
-      console.log(
-        `The lease is valid until ${lease.expiresAt} and renews automatically while the server runs.`
-      );
+      console.log(`The lease is valid until ${lease.expiresAt} and renews automatically while the server runs.`);
       return;
     }
     console.error(result.message);
@@ -398,7 +387,7 @@ license
         const expired = Date.parse(lease.expiresAt) <= Date.now();
         console.log(
           `Lease ${expired ? 'expired' : 'valid until'} ${lease.expiresAt}: ${lease.plan} plan, ` +
-            `up to ${lease.maxAccounts} mailboxes and ${lease.maxMembers} member${lease.maxMembers === 1 ? '' : 's'}.`
+            `up to ${lease.maxAccounts} mailboxes and ${lease.maxMembers} member${lease.maxMembers === 1 ? '' : 's'}.`,
         );
       } catch (err) {
         console.log(`Cached lease is not usable (${err instanceof Error ? err.message : String(err)}).`);
@@ -430,7 +419,7 @@ license
       console.log(
         released
           ? 'Released the license from this instance; it can now be activated elsewhere.'
-          : 'Could not reach the license server to release this instance; unused bindings are released automatically after a while.'
+          : 'Could not reach the license server to release this instance; unused bindings are released automatically after a while.',
       );
     }
     const removed = unsetStoredConfig(dataDir, 'FLUXMAIL_LICENSE_KEY');
@@ -438,7 +427,7 @@ license
     console.log(
       removed
         ? 'License removed; this instance is back to Personal-plan limits.'
-        : 'No stored license key; cleared any cached lease.'
+        : 'No stored license key; cleared any cached lease.',
     );
     if (envLicenseKey) {
       console.log('Note: FLUXMAIL_LICENSE_KEY is still set in the environment or a .env file.');

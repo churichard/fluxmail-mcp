@@ -5,17 +5,22 @@
   "description": "Self-hosted, source-available MCP server for Gmail, Outlook, and IMAP with a unified email API",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19"
   },
   "packageManager": "pnpm@11.5.2",
   "scripts": {
     "build": "pnpm -r build",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "dev": "pnpm --filter fluxmail dev",
     "publish:all": "node scripts/publish.mjs"
   },
   "devDependencies": {
+    "oxfmt": "^0.58.0",
+    "oxlint": "^1.73.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   }

@@ -90,7 +90,7 @@ function assertLimit(kind: 'mailbox' | 'member', current: number, max: number, e
     ent.licensed
       ? `Your ${ent.plan} plan allows ${max} ${noun} (currently ${current}). Upgrade your plan to add more.`
       : `The Personal plan allows ${max} ${noun} (currently ${current}). ` +
-        'A Fluxmail subscription unlocks more; see the README for details.'
+          'A Fluxmail subscription unlocks more; see the README for details.',
   );
 }
 
@@ -117,8 +117,7 @@ export function checkLicenseState(db: DbReader, now = new Date()): LicenseState 
   const entitlements = getEntitlements(db, now);
   const accountCount = db.select().from(accounts).all().length;
   const memberCount = db.select().from(members).all().length;
-  const overQuota =
-    accountCount > entitlements.maxAccounts || memberCount > entitlements.maxMembers;
+  const overQuota = accountCount > entitlements.maxAccounts || memberCount > entitlements.maxMembers;
 
   let warning: string | undefined;
   if (entitlements.inGrace) {
@@ -151,7 +150,7 @@ export function assertWithinQuota(db: DbReader, now = new Date()): LicenseState 
       `This instance has ${state.accountCount} connected mailboxes and ${state.memberCount} members, but the ` +
         `${ent.plan} plan allows ${ent.maxAccounts} and ${ent.maxMembers}. Renew the license ` +
         '("fluxmail license activate <key>") or remove mailboxes/members ' +
-        '("fluxmail accounts remove", "fluxmail members remove") to fit the plan.'
+        '("fluxmail accounts remove", "fluxmail members remove") to fit the plan.',
     );
   }
   return state;

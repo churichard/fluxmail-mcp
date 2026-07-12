@@ -16,7 +16,7 @@ export function requireGoogleConfig(config: FluxmailConfig): { clientId: string;
     throw new EmailError(
       'invalid_request',
       'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set. Create OAuth credentials in Google Cloud ' +
-        '(see README "Google setup") and set both environment variables.'
+        '(see README "Google setup") and set both environment variables.',
     );
   }
   return config.google;
@@ -39,7 +39,7 @@ export function buildAuthUrl(client: OAuth2Client, state: string): string {
 /** Verify the OAuth id_token and extract the authenticated Google identity. */
 export async function identityFromIdToken(
   client: OAuth2Client,
-  tokens: Credentials
+  tokens: Credentials,
 ): Promise<{ email: string; displayName?: string }> {
   const idToken = tokens.id_token;
   if (!idToken) throw new EmailError('provider_unavailable', 'Google did not return an id_token');
@@ -69,7 +69,7 @@ function oauthListenerError(err: Error, port: number): Error {
       'If Fluxmail is already running with Docker Compose, connect the account inside the container:\n\n' +
       '  docker compose exec fluxmail fluxmail accounts add gmail\n\n' +
       `Otherwise, stop the process using port ${port} and try again.`,
-    { cause: err }
+    { cause: err },
   );
 }
 
@@ -99,8 +99,8 @@ export async function exchangeCode(client: OAuth2Client, code: string): Promise<
   if (!tokens.refresh_token) {
     throw new EmailError(
       'invalid_request',
-      'Google did not return a refresh token. Remove Fluxmail from the account\'s third-party access ' +
-        '(myaccount.google.com/permissions) and try again.'
+      "Google did not return a refresh token. Remove Fluxmail from the account's third-party access " +
+        '(myaccount.google.com/permissions) and try again.',
     );
   }
   return { ...(await identityFromIdToken(client, tokens)), tokens };
@@ -113,7 +113,7 @@ export async function exchangeCode(client: OAuth2Client, code: string): Promise<
 export async function runLoopbackFlow<T = OAuthResult>(
   config: FluxmailConfig,
   onAuthUrl: (url: string) => void,
-  onAuthorized?: (result: OAuthResult) => T | Promise<T>
+  onAuthorized?: (result: OAuthResult) => T | Promise<T>,
 ): Promise<T> {
   const redirectUri = `http://localhost:${config.oauthPort}/oauth/callback`;
   const client = createOAuthClient(config, redirectUri);
@@ -155,18 +155,18 @@ export async function runLoopbackFlow<T = OAuthResult>(
         const result = await exchangeCode(client, code);
         const accepted = onAuthorized ? await onAuthorized(result) : (result as T);
         finish(() => resolve(accepted));
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(
-          callbackPage(`${result.email} is connected to Fluxmail`, 'The account is ready to use.')
-        );
+        res
+          .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+          .end(callbackPage(`${result.email} is connected to Fluxmail`, 'The account is ready to use.'));
       } catch (err) {
         finish(() => reject(err));
         const expected = err instanceof EmailError;
         const message = expected
           ? err.message
           : 'Fluxmail could not finish connecting this account. Check the terminal for details.';
-        res.writeHead(expected ? 400 : 500, { 'content-type': 'text/html; charset=utf-8' }).end(
-          callbackPage('Fluxmail could not connect this account', message)
-        );
+        res
+          .writeHead(expected ? 400 : 500, { 'content-type': 'text/html; charset=utf-8' })
+          .end(callbackPage('Fluxmail could not connect this account', message));
       }
     });
     server.on('error', (err) => reject(oauthListenerError(err, config.oauthPort)));

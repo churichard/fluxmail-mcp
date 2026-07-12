@@ -10,7 +10,7 @@ export const members = sqliteTable(
     email: text('email'),
     createdAt: integer('created_at').notNull(),
   },
-  (table) => [uniqueIndex('members_email_unique').on(table.email)]
+  (table) => [uniqueIndex('members_email_unique').on(table.email)],
 );
 
 export const accounts = sqliteTable(
@@ -25,7 +25,7 @@ export const accounts = sqliteTable(
     /** Owning member; NULL means the mailbox is shared across the instance. */
     memberId: text('member_id').references(() => members.id, { onDelete: 'set null' }),
   },
-  (table) => [uniqueIndex('accounts_provider_email_unique').on(table.provider, table.email)]
+  (table) => [uniqueIndex('accounts_provider_email_unique').on(table.provider, table.email)],
 );
 
 export const oauthTokens = sqliteTable('oauth_tokens', {
@@ -78,7 +78,7 @@ export const scheduledSends = sqliteTable(
     claimToken: text('claim_token'),
     claimUntil: integer('claim_until'),
   },
-  (table) => [index('scheduled_sends_pending_due').on(table.status, table.sendAt)]
+  (table) => [index('scheduled_sends_pending_due').on(table.status, table.sendAt)],
 );
 
 export type FluxmailDb = BetterSQLite3Database;
@@ -142,7 +142,7 @@ CREATE INDEX IF NOT EXISTS scheduled_sends_pending_due
 
 function tableColumns(sqlite: Database.Database, table: string): Set<string> {
   return new Set(
-    (sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name)
+    (sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name),
   );
 }
 

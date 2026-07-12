@@ -31,7 +31,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
   // qualify; member-scoped keys are confined to mailbox access over MCP.
   const adminAuthorized = (
     c: { req: { header(name: string): string | undefined; query(name: string): string | undefined } },
-    allowQueryKey = false
+    allowQueryKey = false,
   ): boolean => {
     if (config.authMode === 'none') return true;
     const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
@@ -56,8 +56,12 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     const scope = scopeForRequest(c);
     if (!scope) {
       return c.json(
-        { jsonrpc: '2.0', error: { code: -32001, message: 'Unauthorized: pass an API key as a Bearer token' }, id: null },
-        401
+        {
+          jsonrpc: '2.0',
+          error: { code: -32001, message: 'Unauthorized: pass an API key as a Bearer token' },
+          id: null,
+        },
+        401,
       );
     }
     let body: unknown;
@@ -82,8 +86,12 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
 
   const methodNotAllowed = (c: { json: (o: unknown, s: 405) => Response }) =>
     c.json(
-      { jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed: this server runs in stateless mode' }, id: null },
-      405
+      {
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Method not allowed: this server runs in stateless mode' },
+        id: null,
+      },
+      405,
     );
   app.get('/mcp', methodNotAllowed);
   app.delete('/mcp', methodNotAllowed);
@@ -121,7 +129,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
       const account = registry.addGmailAccount(email, tokens, displayName);
       return c.html(
         `<html><body style="font-family: sans-serif"><h2>${email} is connected to Fluxmail</h2>` +
-          `<p>Account id: <code>${account.id}</code>. You can close this tab.</p></body></html>`
+          `<p>Account id: <code>${account.id}</code>. You can close this tab.</p></body></html>`,
       );
     } catch (err) {
       // Surface why connecting failed (expired code, missing refresh token,

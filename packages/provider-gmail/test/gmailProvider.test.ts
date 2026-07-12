@@ -18,7 +18,7 @@ interface ProviderInternals {
 function providerWith(
   auth: OAuth2Client,
   sendAs: Array<{ isPrimary?: boolean; displayName?: string }>,
-  displayName?: string
+  displayName?: string,
 ): ProviderInternals {
   const provider = new GmailProvider({
     accountId: 'acct_1',
@@ -91,9 +91,7 @@ describe('GmailProvider list hydration', () => {
   });
 
   it('still surfaces non-404 hydration failures', async () => {
-    const getMessage = vi
-      .fn()
-      .mockRejectedValue(Object.assign(new Error('backend error'), { code: 400 }));
+    const getMessage = vi.fn().mockRejectedValue(Object.assign(new Error('backend error'), { code: 400 }));
     const provider = providerWithMessages(getMessage);
 
     await expect(provider.listMessages({})).rejects.toMatchObject({ code: 'invalid_request' });
@@ -244,29 +242,23 @@ describe('GmailProvider modify', () => {
     expect(batchModify).not.toHaveBeenCalled();
   });
 
-  it.each(['sent', 'drafts', 'starred'])(
-    'rejects moving to the non-destination system role "%s"',
-    async (role) => {
-      const { provider, batchModify } = providerWithBatchModify();
-      await expect(provider.modify(['m1'], { move: role })).rejects.toMatchObject({
-        code: 'invalid_request',
-      });
-      expect(batchModify).not.toHaveBeenCalled();
-    }
-  );
+  it.each(['sent', 'drafts', 'starred'])('rejects moving to the non-destination system role "%s"', async (role) => {
+    const { provider, batchModify } = providerWithBatchModify();
+    await expect(provider.modify(['m1'], { move: role })).rejects.toMatchObject({
+      code: 'invalid_request',
+    });
+    expect(batchModify).not.toHaveBeenCalled();
+  });
 
-  it.each(['sent', 'draft', 'drafts'])(
-    'rejects manually changing the immutable "%s" label',
-    async (label) => {
-      const { provider, batchModify } = providerWithBatchModify();
-      await expect(provider.modify(['m1'], { addLabels: [label] })).rejects.toMatchObject({
-        code: 'invalid_request',
-      });
-      expect(batchModify).not.toHaveBeenCalled();
-    }
-  );
+  it.each(['sent', 'draft', 'drafts'])('rejects manually changing the immutable "%s" label', async (label) => {
+    const { provider, batchModify } = providerWithBatchModify();
+    await expect(provider.modify(['m1'], { addLabels: [label] })).rejects.toMatchObject({
+      code: 'invalid_request',
+    });
+    expect(batchModify).not.toHaveBeenCalled();
+  });
 
-  it('chunks label modifications at Gmail\'s 1000-message limit', async () => {
+  it("chunks label modifications at Gmail's 1000-message limit", async () => {
     const { provider, batchModify } = providerWithBatchModify();
     const ids = Array.from({ length: 1001 }, (_, index) => `m${index}`);
 
@@ -309,7 +301,7 @@ describe('GmailProvider send', () => {
     const provider = providerWithSend(send);
 
     await expect(
-      provider.send({ to: [{ email: 'bob@example.com' }], subject: 'Hi', body: { text: 'hello' } })
+      provider.send({ to: [{ email: 'bob@example.com' }], subject: 'Hi', body: { text: 'hello' } }),
     ).rejects.toMatchObject({ code: 'provider_unavailable' });
     expect(send).toHaveBeenCalledTimes(1);
   });
@@ -322,7 +314,7 @@ describe('GmailProvider send', () => {
     const provider = providerWithSend(send);
 
     await expect(
-      provider.send({ to: [{ email: 'bob@example.com' }], subject: 'Hi', body: { text: 'hello' } })
+      provider.send({ to: [{ email: 'bob@example.com' }], subject: 'Hi', body: { text: 'hello' } }),
     ).resolves.toEqual({ id: 'sent_1', threadId: 'thread_1' });
     expect(send).toHaveBeenCalledTimes(2);
   });
@@ -332,7 +324,7 @@ describe('GmailProvider send', () => {
     const provider = providerWithSend(send);
 
     await expect(
-      provider.send({ bcc: [{ email: 'hidden@example.com' }], subject: 'Hi', body: { text: 'hello' } })
+      provider.send({ bcc: [{ email: 'hidden@example.com' }], subject: 'Hi', body: { text: 'hello' } }),
     ).resolves.toEqual({ id: 'sent_1', threadId: 'thread_1' });
     expect(send).toHaveBeenCalledTimes(1);
   });
@@ -364,7 +356,7 @@ describe('GmailProvider draft creation', () => {
     internals.gmail = { users: { drafts: { create } } };
 
     await expect(
-      provider.createDraft({ to: [{ email: 'bob@example.com' }], subject: 'Hi', body: { text: 'hello' } })
+      provider.createDraft({ to: [{ email: 'bob@example.com' }], subject: 'Hi', body: { text: 'hello' } }),
     ).rejects.toMatchObject({ code: 'provider_unavailable' });
     expect(create).toHaveBeenCalledTimes(1);
   });

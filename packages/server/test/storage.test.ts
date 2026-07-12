@@ -93,7 +93,8 @@ describe('account storage', () => {
       .run();
 
     expect(() =>
-      db.insert(accounts)
+      db
+        .insert(accounts)
         .values({
           id: 'acct_2',
           provider: 'gmail',
@@ -101,7 +102,7 @@ describe('account storage', () => {
           status: 'active',
           createdAt: Date.now(),
         })
-        .run()
+        .run(),
     ).toThrow();
   });
 });

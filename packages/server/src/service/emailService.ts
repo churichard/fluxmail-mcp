@@ -133,7 +133,7 @@ export class EmailService {
   constructor(
     private readonly registry: AccountRegistry,
     private readonly db: FluxmailDb,
-    private readonly scope: AccessScope = ADMIN_SCOPE
+    private readonly scope: AccessScope = ADMIN_SCOPE,
   ) {}
 
   /**
@@ -149,11 +149,7 @@ export class EmailService {
 
   /** Shared mailboxes and, for member keys, the member's own mailboxes. */
   private canAccess(account: Account): boolean {
-    return (
-      this.scope.memberId === null ||
-      account.memberId == null ||
-      account.memberId === this.scope.memberId
-    );
+    return this.scope.memberId === null || account.memberId == null || account.memberId === this.scope.memberId;
   }
 
   private accessibleAccounts(): Account[] {
@@ -184,7 +180,7 @@ export class EmailService {
         'invalid_request',
         `Multiple accounts are available; specify accountId. Available: ${accessible
           .map((a) => `${a.id} (${a.email})`)
-          .join(', ')}`
+          .join(', ')}`,
       );
     }
     return accessible[0]!.id;
@@ -193,7 +189,7 @@ export class EmailService {
   /** Route a call to the right provider, recording auth failures on the account. */
   private async withProvider<T>(
     accountId: string | undefined,
-    fn: (provider: ReturnType<AccountRegistry['getProvider']>, resolvedId: string, account: Account) => Promise<T>
+    fn: (provider: ReturnType<AccountRegistry['getProvider']>, resolvedId: string, account: Account) => Promise<T>,
   ): Promise<T> {
     const resolvedId = this.resolveScopedAccountId(accountId);
     const account = this.registry.getAccount(resolvedId);
@@ -234,25 +230,24 @@ export class EmailService {
               account.id,
               isEmailError(err)
                 ? { code: err.code, message: err.message }
-                : { code: 'internal', message: err instanceof Error ? err.message : String(err) }
+                : { code: 'internal', message: err instanceof Error ? err.message : String(err) },
             );
           }
-        })
+        }),
     );
 
     const admin = this.scope.memberId === null;
     const license = admin ? checkLicenseState(this.db) : undefined;
     return {
       // Re-read so statuses reflect any markStatus writes from the live checks above.
-      accounts: this.accessibleAccounts()
-        .map(({ id, provider, email, status, memberId }) => ({
-          id,
-          provider,
-          email,
-          status,
-          ...(memberId ? { memberId } : {}),
-          ...(errors.has(id) ? { error: errors.get(id)! } : {}),
-        })),
+      accounts: this.accessibleAccounts().map(({ id, provider, email, status, memberId }) => ({
+        id,
+        provider,
+        email,
+        status,
+        ...(memberId ? { memberId } : {}),
+        ...(errors.has(id) ? { error: errors.get(id)! } : {}),
+      })),
       ...(admin
         ? {
             members: { count: listMembers(this.db).length },
@@ -276,7 +271,7 @@ export class EmailService {
       if (state.overQuota) {
         throw new EmailError(
           'entitlement_exceeded',
-          'This Fluxmail instance is over its plan limits. Ask an administrator to renew the license or reduce usage.'
+          'This Fluxmail instance is over its plan limits. Ask an administrator to renew the license or reduce usage.',
         );
       }
       // License dates and renewal state are instance administration details.
@@ -295,8 +290,7 @@ export class EmailService {
     }
     const accessible = new Set(this.accessibleAccounts().map((account) => account.id));
     const active = listScheduledSends(this.db).filter(
-      (row) =>
-        accessible.has(row.accountId) && (row.status === 'pending' || row.status === 'sending')
+      (row) => accessible.has(row.accountId) && (row.status === 'pending' || row.status === 'sending'),
     );
     const nextSendAt = active.length ? Math.min(...active.map((row) => row.sendAt)) : undefined;
     return {
@@ -360,7 +354,7 @@ export class EmailService {
   async scheduleSend(
     accountId: string | undefined,
     input: SendInput | { draftId: string },
-    sendAtIso: string
+    sendAtIso: string,
   ): Promise<ScheduledSendInfo> {
     const sendAt = resolveSendAt(sendAtIso);
     const { draft, resolvedId } = await this.withProvider(accountId, async (p, id, account) => {
@@ -426,7 +420,7 @@ export class EmailService {
   private async resolveRecipients(
     p: ReturnType<AccountRegistry['getProvider']>,
     account: Account,
-    input: SendInput
+    input: SendInput,
   ): Promise<DraftInput> {
     const { replyAll, ...draft } = input;
     if (!draft.replyToMessageId || draft.to?.length) return draft;
@@ -474,7 +468,7 @@ export class EmailService {
   getAttachment(
     accountId: string | undefined,
     messageId: string,
-    attachmentId: string
+    attachmentId: string,
   ): Promise<{ meta: AttachmentMeta; content: Buffer }> {
     return this.withProvider(accountId, (p) => p.getAttachment(messageId, attachmentId));
   }

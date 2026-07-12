@@ -59,15 +59,13 @@ function parseAttachment(part: gmail_v1.Schema$MessagePart, path: number[]): Par
   const isAttachment =
     !!part.filename ||
     rawDisposition === 'attachment' ||
-    (!isMessageBody && !part.mimeType?.startsWith('multipart/') && (hasContent || !!contentId || rawDisposition === 'inline'));
+    (!isMessageBody &&
+      !part.mimeType?.startsWith('multipart/') &&
+      (hasContent || !!contentId || rawDisposition === 'inline'));
   if (!isAttachment) return undefined;
 
   const disposition: AttachmentMeta['disposition'] =
-    rawDisposition === 'inline' || rawDisposition === 'attachment'
-      ? rawDisposition
-      : contentId
-        ? 'inline'
-        : undefined;
+    rawDisposition === 'inline' || rawDisposition === 'attachment' ? rawDisposition : contentId ? 'inline' : undefined;
   const metadata = {
     ...(contentId ? { contentId } : {}),
     ...(disposition ? { disposition } : {}),
@@ -133,7 +131,7 @@ export function walkParts(payload: gmail_v1.Schema$MessagePart | undefined): Wal
 
 export function findAttachment(
   payload: gmail_v1.Schema$MessagePart | undefined,
-  attachmentId: string
+  attachmentId: string,
 ): ParsedAttachment | undefined {
   if (!payload) return undefined;
 
@@ -186,7 +184,7 @@ export function parseGmailMessage(msg: gmail_v1.Schema$Message, ctx: ParseContex
 
 export function parseGmailMessageWithParts(
   msg: gmail_v1.Schema$Message,
-  ctx: ParseContext
+  ctx: ParseContext,
 ): { message: Message; externalBodyParts: ExternalBodyParts } {
   const payload = msg.payload;
   const labelIds = msg.labelIds ?? [];
@@ -199,9 +197,7 @@ export function parseGmailMessageWithParts(
     threadId: msg.threadId ?? msg.id ?? '',
     accountId: ctx.accountId,
     folder: deriveFolder(labelIds, ctx.labelNames),
-    labels: labelIds
-      .filter((id) => !id.startsWith('CATEGORY_'))
-      .map((id) => ctx.labelNames.get(id) ?? id),
+    labels: labelIds.filter((id) => !id.startsWith('CATEGORY_')).map((id) => ctx.labelNames.get(id) ?? id),
     to: parseAddressList(headerValue(payload, 'To')),
     subject: headerValue(payload, 'Subject') ?? '',
     date: new Date(dateMs).toISOString(),

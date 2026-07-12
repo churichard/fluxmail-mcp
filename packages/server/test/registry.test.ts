@@ -63,7 +63,7 @@ describe('AccountRegistry', () => {
     registry.addGmailAccount('three@example.com', tokens);
 
     expect(() => registry.assertCanAddAccount()).toThrow(
-      /Personal plan allows 3 connected mailboxes.*--reauthorize <account-id>/
+      /Personal plan allows 3 connected mailboxes.*--reauthorize <account-id>/,
     );
   });
 
@@ -80,7 +80,7 @@ describe('AccountRegistry', () => {
   it('rejects an unknown member when adding a mailbox', () => {
     const registry = new AccountRegistry(openDb(':memory:'), testConfig());
     expect(() => registry.addGmailAccount('one@example.com', tokens, undefined, 'member_nope')).toThrow(
-      /No member with id/
+      /No member with id/,
     );
   });
 

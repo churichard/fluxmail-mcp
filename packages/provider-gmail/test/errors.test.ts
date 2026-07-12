@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  isRetryable,
-  isRetryableForNonIdempotentRequest,
-  toEmailError,
-} from '../src/errors.js';
+import { isRetryable, isRetryableForNonIdempotentRequest, toEmailError } from '../src/errors.js';
 
 function googleError(status: number, reason: string, message = reason): Error {
   return Object.assign(new Error(message), {
@@ -20,15 +16,12 @@ describe('Gmail error handling', () => {
     expect(isRetryableForNonIdempotentRequest(googleError(504, 'backendError'))).toBe(false);
   });
 
-  it.each(['rateLimitExceeded', 'userRateLimitExceeded'])(
-    'retries a 403 %s response',
-    (reason) => {
-      const error = googleError(403, reason);
-      expect(isRetryable(error)).toBe(true);
-      expect(isRetryableForNonIdempotentRequest(error)).toBe(true);
-      expect(toEmailError(error).code).toBe('rate_limited');
-    }
-  );
+  it.each(['rateLimitExceeded', 'userRateLimitExceeded'])('retries a 403 %s response', (reason) => {
+    const error = googleError(403, reason);
+    expect(isRetryable(error)).toBe(true);
+    expect(isRetryableForNonIdempotentRequest(error)).toBe(true);
+    expect(toEmailError(error).code).toBe('rate_limited');
+  });
 
   it('does not classify a domain policy denial as rate limiting', () => {
     const error = googleError(403, 'domainPolicy', 'Gmail apps are disabled');

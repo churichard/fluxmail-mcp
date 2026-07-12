@@ -20,10 +20,10 @@ describe('resolveAttachmentSavePath', () => {
   it('uses only the basename of an attachment filename for directory saves', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-attachment-'));
     expect(resolveAttachmentSavePath(directory, '../../.ssh/authorized_keys')).toBe(
-      path.join(directory, 'authorized_keys')
+      path.join(directory, 'authorized_keys'),
     );
     expect(resolveAttachmentSavePath(`${directory}${path.sep}`, '..\\..\\config.env')).toBe(
-      path.join(directory, 'config.env')
+      path.join(directory, 'config.env'),
     );
   });
 
@@ -37,9 +37,7 @@ describe('resolveAttachmentSavePath', () => {
     const target = path.join(directory, 'report.pdf');
     writeFileSync(target, 'existing');
 
-    expect(() => saveAttachment(target, 'ignored.pdf', Buffer.from('replacement'))).toThrow(
-      /Refusing to overwrite/
-    );
+    expect(() => saveAttachment(target, 'ignored.pdf', Buffer.from('replacement'))).toThrow(/Refusing to overwrite/);
     expect(readFileSync(target, 'utf8')).toBe('existing');
   });
 
@@ -48,9 +46,7 @@ describe('resolveAttachmentSavePath', () => {
     const target = path.join(directory, 'report.pdf');
     writeFileSync(target, 'existing');
 
-    expect(() => saveAttachment(directory, 'report.pdf', Buffer.from('replacement'))).toThrow(
-      /Refusing to overwrite/
-    );
+    expect(() => saveAttachment(directory, 'report.pdf', Buffer.from('replacement'))).toThrow(/Refusing to overwrite/);
     expect(readFileSync(target, 'utf8')).toBe('existing');
   });
 
@@ -60,16 +56,12 @@ describe('resolveAttachmentSavePath', () => {
     writeFileSync(victim, 'existing');
     symlinkSync(victim, path.join(directory, 'report.pdf'));
 
-    expect(() => saveAttachment(directory, 'report.pdf', Buffer.from('replacement'))).toThrow(
-      /Refusing to overwrite/
-    );
+    expect(() => saveAttachment(directory, 'report.pdf', Buffer.from('replacement'))).toThrow(/Refusing to overwrite/);
     expect(readFileSync(victim, 'utf8')).toBe('existing');
   });
 
   it('rejects relative save paths', () => {
-    expect(() => saveAttachment('downloads', 'report.pdf', Buffer.from('data'))).toThrow(
-      /must be absolute/
-    );
+    expect(() => saveAttachment('downloads', 'report.pdf', Buffer.from('data'))).toThrow(/must be absolute/);
   });
 });
 
@@ -79,9 +71,7 @@ describe('toSendRequest', () => {
   });
 
   it('rejects content fields combined with an existing draft id', () => {
-    expect(() => toSendRequest({ draftId: 'draft_1', bodyText: 'replacement' })).toThrow(
-      /update the draft/
-    );
+    expect(() => toSendRequest({ draftId: 'draft_1', bodyText: 'replacement' })).toThrow(/update the draft/);
   });
 
   it('rejects replyAll without a reply target', () => {
@@ -123,7 +113,7 @@ describe('scheduled send tools', () => {
     expect(scheduleSend).toHaveBeenCalledWith(
       undefined,
       expect.objectContaining({ subject: 'Later' }),
-      '2026-07-11T09:00:00-07:00'
+      '2026-07-11T09:00:00-07:00',
     );
     // sendAt must not leak into the composed message content.
     expect(scheduleSend.mock.calls[0]![1]).not.toHaveProperty('sendAt');
