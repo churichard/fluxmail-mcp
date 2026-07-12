@@ -34,21 +34,21 @@ See the [full quickstart](https://fluxmail.ai/docs/quickstart) for other clients
 
 ## Tools
 
-| Tool                                             | Description                                                                                 |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `list_accounts`                                  | Connected accounts with status and capabilities                                             |
-| `get_status`                                     | Server health: accounts, auth errors, plan limits                                           |
-| `list_folders`                                   | Folders/labels with roles (inbox, sent, drafts, …)                                          |
-| `list_emails`                                    | Metadata and snippets, filterable (folder, sender, unread, dates), paginated                |
-| `search_emails`                                  | Full-text search with the same filters                                                      |
-| `get_email` / `get_thread`                       | Full bodies and attachment metadata                                                         |
-| `create_draft` / `update_draft` / `delete_draft` | Draft management, including reply drafts                                                    |
-| `send_email`                                     | Send now or schedule with `sendAt`; supports drafts and threaded replies                    |
-| `list_scheduled_emails`                          | List pending and failed scheduled sends                                                     |
-| `cancel_scheduled_email`                         | Cancel a scheduled send before delivery                                                     |
-| `forward_email`                                  | Forward with quoted body and original attachments                                           |
-| `modify_emails`                                  | Batch: read/unread, star, archive, trash, move, labels, delete                              |
-| `download_attachment`                            | Inline base64 (up to 2 MB) or save to disk                                                  |
+| Tool                                             | Description                                                                  |
+| ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `list_accounts`                                  | Connected accounts with status and capabilities                              |
+| `get_status`                                     | Server health: accounts, auth errors, plan limits                            |
+| `list_folders`                                   | Folders/labels with roles (inbox, sent, drafts, …)                           |
+| `list_emails`                                    | Metadata and snippets, filterable (folder, sender, unread, dates), paginated |
+| `search_emails`                                  | Full-text search with the same filters                                       |
+| `get_email` / `get_thread`                       | Full bodies and attachment metadata                                          |
+| `create_draft` / `update_draft` / `delete_draft` | Draft management, including reply drafts                                     |
+| `send_email`                                     | Send now or schedule with `sendAt`; supports drafts and threaded replies     |
+| `list_scheduled_emails`                          | List pending and failed scheduled sends                                      |
+| `cancel_scheduled_email`                         | Cancel a scheduled send before delivery                                      |
+| `forward_email`                                  | Forward with quoted body and original attachments                            |
+| `modify_emails`                                  | Batch: read/unread, star, archive, trash, move, labels, delete               |
+| `download_attachment`                            | Inline base64 (up to 2 MB) or save to disk                                   |
 
 Fluxmail computes reply recipients on the server (Reply-To or From, plus the original To/Cc minus your own address for reply-all), so an agent can reply-all without assembling the recipient list itself.
 
