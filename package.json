@@ -16,6 +16,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "dev": "pnpm --filter fluxmail dev",
+    "version:bump": "pnpm --recursive --include-workspace-root version --no-git-tag-version",
     "publish:all": "node scripts/publish.mjs"
   },
   "devDependencies": {
