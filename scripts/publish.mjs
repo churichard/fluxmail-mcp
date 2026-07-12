@@ -3,11 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
-const packages = [
-  'packages/core',
-  'packages/provider-gmail',
-  'packages/server',
-];
+const packages = ['packages/core', 'packages/provider-gmail', 'packages/server'];
 
 const options = parseArgs(process.argv.slice(2));
 const manifests = await Promise.all(packages.map(readManifest));
@@ -21,10 +17,7 @@ if (!version || manifests.some((manifest) => manifest.version !== version)) {
   );
 }
 
-const dockerImage =
-  options.dockerImage ??
-  process.env.DOCKER_IMAGE ??
-  'ghcr.io/churichard/fluxmail-mcp';
+const dockerImage = options.dockerImage ?? process.env.DOCKER_IMAGE ?? 'ghcr.io/churichard/fluxmail-mcp';
 const npmTag = options.tag ?? process.env.NPM_TAG ?? 'latest';
 const dockerTags = [...new Set([version, npmTag])];
 const dockerPlatforms = process.env.DOCKER_PLATFORMS ?? 'linux/amd64,linux/arm64';
@@ -80,16 +73,7 @@ for (const manifest of manifests) {
     continue;
   }
 
-  await run('pnpm', [
-    '--filter',
-    manifest.name,
-    'publish',
-    '--access',
-    'public',
-    '--tag',
-    npmTag,
-    '--no-git-checks',
-  ]);
+  await run('pnpm', ['--filter', manifest.name, 'publish', '--access', 'public', '--tag', npmTag, '--no-git-checks']);
 }
 
 await run('docker', [...dockerBuildArgs, '--push', '.']);
@@ -116,11 +100,10 @@ async function ensureCleanWorkingTree() {
 }
 
 async function isPublished(manifest) {
-  const result = await run(
-    'npm',
-    ['view', `${manifest.name}@${manifest.version}`, 'version', '--json'],
-    { output: 'capture', allowFailure: true },
-  );
+  const result = await run('npm', ['view', `${manifest.name}@${manifest.version}`, 'version', '--json'], {
+    output: 'capture',
+    allowFailure: true,
+  });
 
   if (result.code === 0) {
     return JSON.parse(result.stdout) === manifest.version;
@@ -152,9 +135,7 @@ async function ensureNpmAuthentication() {
   });
 
   if (result.code !== 0) {
-    fail(
-      'npm authentication failed. Run `npm login`, then confirm it with `npm whoami` before publishing.',
-    );
+    fail('npm authentication failed. Run `npm login`, then confirm it with `npm whoami` before publishing.');
   }
 }
 

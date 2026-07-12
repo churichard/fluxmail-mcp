@@ -71,13 +71,11 @@ describe('Google OAuth callback listener', () => {
       await expect(runLoopbackFlow(config, vi.fn())).rejects.toThrow(
         new RegExp(
           `OAuth callback port ${address.port} is already in use[\\s\\S]*` +
-            'docker compose exec fluxmail fluxmail accounts add gmail'
-        )
+            'docker compose exec fluxmail fluxmail accounts add gmail',
+        ),
       );
     } finally {
-      await new Promise<void>((resolve, reject) =>
-        existingServer.close((err) => (err ? reject(err) : resolve()))
-      );
+      await new Promise<void>((resolve, reject) => existingServer.close((err) => (err ? reject(err) : resolve())));
     }
   });
 
@@ -86,9 +84,7 @@ describe('Google OAuth callback listener', () => {
     await new Promise<void>((resolve) => portProbe.listen(0, '127.0.0.1', resolve));
     const address = portProbe.address();
     if (!address || typeof address === 'string') throw new Error('Test server did not bind to a TCP port');
-    await new Promise<void>((resolve, reject) =>
-      portProbe.close((err) => (err ? reject(err) : resolve()))
-    );
+    await new Promise<void>((resolve, reject) => portProbe.close((err) => (err ? reject(err) : resolve())));
 
     const getToken = vi.spyOn(OAuth2Client.prototype, 'getToken').mockResolvedValue({
       tokens: { refresh_token: 'refresh-token', id_token: 'id-token' },
@@ -117,13 +113,13 @@ describe('Google OAuth callback listener', () => {
       const flow = runLoopbackFlow(config, provideAuthUrl, () => {
         throw new EmailError(
           'invalid_request',
-          'Google authorized other@example.com, but the stored account belongs to expected@example.com.'
+          'Google authorized other@example.com, but the stored account belongs to expected@example.com.',
         );
       });
       const flowError = expect(flow).rejects.toThrow(/Google authorized other@example.com/);
       const state = new URL(await authUrl).searchParams.get('state');
       const response = await fetch(
-        `http://127.0.0.1:${address.port}/oauth/callback?state=${state}&code=authorization-code`
+        `http://127.0.0.1:${address.port}/oauth/callback?state=${state}&code=authorization-code`,
       );
       const page = await response.text();
 

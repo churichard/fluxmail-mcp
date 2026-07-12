@@ -41,8 +41,7 @@ export const PINNED_LICENSE_PUBLIC_KEYS: readonly string[] = [
  * production instance trusts only the pinned keys.
  */
 export function licensePublicKeys(): string[] {
-  const extra =
-    process.env.NODE_ENV === 'production' ? undefined : process.env.FLUXMAIL_LICENSE_PUBLIC_KEYS;
+  const extra = process.env.NODE_ENV === 'production' ? undefined : process.env.FLUXMAIL_LICENSE_PUBLIC_KEYS;
   const fromEnv = extra
     ? extra
         .split(',')
@@ -73,7 +72,7 @@ export function verifyLease(
   token: string,
   publicKeys: readonly string[],
   now = new Date(),
-  opts: { allowExpired?: boolean } = {}
+  opts: { allowExpired?: boolean } = {},
 ): LeasePayload {
   const parts = token.split('.');
   if (parts.length !== 2 || !BASE64URL.test(parts[0]!) || !BASE64URL.test(parts[1]!)) {

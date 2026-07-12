@@ -95,10 +95,7 @@ describe('verifyLease', () => {
   });
 
   it('rejects an expired lease', () => {
-    const token = signLease(
-      keys.privateKey,
-      leasePayload({ expiresAt: new Date(Date.now() - 1000).toISOString() })
-    );
+    const token = signLease(keys.privateKey, leasePayload({ expiresAt: new Date(Date.now() - 1000).toISOString() }));
     expect(() => verifyLease(token, [keys.publicKeyB64])).toThrow(/expired/);
   });
 
@@ -109,7 +106,7 @@ describe('verifyLease', () => {
     // Signature failures still throw even with allowExpired.
     const rogue = makeKeypair();
     expect(() =>
-      verifyLease(signLease(rogue.privateKey, payload), [keys.publicKeyB64], new Date(), { allowExpired: true })
+      verifyLease(signLease(rogue.privateKey, payload), [keys.publicKeyB64], new Date(), { allowExpired: true }),
     ).toThrow(/signature/);
   });
 
@@ -148,9 +145,10 @@ describe('licensePublicKeys', () => {
   });
 });
 
-function fakeFetch(
-  handler: (url: string, init: RequestInit) => Response | Promise<Response>
-): { fetchImpl: typeof fetch; calls: Array<{ url: string; body: unknown }> } {
+function fakeFetch(handler: (url: string, init: RequestInit) => Response | Promise<Response>): {
+  fetchImpl: typeof fetch;
+  calls: Array<{ url: string; body: unknown }>;
+} {
   const calls: Array<{ url: string; body: unknown }> = [];
   const fetchImpl = (async (url: unknown, init?: RequestInit) => {
     calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
@@ -185,7 +183,7 @@ describe('validateLicense', () => {
     for (const [status, body, expected] of cases) {
       const { fetchImpl } = fakeFetch(() => Response.json(body, { status }));
       await expect(
-        validateLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl })
+        validateLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl }),
       ).resolves.toEqual(expected);
     }
   });
@@ -193,19 +191,29 @@ describe('validateLicense', () => {
   it('treats 500s, network failures, and bad payloads as outages', async () => {
     const server500 = fakeFetch(() => Response.json({ error: 'internal_error' }, { status: 500 }));
     await expect(
-      validateLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl: server500.fetchImpl })
+      validateLicense({
+        serverUrl: 'https://license.invalid',
+        licenseKey,
+        instanceId: 'inst-1',
+        fetchImpl: server500.fetchImpl,
+      }),
     ).resolves.toMatchObject({ kind: 'outage' });
 
     const network = (async () => {
       throw new Error('getaddrinfo ENOTFOUND');
     }) as unknown as typeof fetch;
     await expect(
-      validateLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl: network })
+      validateLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl: network }),
     ).resolves.toMatchObject({ kind: 'outage', detail: expect.stringContaining('ENOTFOUND') });
 
     const missingLease = fakeFetch(() => Response.json({ entitlements: {} }));
     await expect(
-      validateLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl: missingLease.fetchImpl })
+      validateLicense({
+        serverUrl: 'https://license.invalid',
+        licenseKey,
+        instanceId: 'inst-1',
+        fetchImpl: missingLease.fetchImpl,
+      }),
     ).resolves.toMatchObject({ kind: 'outage', detail: expect.stringContaining('lease') });
   });
 });
@@ -216,7 +224,7 @@ describe('releaseLicense', () => {
   it('posts to the deactivate endpoint and reports success', async () => {
     const { fetchImpl, calls } = fakeFetch(() => Response.json({ released: true }));
     await expect(
-      releaseLicense({ serverUrl: 'https://license.invalid/', licenseKey, instanceId: 'inst-1', fetchImpl })
+      releaseLicense({ serverUrl: 'https://license.invalid/', licenseKey, instanceId: 'inst-1', fetchImpl }),
     ).resolves.toBe(true);
     expect(calls[0]?.url).toBe('https://license.invalid/api/v1/licenses/deactivate');
     expect(calls[0]?.body).toEqual({ licenseKey, instanceId: 'inst-1' });
@@ -225,14 +233,14 @@ describe('releaseLicense', () => {
   it('returns false on server errors and network failures', async () => {
     const { fetchImpl } = fakeFetch(() => Response.json({}, { status: 500 }));
     await expect(
-      releaseLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl })
+      releaseLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl }),
     ).resolves.toBe(false);
 
     const network = (async () => {
       throw new Error('connect ECONNREFUSED');
     }) as unknown as typeof fetch;
     await expect(
-      releaseLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl: network })
+      releaseLicense({ serverUrl: 'https://license.invalid', licenseKey, instanceId: 'inst-1', fetchImpl: network }),
     ).resolves.toBe(false);
   });
 });
@@ -331,7 +339,7 @@ describe('refreshLicense', () => {
     const cached = signLease(keys.privateKey, leasePayload());
     saveLeaseToken(db, cached);
     const { fetchImpl } = fakeFetch(() =>
-      Response.json({ error: 'license_inactive', status: 'canceled' }, { status: 403 })
+      Response.json({ error: 'license_inactive', status: 'canceled' }, { status: 403 }),
     );
 
     const result = await refreshLicense(db, {
@@ -388,7 +396,7 @@ describe('refreshLicense', () => {
     saveLeaseToken(db, cached);
     const rogue = makeKeypair();
     const { fetchImpl } = fakeFetch(() =>
-      Response.json({ lease: signLease(rogue.privateKey, leasePayload({ maxAccounts: 999 })) })
+      Response.json({ lease: signLease(rogue.privateKey, leasePayload({ maxAccounts: 999 })) }),
     );
 
     const result = await refreshLicense(db, {
@@ -410,9 +418,7 @@ describe('activateLicense', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'fluxmail-activation-'));
     setStoredConfig(dir, 'FLUXMAIL_LICENSE_KEY', oldKey);
     const db = openDb(':memory:');
-    const { fetchImpl } = fakeFetch(() =>
-      Response.json({ error: 'license_not_found' }, { status: 404 })
-    );
+    const { fetchImpl } = fakeFetch(() => Response.json({ error: 'license_not_found' }, { status: 404 }));
 
     const result = await activateLicense(db, {
       licenseKey: newKey,

@@ -60,7 +60,10 @@ function parseEnvContent(content: string): Record<string, string> {
     if (!trimmed || trimmed.startsWith('#')) continue;
     const eq = trimmed.indexOf('=');
     if (eq === -1) continue;
-    const key = trimmed.slice(0, eq).trim().replace(/^export\s+/, '');
+    const key = trimmed
+      .slice(0, eq)
+      .trim()
+      .replace(/^export\s+/, '');
     if (key) out[key] = parseEnvValue(trimmed.slice(eq + 1).trim());
   }
   return out;
@@ -191,19 +194,13 @@ function readPublicUrl(port: number): string {
 function loadEncryptionKey(dataDir: string): Buffer {
   const fromEnv = process.env.FLUXMAIL_ENCRYPTION_KEY;
   if (fromEnv) {
-    return decodeEncryptionKey(
-      fromEnv,
-      'FLUXMAIL_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)'
-    );
+    return decodeEncryptionKey(fromEnv, 'FLUXMAIL_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)');
   }
   // Auto-generate on first run so getting started requires zero key management.
   const keyPath = path.join(dataDir, 'encryption.key');
   if (existsSync(keyPath)) {
     tryRestrictPermissions(keyPath);
-    const key = decodeEncryptionKey(
-      readFileSync(keyPath, 'utf8').trim(),
-      `Corrupt encryption key at ${keyPath}`
-    );
+    const key = decodeEncryptionKey(readFileSync(keyPath, 'utf8').trim(), `Corrupt encryption key at ${keyPath}`);
     return key;
   }
   const key = randomBytes(32);
@@ -226,9 +223,7 @@ export function loadConfig(): FluxmailConfig {
 
   const config: FluxmailConfig = {
     dataDir,
-    dbPath: process.env.FLUXMAIL_DB_PATH
-      ? expandHome(process.env.FLUXMAIL_DB_PATH)
-      : path.join(dataDir, 'fluxmail.db'),
+    dbPath: process.env.FLUXMAIL_DB_PATH ? expandHome(process.env.FLUXMAIL_DB_PATH) : path.join(dataDir, 'fluxmail.db'),
     encryptionKey: loadEncryptionKey(dataDir),
     port,
     publicUrl,

@@ -31,10 +31,7 @@ function epochSeconds(iso: string, field: 'after' | 'before'): number {
  * Translate the unified EmailQuery into Gmail's q= syntax + labelIds.
  * `resolveLabelId` maps a user folder name/id to a Gmail label id (null if unknown).
  */
-export function toGmailQuery(
-  q: EmailQuery,
-  resolveLabelId: (folder: string) => string | null
-): GmailQuery {
+export function toGmailQuery(q: EmailQuery, resolveLabelId: (folder: string) => string | null): GmailQuery {
   const parts: string[] = [];
   const out: GmailQuery = {};
 

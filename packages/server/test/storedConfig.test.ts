@@ -149,15 +149,12 @@ describe('stored config', () => {
     'ftp://mail.example.com',
     'https://mail.example.com?tenant=one',
     'https://user:password@mail.example.com',
-  ])(
-    'rejects an invalid public base URL: %s',
-    (publicUrl) => {
-      process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-      process.env.FLUXMAIL_PUBLIC_URL = publicUrl;
+  ])('rejects an invalid public base URL: %s', (publicUrl) => {
+    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
+    process.env.FLUXMAIL_PUBLIC_URL = publicUrl;
 
-      expect(() => loadConfig()).toThrow(/FLUXMAIL_PUBLIC_URL/);
-    }
-  );
+    expect(() => loadConfig()).toThrow(/FLUXMAIL_PUBLIC_URL/);
+  });
 
   it('masks short and long secret settings', () => {
     expect(maskStoredConfigValue('GOOGLE_CLIENT_SECRET', 'short')).toBe('********');

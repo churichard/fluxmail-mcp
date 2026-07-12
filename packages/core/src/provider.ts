@@ -44,8 +44,5 @@ export interface EmailProvider {
 
   modify(ids: string[], action: ModifyAction): Promise<void>;
 
-  getAttachment(
-    messageId: string,
-    attachmentId: string
-  ): Promise<{ meta: AttachmentMeta; content: Buffer }>;
+  getAttachment(messageId: string, attachmentId: string): Promise<{ meta: AttachmentMeta; content: Buffer }>;
 }

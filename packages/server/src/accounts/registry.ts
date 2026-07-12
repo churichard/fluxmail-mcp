@@ -11,14 +11,11 @@ import { getMember } from '../storage/members.js';
 import { requireGoogleConfig } from './googleAuth.js';
 
 export class AccountRegistry {
-  private readonly providers = new Map<
-    string,
-    { provider: EmailProvider; encryptedTokens: string }
-  >();
+  private readonly providers = new Map<string, { provider: EmailProvider; encryptedTokens: string }>();
 
   constructor(
     private readonly db: FluxmailDb,
-    private readonly config: FluxmailConfig
+    private readonly config: FluxmailConfig,
   ) {}
 
   listAccounts(): Account[] {
@@ -52,13 +49,9 @@ export class AccountRegistry {
       if (!(err instanceof EmailError)) throw err;
       const reconnect =
         existing.length === 1
-          ? `To reconnect ${existing[0]!.email}, rerun this command with ` +
-            `"--reauthorize ${existing[0]!.id}".`
+          ? `To reconnect ${existing[0]!.email}, rerun this command with ` + `"--reauthorize ${existing[0]!.id}".`
           : 'To reconnect an existing account, rerun this command with "--reauthorize <account-id>".';
-      throw new EmailError(
-        err.code,
-        `${err.message} ${reconnect}`
-      );
+      throw new EmailError(err.code, `${err.message} ${reconnect}`);
     }
   }
 
@@ -69,7 +62,7 @@ export class AccountRegistry {
     if (all.length === 0) {
       throw new EmailError(
         'invalid_request',
-        'No email accounts are connected yet. Run "fluxmail accounts add gmail" to connect one.'
+        'No email accounts are connected yet. Run "fluxmail accounts add gmail" to connect one.',
       );
     }
     if (all.length > 1) {
@@ -77,7 +70,7 @@ export class AccountRegistry {
         'invalid_request',
         `Multiple accounts are connected; specify accountId. Available: ${all
           .map((a) => `${a.id} (${a.email})`)
-          .join(', ')}`
+          .join(', ')}`,
       );
     }
     return all[0]!.id;
@@ -92,9 +85,7 @@ export class AccountRegistry {
     const cached = this.providers.get(accountId);
     if (cached?.encryptedTokens === tokenRow.encryptedTokens) return cached.provider;
 
-    const stored = JSON.parse(
-      decryptString(this.config.encryptionKey, tokenRow.encryptedTokens)
-    ) as Credentials;
+    const stored = JSON.parse(decryptString(this.config.encryptionKey, tokenRow.encryptedTokens)) as Credentials;
     const provider = this.buildGmailProvider(accountId, account.email, stored, account.displayName);
     this.providers.set(accountId, { provider, encryptedTokens: tokenRow.encryptedTokens });
     return provider;
@@ -111,14 +102,9 @@ export class AccountRegistry {
     return JSON.parse(decryptString(this.config.encryptionKey, row.encryptedTokens)) as Credentials;
   }
 
-  private writeTokens(
-    db: Pick<FluxmailDb, 'insert'>,
-    accountId: string,
-    tokens: Credentials
-  ): string {
+  private writeTokens(db: Pick<FluxmailDb, 'insert'>, accountId: string, tokens: Credentials): string {
     const encrypted = encryptString(this.config.encryptionKey, JSON.stringify(tokens));
-    db
-      .insert(oauthTokens)
+    db.insert(oauthTokens)
       .values({ accountId, encryptedTokens: encrypted, updatedAt: Date.now() })
       .onConflictDoUpdate({
         target: oauthTokens.accountId,
@@ -136,7 +122,7 @@ export class AccountRegistry {
     accountId: string,
     email: string,
     stored: Credentials,
-    displayName?: string
+    displayName?: string,
   ): EmailProvider {
     const { clientId, clientSecret } = requireGoogleConfig(this.config);
     const auth = new OAuth2Client({ clientId, clientSecret });

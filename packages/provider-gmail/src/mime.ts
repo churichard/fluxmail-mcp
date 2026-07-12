@@ -32,7 +32,7 @@ function decodeAttachmentContent(rawContent: string): Buffer {
 export async function buildRawMessage(
   draft: DraftInput,
   from: EmailAddress,
-  threading?: ThreadingHeaders
+  threading?: ThreadingHeaders,
 ): Promise<Buffer> {
   const options: Mail.Options = {
     from: { name: from.name ?? '', address: from.email },

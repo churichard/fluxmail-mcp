@@ -44,7 +44,7 @@ describe('scheduled sends storage', () => {
     const db = testDb();
     createScheduledSend(db, { accountId: 'acct_1', draftId: 'draft_1', sendAt: 1234 });
     expect(() => createScheduledSend(db, { accountId: 'acct_1', draftId: 'draft_1', sendAt: 5678 })).toThrow(
-      EmailError
+      EmailError,
     );
   });
 
@@ -66,7 +66,11 @@ describe('scheduled sends storage', () => {
 
     const listed = listScheduledSends(db);
     expect(listed.map((r) => r.id)).toEqual([early.id, late.id, done.id]);
-    expect(listPending(db).map((r) => r.id).sort()).toEqual([early.id, late.id].sort());
+    expect(
+      listPending(db)
+        .map((r) => r.id)
+        .sort(),
+    ).toEqual([early.id, late.id].sort());
     expect(listScheduledSends(db, 'acct_other')).toHaveLength(0);
   });
 

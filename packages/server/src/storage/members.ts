@@ -54,10 +54,7 @@ export function findMember(db: FluxmailDb, ref: string): MemberInfo {
   if (byId) return toInfo(db, byId);
   const byEmail = db.select().from(members).where(eq(members.email, ref.trim().toLowerCase())).get();
   if (byEmail) return toInfo(db, byEmail);
-  throw new EmailError(
-    'not_found',
-    `No member with id or email "${ref}". Run "fluxmail members list" to see members.`
-  );
+  throw new EmailError('not_found', `No member with id or email "${ref}". Run "fluxmail members list" to see members.`);
 }
 
 export function listMembers(db: FluxmailDb): MemberInfo[] {
@@ -75,7 +72,7 @@ export function listMembers(db: FluxmailDb): MemberInfo[] {
  */
 export function removeMember(
   db: FluxmailDb,
-  id: string
+  id: string,
 ): { name: string; freedAccounts: number; revokedApiKeys: number } {
   const info = getMember(db, id);
   db.transaction((tx) => {

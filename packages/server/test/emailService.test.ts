@@ -108,7 +108,7 @@ describe('EmailService.forward', () => {
             disposition: 'inline',
           }),
         ],
-      })
+      }),
     );
   });
 });
@@ -135,9 +135,29 @@ describe('EmailService account state', () => {
 });
 
 describe('EmailService member scope', () => {
-  const shared = { id: 'acct_shared', provider: 'gmail', email: 'shared@example.com', status: 'active', capabilities: {} };
-  const ann = { id: 'acct_ann', provider: 'gmail', email: 'ann@example.com', status: 'active', capabilities: {}, memberId: 'member_ann' };
-  const bob = { id: 'acct_bob', provider: 'gmail', email: 'bob@example.com', status: 'active', capabilities: {}, memberId: 'member_bob' };
+  const shared = {
+    id: 'acct_shared',
+    provider: 'gmail',
+    email: 'shared@example.com',
+    status: 'active',
+    capabilities: {},
+  };
+  const ann = {
+    id: 'acct_ann',
+    provider: 'gmail',
+    email: 'ann@example.com',
+    status: 'active',
+    capabilities: {},
+    memberId: 'member_ann',
+  };
+  const bob = {
+    id: 'acct_bob',
+    provider: 'gmail',
+    email: 'bob@example.com',
+    status: 'active',
+    capabilities: {},
+    memberId: 'member_bob',
+  };
 
   function scopedRegistry(all: Array<Record<string, unknown>>, listFolders = vi.fn().mockResolvedValue([])) {
     const byId = new Map(all.map((a) => [a.id as string, a]));
@@ -168,7 +188,7 @@ describe('EmailService member scope', () => {
     expect(service.listAccounts().map((a) => a.id)).toEqual(['acct_shared', 'acct_ann']);
   });
 
-  it('reaches shared and owned mailboxes but hides another member\'s as not_found', async () => {
+  it("reaches shared and owned mailboxes but hides another member's as not_found", async () => {
     const { registry, listFolders } = scopedRegistry([shared, ann, bob]);
     const service = new EmailService(registry as never, testDb()).withScope({ memberId: 'member_ann' });
 
@@ -205,16 +225,42 @@ describe('EmailService member scope', () => {
 
   it('isolates scheduled sends between members', () => {
     const db = openDb(':memory:');
-    db.insert(members).values([
-      { id: 'member_ann', name: 'Ann', email: null, createdAt: Date.now() },
-      { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
-    ]).run();
-    db.insert(accounts).values([
-      { id: 'acct_ann', provider: 'gmail', email: 'ann@example.com', status: 'active', createdAt: Date.now(), memberId: 'member_ann' },
-      { id: 'acct_bob', provider: 'gmail', email: 'bob@example.com', status: 'active', createdAt: Date.now(), memberId: 'member_bob' },
-    ]).run();
-    const annSchedule = createScheduledSend(db, { accountId: 'acct_ann', draftId: 'draft_ann', sendAt: Date.now() + 3_600_000 });
-    const bobSchedule = createScheduledSend(db, { accountId: 'acct_bob', draftId: 'draft_bob', sendAt: Date.now() + 3_600_000 });
+    db.insert(members)
+      .values([
+        { id: 'member_ann', name: 'Ann', email: null, createdAt: Date.now() },
+        { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
+      ])
+      .run();
+    db.insert(accounts)
+      .values([
+        {
+          id: 'acct_ann',
+          provider: 'gmail',
+          email: 'ann@example.com',
+          status: 'active',
+          createdAt: Date.now(),
+          memberId: 'member_ann',
+        },
+        {
+          id: 'acct_bob',
+          provider: 'gmail',
+          email: 'bob@example.com',
+          status: 'active',
+          createdAt: Date.now(),
+          memberId: 'member_bob',
+        },
+      ])
+      .run();
+    const annSchedule = createScheduledSend(db, {
+      accountId: 'acct_ann',
+      draftId: 'draft_ann',
+      sendAt: Date.now() + 3_600_000,
+    });
+    const bobSchedule = createScheduledSend(db, {
+      accountId: 'acct_bob',
+      draftId: 'draft_bob',
+      sendAt: Date.now() + 3_600_000,
+    });
 
     const { registry } = scopedRegistry([ann, bob]);
     const service = new EmailService(registry as never, db).withScope({ memberId: 'member_ann' });
@@ -226,14 +272,32 @@ describe('EmailService member scope', () => {
 
   it('keeps instance-wide status details out of member responses', async () => {
     const db = openDb(':memory:');
-    db.insert(members).values([
-      { id: 'member_ann', name: 'Ann', email: null, createdAt: Date.now() },
-      { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
-    ]).run();
-    db.insert(accounts).values([
-      { id: 'acct_ann', provider: 'gmail', email: 'ann@example.com', status: 'active', createdAt: Date.now(), memberId: 'member_ann' },
-      { id: 'acct_bob', provider: 'gmail', email: 'bob@example.com', status: 'active', createdAt: Date.now(), memberId: 'member_bob' },
-    ]).run();
+    db.insert(members)
+      .values([
+        { id: 'member_ann', name: 'Ann', email: null, createdAt: Date.now() },
+        { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
+      ])
+      .run();
+    db.insert(accounts)
+      .values([
+        {
+          id: 'acct_ann',
+          provider: 'gmail',
+          email: 'ann@example.com',
+          status: 'active',
+          createdAt: Date.now(),
+          memberId: 'member_ann',
+        },
+        {
+          id: 'acct_bob',
+          provider: 'gmail',
+          email: 'bob@example.com',
+          status: 'active',
+          createdAt: Date.now(),
+          memberId: 'member_bob',
+        },
+      ])
+      .run();
     const annSendAt = Date.now() + 7_200_000;
     createScheduledSend(db, { accountId: 'acct_ann', draftId: 'draft_ann', sendAt: annSendAt });
     createScheduledSend(db, { accountId: 'acct_bob', draftId: 'draft_bob', sendAt: Date.now() + 3_600_000 });
@@ -251,24 +315,23 @@ describe('EmailService member scope', () => {
 
   it('does not expose instance usage in member quota errors', () => {
     const db = openDb(':memory:');
-    db.insert(members).values([
-      { id: 'member_ann', name: 'Ann', email: null, createdAt: Date.now() },
-      { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
-    ]).run();
+    db.insert(members)
+      .values([
+        { id: 'member_ann', name: 'Ann', email: null, createdAt: Date.now() },
+        { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
+      ])
+      .run();
     const { registry } = scopedRegistry([ann, bob]);
     const service = new EmailService(registry as never, db).withScope({ memberId: 'member_ann' });
 
     expect(() => service.enforceQuota()).toThrow(
-      'This Fluxmail instance is over its plan limits. Ask an administrator to renew the license or reduce usage.'
+      'This Fluxmail instance is over its plan limits. Ask an administrator to renew the license or reduce usage.',
     );
   });
 });
 
 describe('EmailService.status', () => {
-  function statusService(
-    initialStatus: 'active' | 'auth_error',
-    testConnection: () => Promise<void>
-  ) {
+  function statusService(initialStatus: 'active' | 'auth_error', testConnection: () => Promise<void>) {
     const account = {
       id: 'acct_1',
       provider: 'gmail' as const,
@@ -394,7 +457,7 @@ describe('EmailService scheduling', () => {
     const info = await service.scheduleSend(
       undefined,
       { to: [{ email: 'bob@example.com' }], subject: 'Later', body: { text: 'hi' } },
-      soon
+      soon,
     );
 
     expect(createDraft).toHaveBeenCalled();
@@ -416,7 +479,7 @@ describe('EmailService scheduling', () => {
     const { service } = schedulingService({ createDraft });
 
     await expect(
-      service.scheduleSend(undefined, { subject: 'Nobody', body: { text: 'hi' } }, soon)
+      service.scheduleSend(undefined, { subject: 'Nobody', body: { text: 'hi' } }, soon),
     ).rejects.toMatchObject({ code: 'invalid_request' });
 
     expect(createDraft).not.toHaveBeenCalled();
@@ -431,11 +494,11 @@ describe('EmailService scheduling', () => {
     await service.scheduleSend(
       undefined,
       { replyToMessageId: original.id, subject: 'Re: Hello', body: { text: 'hi' } },
-      soon
+      soon,
     );
 
     expect(createDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ to: [{ email: 'ann@example.com', name: 'Ann' }] })
+      expect.objectContaining({ to: [{ email: 'ann@example.com', name: 'Ann' }] }),
     );
   });
 

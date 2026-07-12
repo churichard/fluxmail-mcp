@@ -257,7 +257,7 @@ describe('parseGmailMessage', () => {
   it('omits attachment state when metadata responses have no MIME payload', () => {
     const m = parseGmailMessage(
       { ...multipartMessage, payload: { headers: multipartMessage.payload?.headers } },
-      { ...ctx, includeBody: false, includeAttachments: false }
+      { ...ctx, includeBody: false, includeAttachments: false },
     );
     expect(m.attachments).toBeUndefined();
   });

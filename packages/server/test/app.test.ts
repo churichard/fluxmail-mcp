@@ -89,7 +89,7 @@ describe('HTTP app', () => {
 
   it('reports why the OAuth callback failed instead of a blank 500', async () => {
     vi.mocked(exchangeCode).mockRejectedValue(
-      new EmailError('invalid_request', 'Google did not return a refresh token.')
+      new EmailError('invalid_request', 'Google did not return a refresh token.'),
     );
     const app = createApp(appDeps('none'));
 

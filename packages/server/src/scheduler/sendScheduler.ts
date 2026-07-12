@@ -44,7 +44,7 @@ export class SendScheduler {
 
   constructor(
     private readonly db: FluxmailDb,
-    private readonly service: ScheduledSender
+    private readonly service: ScheduledSender,
   ) {}
 
   /** Starts the loop; immediately fires anything past due (catch-up after downtime). */
@@ -118,9 +118,7 @@ export class SendScheduler {
           this.db,
           row.id,
           claim.token,
-          err.code === 'not_found'
-            ? 'Draft no longer exists: it was sent or deleted outside Fluxmail'
-            : message
+          err.code === 'not_found' ? 'Draft no longer exists: it was sent or deleted outside Fluxmail' : message,
         );
         this.backoff.delete(row.id);
       } else {
@@ -141,12 +139,8 @@ export class SendScheduler {
     const pending = listActive(this.db);
     if (!pending.length) return;
     const next = Math.max(
-      Math.min(
-        ...pending.map((r) =>
-          Math.max(r.sendAt, r.claimUntil ?? 0, this.backoff.get(r.id)?.notBefore ?? 0)
-        )
-      ),
-      this.quotaHoldUntil
+      Math.min(...pending.map((r) => Math.max(r.sendAt, r.claimUntil ?? 0, this.backoff.get(r.id)?.notBefore ?? 0))),
+      this.quotaHoldUntil,
     );
     const delay = Math.min(Math.max(next - Date.now(), 0), MAX_ARM_MS);
     this.timer = setTimeout(() => void this.tick(), delay);

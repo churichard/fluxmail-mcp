@@ -16,7 +16,7 @@ describe('toGmailQuery', () => {
     });
   });
 
-  it('uses Gmail\'s archive search operator', () => {
+  it("uses Gmail's archive search operator", () => {
     const q = toGmailQuery({ folder: 'archive' }, noLabels);
     expect(q.q).toBe('in:archive');
     expect(q.labelIds).toBeUndefined();
@@ -42,7 +42,7 @@ describe('toGmailQuery', () => {
         hasAttachment: true,
         after: '2026-01-01T00:00:00.000Z',
       },
-      noLabels
+      noLabels,
     );
     expect(q.q).toContain('quarterly report');
     expect(q.q).toContain('from:ann@example.com');

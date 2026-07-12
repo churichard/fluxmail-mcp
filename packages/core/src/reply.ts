@@ -23,11 +23,7 @@ function dedupe(addrs: EmailAddress[]): EmailAddress[] {
  * reply targets Reply-To (falling back to From); reply-all additionally includes the
  * original To/Cc, minus the replying account's own address.
  */
-export function computeReplyRecipients(
-  original: Message,
-  ownAddress: string,
-  replyAll: boolean
-): ReplyRecipients {
+export function computeReplyRecipients(original: Message, ownAddress: string, replyAll: boolean): ReplyRecipients {
   const self: EmailAddress = { email: ownAddress };
   const replyTarget = original.replyTo?.length ? original.replyTo : original.from ? [original.from] : [];
 
@@ -38,9 +34,7 @@ export function computeReplyRecipients(
   }
 
   const to = dedupe([...replyTarget, ...original.to]).filter((a) => !sameAddress(a, self));
-  const cc = dedupe(original.cc ?? []).filter(
-    (a) => !sameAddress(a, self) && !to.some((b) => sameAddress(a, b))
-  );
+  const cc = dedupe(original.cc ?? []).filter((a) => !sameAddress(a, self) && !to.some((b) => sameAddress(a, b)));
   return { to: to.length ? to : [self], cc };
 }
 

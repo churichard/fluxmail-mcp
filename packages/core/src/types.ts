@@ -27,15 +27,7 @@ export interface EmailAddress {
   email: string;
 }
 
-export type FolderRole =
-  | 'inbox'
-  | 'sent'
-  | 'drafts'
-  | 'trash'
-  | 'spam'
-  | 'archive'
-  | 'starred'
-  | 'all';
+export type FolderRole = 'inbox' | 'sent' | 'drafts' | 'trash' | 'spam' | 'archive' | 'starred' | 'all';
 
 export interface Folder {
   id: string;

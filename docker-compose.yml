@@ -3,9 +3,9 @@ services:
     container_name: fluxmail
     image: ghcr.io/churichard/fluxmail-mcp:latest
     ports:
-      - "8977:8977"
+      - '8977:8977'
       # Loopback OAuth callback used by `fluxmail accounts add gmail` (docker compose exec).
-      - "127.0.0.1:8976:8976"
+      - '127.0.0.1:8976:8976'
     # Settings (Google credentials, FLUXMAIL_PUBLIC_URL, license key, ...) live in
     # a .env file next to this file; see .env.example in the repo.
     env_file:

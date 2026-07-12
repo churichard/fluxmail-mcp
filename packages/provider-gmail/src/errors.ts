@@ -83,7 +83,7 @@ export function toEmailError(err: unknown): EmailError {
 export async function withRetry<T>(
   fn: () => Promise<T>,
   maxRetries = 3,
-  retryable: (err: unknown) => boolean = isRetryable
+  retryable: (err: unknown) => boolean = isRetryable,
 ): Promise<T> {
   let attempt = 0;
   for (;;) {

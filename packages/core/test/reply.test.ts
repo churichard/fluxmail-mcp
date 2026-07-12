@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  computeReplyRecipients,
-  forwardSubject,
-  replySubject,
-  type Message,
-} from '../src/index.js';
+import { computeReplyRecipients, forwardSubject, replySubject, type Message } from '../src/index.js';
 
 function msg(overrides: Partial<Message>): Message {
   return {

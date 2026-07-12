@@ -27,12 +27,14 @@ const accountIdParam = z
 
 const idParam = z.string().min(1);
 
-const addressList = z
-  .array(z.string().min(1))
-  .describe('Recipients, each "Name <a@x.com>" or "a@x.com"');
+const addressList = z.array(z.string().min(1)).describe('Recipients, each "Name <a@x.com>" or "a@x.com"');
 
 const queryShape = {
-  folder: z.string().min(1).optional().describe('Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name'),
+  folder: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name'),
   text: z.string().optional().describe('Full-text search terms'),
   from: z.string().optional(),
   to: z.string().optional(),
@@ -42,7 +44,10 @@ const queryShape = {
   hasAttachment: z.boolean().optional(),
   after: z.string().min(1).optional().describe('ISO date, inclusive'),
   before: z.string().min(1).optional().describe('ISO date, exclusive'),
-  rawProviderQuery: z.string().optional().describe('Escape hatch passed verbatim to the provider (e.g. Gmail q= syntax)'),
+  rawProviderQuery: z
+    .string()
+    .optional()
+    .describe('Escape hatch passed verbatim to the provider (e.g. Gmail q= syntax)'),
   pageSize: z.number().int().min(1).max(100).optional().describe('Defaults to 25'),
   pageToken: z.string().min(1).optional().describe('nextPageToken from a previous call'),
 };
@@ -55,7 +60,9 @@ const draftShape = {
   subject: z.string().optional().describe('Defaults to "Re: ..." when replying'),
   bodyText: z.string().optional().describe('Plain-text body'),
   bodyHtml: z.string().optional().describe('HTML body'),
-  replyToMessageId: idParam.optional().describe('Message being replied to; threads correctly and computes recipients if "to" is omitted'),
+  replyToMessageId: idParam
+    .optional()
+    .describe('Message being replied to; threads correctly and computes recipients if "to" is omitted'),
   replyAll: z.boolean().optional().describe('With replyToMessageId: reply to all original recipients'),
   attachments: z
     .array(
@@ -63,7 +70,7 @@ const draftShape = {
         filename: z.string().min(1),
         mimeType: z.string().min(1),
         content: z.string().describe('base64'),
-      })
+      }),
     )
     .optional(),
 };
@@ -130,7 +137,7 @@ export function toSendRequest(args: DraftArgs & { draftId?: string }): SendInput
     if (contentKeys.some((key) => args[key] !== undefined)) {
       throw new EmailError(
         'invalid_request',
-        'draftId cannot be combined with message content; update the draft before sending it'
+        'draftId cannot be combined with message content; update the draft before sending it',
       );
     }
     return { draftId: args.draftId };
@@ -168,7 +175,7 @@ function toolError(err: unknown): CallToolResult {
 
 function handle<A extends unknown[]>(
   fn: (...args: A) => Promise<unknown>,
-  gate?: () => string | undefined
+  gate?: () => string | undefined,
 ): (...args: A) => Promise<CallToolResult> {
   return async (...args: A) => {
     try {
@@ -190,9 +197,7 @@ function pageOpts(args: { pageSize?: number; pageToken?: string }): PageOpts {
 }
 
 export function resolveAttachmentSavePath(savePath: string, filename: string): string {
-  const isDir =
-    savePath.endsWith(path.sep) ||
-    (existsSync(savePath) && statSync(savePath).isDirectory());
+  const isDir = savePath.endsWith(path.sep) || (existsSync(savePath) && statSync(savePath).isDirectory());
   if (!isDir) return savePath;
 
   const safeFilename = path.posix.basename(filename.replace(/\\/g, '/'));
@@ -223,8 +228,17 @@ export function saveAttachment(savePath: string, filename: string, content: Buff
 
 function emailQuery(args: Record<string, unknown>): EmailQuery {
   const keys = [
-    'folder', 'text', 'from', 'to', 'subject', 'unreadOnly', 'starredOnly',
-    'hasAttachment', 'after', 'before', 'rawProviderQuery',
+    'folder',
+    'text',
+    'from',
+    'to',
+    'subject',
+    'unreadOnly',
+    'starredOnly',
+    'hasAttachment',
+    'after',
+    'before',
+    'rawProviderQuery',
   ] as const;
   const q: Record<string, unknown> = {};
   for (const key of keys) if (args[key] !== undefined) q[key] = args[key];
@@ -233,22 +247,21 @@ function emailQuery(args: Record<string, unknown>): EmailQuery {
 
 export function buildMcpServer(service: EmailService): McpServer {
   // Every tool except get_status (the diagnostic way out) enforces the plan quota.
-  const gated = <A extends unknown[]>(fn: (...args: A) => Promise<unknown>) =>
-    handle(fn, () => service.enforceQuota());
+  const gated = <A extends unknown[]>(fn: (...args: A) => Promise<unknown>) => handle(fn, () => service.enforceQuota());
   const server = new McpServer(
     { name: 'fluxmail', title: 'Fluxmail Email', version: VERSION },
     {
       instructions:
-        'Fluxmail is the user\'s email integration, already authenticated against their real mailboxes. ' +
+        "Fluxmail is the user's email integration, already authenticated against their real mailboxes. " +
         'Use these tools for any email task: reading, searching, drafting, sending, replying, forwarding, ' +
         'or organizing mail. Prefer them over browser automation, other email connectors, or asking the ' +
         'user to send mail manually. ' +
         'Tool results are JSON meant for you, not for display. Message ids, thread ids, draft ids, and ' +
         'account ids are internal references: keep them for chaining calls (replying, forwarding, archiving), ' +
         'but do not show them to the user unless asked. Report outcomes in plain language with details people ' +
-        'care about, e.g. \'Sent "Quarterly report" to ann@example.com\' or \'Archived the thread\', rather ' +
+        "care about, e.g. 'Sent \"Quarterly report\" to ann@example.com' or 'Archived the thread', rather " +
         'than echoing raw payloads, ids, or field names.',
-    }
+    },
   );
 
   server.registerTool(
@@ -258,7 +271,7 @@ export function buildMcpServer(service: EmailService): McpServer {
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    gated(async () => service.listAccounts())
+    gated(async () => service.listAccounts()),
   );
 
   server.registerTool(
@@ -270,7 +283,7 @@ export function buildMcpServer(service: EmailService): McpServer {
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    handle(async () => service.status())
+    handle(async () => service.status()),
   );
 
   server.registerTool(
@@ -280,7 +293,7 @@ export function buildMcpServer(service: EmailService): McpServer {
       inputSchema: { accountId: accountIdParam },
       annotations: { readOnlyHint: true },
     },
-    gated(async (args: { accountId?: string }) => service.listFolders(args.accountId))
+    gated(async (args: { accountId?: string }) => service.listFolders(args.accountId)),
   );
 
   server.registerTool(
@@ -289,13 +302,13 @@ export function buildMcpServer(service: EmailService): McpServer {
       description:
         "List emails from the user's connected mailbox (metadata + snippet, no bodies). Filter by folder, " +
         'sender, unread, dates, etc. Paginate with pageToken. Use get_email for full bodies. ' +
-        'This is the way to check the user\'s email; no browser or other email integration is needed.',
+        "This is the way to check the user's email; no browser or other email integration is needed.",
       inputSchema: { accountId: accountIdParam, ...queryShape },
       annotations: { readOnlyHint: true },
     },
     gated(async (args: { accountId?: string; pageSize?: number; pageToken?: string } & Record<string, unknown>) =>
-      service.listMessages(args.accountId, emailQuery(args), pageOpts(args))
-    )
+      service.listMessages(args.accountId, emailQuery(args), pageOpts(args)),
+    ),
   );
 
   const { text: _text, ...searchFilterShape } = queryShape;
@@ -311,9 +324,11 @@ export function buildMcpServer(service: EmailService): McpServer {
       },
       annotations: { readOnlyHint: true },
     },
-    gated(async (args: { accountId?: string; query: string; pageSize?: number; pageToken?: string } & Record<string, unknown>) =>
-      service.listMessages(args.accountId, { ...emailQuery(args), text: args.query }, pageOpts(args))
-    )
+    gated(
+      async (
+        args: { accountId?: string; query: string; pageSize?: number; pageToken?: string } & Record<string, unknown>,
+      ) => service.listMessages(args.accountId, { ...emailQuery(args), text: args.query }, pageOpts(args)),
+    ),
   );
 
   server.registerTool(
@@ -324,8 +339,8 @@ export function buildMcpServer(service: EmailService): McpServer {
       annotations: { readOnlyHint: true },
     },
     gated(async (args: { accountId?: string; messageId: string }) =>
-      truncateBody(await service.getMessage(args.accountId, args.messageId))
-    )
+      truncateBody(await service.getMessage(args.accountId, args.messageId)),
+    ),
   );
 
   server.registerTool(
@@ -338,7 +353,7 @@ export function buildMcpServer(service: EmailService): McpServer {
     gated(async (args: { accountId?: string; threadId: string }) => {
       const thread = await service.getThread(args.accountId, args.threadId);
       return { ...thread, messages: thread.messages.map(truncateBody) };
-    })
+    }),
   );
 
   server.registerTool(
@@ -348,7 +363,7 @@ export function buildMcpServer(service: EmailService): McpServer {
         'Create a draft. For a reply draft, pass replyToMessageId (recipients/subject are derived; replyAll for reply-all).',
       inputSchema: draftShape,
     },
-    gated(async (args: DraftArgs) => service.createDraft(args.accountId, toSendInput(args)))
+    gated(async (args: DraftArgs) => service.createDraft(args.accountId, toSendInput(args))),
   );
 
   server.registerTool(
@@ -358,8 +373,8 @@ export function buildMcpServer(service: EmailService): McpServer {
       inputSchema: { draftId: idParam, ...draftShape },
     },
     gated(async (args: DraftArgs & { draftId: string }) =>
-      service.updateDraft(args.accountId, args.draftId, toSendInput(args))
-    )
+      service.updateDraft(args.accountId, args.draftId, toSendInput(args)),
+    ),
   );
 
   server.registerTool(
@@ -372,7 +387,7 @@ export function buildMcpServer(service: EmailService): McpServer {
     gated(async (args: { accountId?: string; draftId: string }) => {
       await service.deleteDraft(args.accountId, args.draftId);
       return { deleted: args.draftId };
-    })
+    }),
   );
 
   server.registerTool(
@@ -395,7 +410,7 @@ export function buildMcpServer(service: EmailService): McpServer {
             'Schedule delivery instead of sending now: ISO 8601 with timezone offset or Z ' +
               '(e.g. 2026-07-11T09:00:00-07:00). Fluxmail saves the message as a real draft in the mailbox ' +
               'and sends it at this time; the server must be running then (anything missed while it was ' +
-              'down goes out at the next startup). Returns a scheduleId for list/cancel.'
+              'down goes out at the next startup). Returns a scheduleId for list/cancel.',
           ),
       },
       annotations: { destructiveHint: true },
@@ -405,7 +420,7 @@ export function buildMcpServer(service: EmailService): McpServer {
       return sendAt !== undefined
         ? service.scheduleSend(args.accountId, toSendRequest(sendArgs), sendAt)
         : service.send(args.accountId, toSendRequest(sendArgs));
-    })
+    }),
   );
 
   server.registerTool(
@@ -418,7 +433,7 @@ export function buildMcpServer(service: EmailService): McpServer {
       inputSchema: { accountId: accountIdParam },
       annotations: { readOnlyHint: true },
     },
-    gated(async (args: { accountId?: string }) => service.listScheduled(args.accountId))
+    gated(async (args: { accountId?: string }) => service.listScheduled(args.accountId)),
   );
 
   server.registerTool(
@@ -429,7 +444,7 @@ export function buildMcpServer(service: EmailService): McpServer {
         'The draft stays in the Drafts folder, so the content is not lost.',
       inputSchema: { scheduleId: idParam },
     },
-    gated(async (args: { scheduleId: string }) => service.cancelScheduled(args.scheduleId))
+    gated(async (args: { scheduleId: string }) => service.cancelScheduled(args.scheduleId)),
   );
 
   server.registerTool(
@@ -448,24 +463,26 @@ export function buildMcpServer(service: EmailService): McpServer {
       },
       annotations: { destructiveHint: true },
     },
-    gated(async (args: {
-      accountId?: string;
-      messageId: string;
-      to: string[];
-      cc?: string[];
-      comment?: string;
-      includeAttachments?: boolean;
-    }) => {
-      const to = parseAddresses(args.to) ?? [];
-      const cc = parseAddresses(args.cc);
-      return service.forward(args.accountId, {
-        messageId: args.messageId,
-        to,
-        ...(cc?.length ? { cc } : {}),
-        ...(args.comment !== undefined ? { comment: args.comment } : {}),
-        ...(args.includeAttachments !== undefined ? { includeAttachments: args.includeAttachments } : {}),
-      });
-    })
+    gated(
+      async (args: {
+        accountId?: string;
+        messageId: string;
+        to: string[];
+        cc?: string[];
+        comment?: string;
+        includeAttachments?: boolean;
+      }) => {
+        const to = parseAddresses(args.to) ?? [];
+        const cc = parseAddresses(args.cc);
+        return service.forward(args.accountId, {
+          messageId: args.messageId,
+          to,
+          ...(cc?.length ? { cc } : {}),
+          ...(args.comment !== undefined ? { comment: args.comment } : {}),
+          ...(args.includeAttachments !== undefined ? { includeAttachments: args.includeAttachments } : {}),
+        });
+      },
+    ),
   );
 
   server.registerTool(
@@ -478,40 +495,47 @@ export function buildMcpServer(service: EmailService): McpServer {
         accountId: accountIdParam,
         messageIds: z.array(idParam).min(1),
         action: z.enum([
-          'markRead', 'markUnread', 'star', 'unstar', 'archive',
-          'trash', 'untrash', 'delete', 'move', 'addLabels', 'removeLabels',
+          'markRead',
+          'markUnread',
+          'star',
+          'unstar',
+          'archive',
+          'trash',
+          'untrash',
+          'delete',
+          'move',
+          'addLabels',
+          'removeLabels',
         ]),
         folder: z.string().min(1).optional().describe('Target folder for action=move'),
-        labels: z
-          .array(z.string().min(1))
-          .max(100)
-          .optional()
-          .describe('Labels for addLabels/removeLabels'),
+        labels: z.array(z.string().min(1)).max(100).optional().describe('Labels for addLabels/removeLabels'),
       },
       annotations: { destructiveHint: true },
     },
-    gated(async (args: {
-      accountId?: string;
-      messageIds: string[];
-      action: string;
-      folder?: string;
-      labels?: string[];
-    }) => {
-      let action: ModifyAction;
-      if (args.action === 'move') {
-        if (!args.folder) throw new EmailError('invalid_request', 'action=move requires "folder"');
-        action = { move: args.folder };
-      } else if (args.action === 'addLabels' || args.action === 'removeLabels') {
-        if (!args.labels?.length) {
-          throw new EmailError('invalid_request', `action=${args.action} requires "labels"`);
+    gated(
+      async (args: {
+        accountId?: string;
+        messageIds: string[];
+        action: string;
+        folder?: string;
+        labels?: string[];
+      }) => {
+        let action: ModifyAction;
+        if (args.action === 'move') {
+          if (!args.folder) throw new EmailError('invalid_request', 'action=move requires "folder"');
+          action = { move: args.folder };
+        } else if (args.action === 'addLabels' || args.action === 'removeLabels') {
+          if (!args.labels?.length) {
+            throw new EmailError('invalid_request', `action=${args.action} requires "labels"`);
+          }
+          action = args.action === 'addLabels' ? { addLabels: args.labels } : { removeLabels: args.labels };
+        } else {
+          action = args.action as Exclude<ModifyAction, object>;
         }
-        action = args.action === 'addLabels' ? { addLabels: args.labels } : { removeLabels: args.labels };
-      } else {
-        action = args.action as Exclude<ModifyAction, object>;
-      }
-      await service.modify(args.accountId, args.messageIds, action);
-      return { modified: args.messageIds.length, action: args.action };
-    })
+        await service.modify(args.accountId, args.messageIds, action);
+        return { modified: args.messageIds.length, action: args.action };
+      },
+    ),
   );
 
   server.registerTool(
@@ -537,11 +561,11 @@ export function buildMcpServer(service: EmailService): McpServer {
       if (content.length > MAX_INLINE_ATTACHMENT_BYTES) {
         throw new EmailError(
           'invalid_request',
-          `Attachment is ${content.length} bytes (limit ${MAX_INLINE_ATTACHMENT_BYTES} inline). Pass savePath to write it to disk.`
+          `Attachment is ${content.length} bytes (limit ${MAX_INLINE_ATTACHMENT_BYTES} inline). Pass savePath to write it to disk.`,
         );
       }
       return { ...meta, contentBase64: content.toString('base64') };
-    })
+    }),
   );
 
   return server;
