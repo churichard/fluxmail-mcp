@@ -35,6 +35,7 @@ console.log(`npm tag: ${npmTag}`);
 console.log(`Docker image: ${dockerImage}`);
 console.log(`Docker platforms: ${dockerPlatforms}`);
 
+await run('node', ['scripts/check-package-licenses.mjs', ...packages]);
 await ensureCleanWorkingTree();
 if (!options.dryRun) {
   await ensureNpmAuthentication();

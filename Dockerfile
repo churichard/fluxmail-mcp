@@ -20,6 +20,7 @@ ENV NODE_ENV=production \
     FLUXMAIL_PORT=8977
 WORKDIR /app
 COPY --from=build /out ./
+COPY LICENSE.md ./LICENSE.md
 RUN chmod +x dist/cli.js && ln -s /app/dist/cli.js /usr/local/bin/fluxmail && \
     mkdir -p /data && chown node:node /data
 VOLUME /data

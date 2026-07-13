@@ -2,6 +2,7 @@
   "name": "@fluxmail/core",
   "version": "0.2.0",
   "description": "Unified email types and provider interface for Fluxmail",
+  "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,7 +13,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE.md"
   ],
   "publishConfig": {
     "access": "public"
