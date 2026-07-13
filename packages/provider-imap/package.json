@@ -2,6 +2,7 @@
   "name": "@fluxmail/provider-imap",
   "version": "0.2.0",
   "description": "IMAP and SMTP adapter for the Fluxmail unified email API",
+  "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,7 +13,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE.md"
   ],
   "publishConfig": {
     "access": "public"
