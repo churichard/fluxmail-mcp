@@ -1,33 +1,55 @@
 ---
 title: 'Teams & plans'
 description: 'Add members, share mailboxes across a team, and unlock paid-plan limits with a license key on the self-hosted Fluxmail MCP server.'
-updated: '2026-07-13'
+updated: '2026-07-14'
 ---
 
 ## Members and shared mailboxes
 
-For personal use you can skip this section. On the paid Team and Enterprise plans, one Fluxmail instance is shared by several people, tracked as **members**. Each member connects their own mailboxes, and a mailbox can also be marked shared so everyone can reach it.
+Every Fluxmail instance has at least one **member**. A personal instance uses one member to identify its owner. Team and Enterprise instances can add more people and decide which mailboxes each person can reach.
 
 ```bash
-# Add the people using this instance
+# The first member becomes an administrator
 fluxmail members add --name "Ada Lovelace" --email ada@example.com
+fluxmail members add --name "Grace Hopper" --email grace@example.com
 fluxmail members list
 
 # Connect a mailbox and set its owner in one step
-fluxmail accounts add gmail --member ada@example.com
+fluxmail accounts add gmail --owner ada@example.com
 
-# Reassign an existing mailbox, or make it shared
-fluxmail accounts assign <account-id> --member ada@example.com
-fluxmail accounts assign <account-id> --shared
+# Reassign an existing mailbox
+fluxmail accounts assign <account-id> --owner grace@example.com
 
-# Scope an API key to one member and limit it to read-only access
+# Choose who else can reach it
+fluxmail accounts access <account-id> --owner-only
+fluxmail accounts access <account-id> --shared
+fluxmail accounts access <account-id> --share-with ada@example.com
+```
+
+`--owner-only` makes a mailbox private to its owner. `--shared` makes it available to every member. Repeat `--share-with` to give selected members access. Assigning the administrator role lets a member manage the instance, but it does not let them read another member's private mail.
+
+Every MCP connection also names the member it acts for. You can limit a connection to selected mailboxes that the member can already reach:
+
+```bash
+# Local connection for Ada, limited to one mailbox
+fluxmail stdio --member ada@example.com --account <account-id>
+
+# HTTP connection for Ada, limited to one mailbox and read-only actions
 fluxmail apikey create \
   --name "ada laptop" \
   --member ada@example.com \
+  --account <account-id> \
   --profile read-only
 ```
 
-Member scope controls which mailboxes a key can reach. Its [permission profile](/docs/permissions) separately controls which email actions the client can take. Use one key per client so you can change its permissions or revoke it without interrupting other connections.
+Update an HTTP key's mailbox allowlist without replacing the key:
+
+```bash
+fluxmail apikey accounts <key-id> --account <account-id>
+fluxmail apikey accounts <key-id> --all-accounts
+```
+
+Member and account scope control which mailboxes a connection can reach. Its [permission profile](/docs/permissions) separately controls which email actions the client can take. Use one key per client so you can change its scope, change its permissions, or revoke it without interrupting other connections.
 
 ## Plans and licensing
 

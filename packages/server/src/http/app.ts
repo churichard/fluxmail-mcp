@@ -20,6 +20,7 @@ import {
 } from '../storage/gmailConnectionGrants.js';
 import { VERSION } from '../version.js';
 import type { Telemetry } from '../telemetry.js';
+import { findMember } from '../storage/members.js';
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -86,8 +87,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     return buildAuthUrl(client, state);
   };
 
-  // Connecting a mailbox is instance administration: only unscoped admin keys
-  // qualify; member-scoped keys are confined to mailbox access over MCP.
+  // Connecting a mailbox requires an admin member or a migrated management key.
   const adminAuthorized = (
     c: { req: { header(name: string): string | undefined; query(name: string): string | undefined } },
     allowQueryKey = false,
@@ -96,14 +96,16 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
     const key = bearer ?? (allowQueryKey ? c.req.query('key') : undefined);
     if (!key) return false;
-    return authenticateApiKey(db, key)?.memberId === null;
+    const auth = authenticateApiKey(db, key);
+    return auth !== null && (auth.memberId === null || auth.role === 'admin');
   };
 
-  // Authenticate an MCP request and resolve the mailbox scope its key authorizes.
-  // A member-scoped key is confined to shared and owned mailboxes; an admin key
-  // (or authMode 'none') gets unscoped access.
+  // Authenticate an MCP request. The service applies member grants and the key's
+  // optional mailbox allowlist before any provider call.
   const authForRequest = (c: { req: { header(name: string): string | undefined } }): ApiKeyAuth | null => {
-    if (config.authMode === 'none') return { memberId: null, permissions: FULL_PERMISSION_POLICY };
+    if (config.authMode === 'none') {
+      return { memberId: null, role: null, permissions: FULL_PERMISSION_POLICY, accountIds: null };
+    }
     const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
     return bearer ? authenticateApiKey(db, bearer) : null;
   };
@@ -129,7 +131,10 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     } catch {
       return c.json({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }, 400);
     }
-    const scope: AccessScope = { memberId: auth.memberId };
+    const scope: AccessScope =
+      config.authMode === 'none'
+        ? { memberId: null }
+        : { memberId: auth.memberId, role: auth.role, accountIds: auth.accountIds };
     const server = buildMcpServer(service.withScope(scope), {
       permissions: auth.permissions,
       maxAttachmentBytes: config.maxAttachmentBytes,
@@ -166,7 +171,19 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     if (!adminAuthorized(c, true)) {
       return c.text('Unauthorized: append ?key=<an admin API key>', 401);
     }
-    return c.redirect(beginGoogleOAuth());
+    const ownerRef = c.req.query('owner');
+    if (!ownerRef) {
+      return c.text(
+        'Missing owner. Start the hosted connection with "fluxmail accounts add gmail --owner <member>".',
+        400,
+      );
+    }
+    try {
+      const owner = findMember(db, ownerRef);
+      return c.redirect(beginGoogleOAuth({ memberId: owner.id, sharingMode: 'private' }));
+    } catch (err) {
+      return c.text(err instanceof Error ? err.message : String(err), 400);
+    }
   });
 
   // Hono falls back to GET handlers for HEAD requests. Handle HEAD explicitly
@@ -233,7 +250,10 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
             'Try again and choose the matching Google account.',
         );
       }
-      const account = registry.addGmailAccount(email, tokens, displayName, pending.intent?.memberId);
+      const account = registry.addGmailAccount(email, tokens, displayName, pending.intent?.memberId, {
+        sharingMode: pending.intent?.sharingMode ?? 'private',
+        sharedMemberIds: pending.intent?.sharedMemberIds ?? [],
+      });
       return c.html(
         `<html><body style="font-family: sans-serif"><h2>${email} is connected to Fluxmail</h2>` +
           `<p>Account id: <code>${account.id}</code>. You can close this tab.</p></body></html>`,

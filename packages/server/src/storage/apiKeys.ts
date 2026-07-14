@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
+import { EmailError } from '@fluxmail/core';
 import { apiKeys, type FluxmailDb } from './db.js';
-import { getMember } from './members.js';
+import { getMember, type MemberRole } from './members.js';
 import {
   deserializePermissionPolicy,
   FULL_PERMISSION_POLICY,
@@ -17,10 +18,29 @@ export interface ApiKeyInfo {
   name: string;
   createdAt: number;
   lastUsedAt: number | null;
-  /** Member the key was issued to; null means an unscoped admin key. */
+  /** Member the key was issued to; null identifies a migrated system credential. */
   memberId: string | null;
   permissionProfile: PermissionProfile;
   capabilities: McpCapability[];
+  /** Additional mailbox narrowing. null means all mailboxes granted to the member. */
+  accountIds: string[] | null;
+}
+
+function uniqueAccountIds(accountIds: readonly string[]): string[] {
+  return [...new Set(accountIds)];
+}
+
+function serializeAccountIds(accountIds: readonly string[] | null): string | null {
+  return accountIds === null ? null : JSON.stringify(uniqueAccountIds(accountIds));
+}
+
+function deserializeAccountIds(value: string | null): string[] | null {
+  if (value === null) return null;
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === 'string')) {
+    throw new Error('API key account scope must be a JSON array of strings.');
+  }
+  return uniqueAccountIds(parsed);
 }
 
 function hashKey(key: string): string {
@@ -33,8 +53,12 @@ export function createApiKey(
   name: string,
   memberId?: string,
   permissions: PermissionPolicy = FULL_PERMISSION_POLICY,
+  accountIds: readonly string[] | null = null,
 ): { key: string; info: ApiKeyInfo } {
-  if (memberId) getMember(db, memberId);
+  if (!memberId) {
+    throw new EmailError('invalid_request', 'A member is required when creating an API key.');
+  }
+  getMember(db, memberId);
   const policy = normalizePermissionPolicy(permissions);
   const id = `key_${randomBytes(8).toString('hex')}`;
   const key = `fmk_${randomBytes(24).toString('hex')}`;
@@ -45,9 +69,10 @@ export function createApiKey(
       name,
       keyHash: hashKey(key),
       createdAt,
-      memberId: memberId ?? null,
+      memberId,
       permissionProfile: policy.profile,
       customCapabilities: serializeCustomCapabilities(policy),
+      accountIds: serializeAccountIds(accountIds),
     })
     .run();
   return {
@@ -57,22 +82,26 @@ export function createApiKey(
       name,
       createdAt,
       lastUsedAt: null,
-      memberId: memberId ?? null,
+      memberId,
       permissionProfile: policy.profile,
       capabilities: policy.capabilities,
+      accountIds: accountIds === null ? null : uniqueAccountIds(accountIds),
     },
   };
 }
 
 export interface ApiKeyAuth {
-  /** Member the key was issued to; null for an unscoped admin key. */
+  /** Member the key was issued to; null for a migrated system credential. */
   memberId: string | null;
+  /** Current member role. null identifies a migrated management-only system key. */
+  role: MemberRole | null;
   permissions: PermissionPolicy;
+  accountIds: string[] | null;
 }
 
 /**
- * Verify a key, record its use, and return the scope it authorizes. Callers must
- * honour `memberId`: a member-scoped key may only reach shared or owned mailboxes.
+ * Verify a key, record its use, and return its live member role and mailbox
+ * narrowing. Memberless migrated keys authenticate for management only.
  */
 export function authenticateApiKey(db: FluxmailDb, key: string): ApiKeyAuth | null {
   const row = db
@@ -84,11 +113,13 @@ export function authenticateApiKey(db: FluxmailDb, key: string): ApiKeyAuth | nu
   let permissions: PermissionPolicy;
   try {
     permissions = deserializePermissionPolicy(row.permissionProfile, row.customCapabilities);
+    const accountIds = deserializeAccountIds(row.accountIds);
+    const member = row.memberId ? getMember(db, row.memberId) : null;
+    db.update(apiKeys).set({ lastUsedAt: Date.now() }).where(eq(apiKeys.id, row.id)).run();
+    return { memberId: row.memberId, role: member?.role ?? null, permissions, accountIds };
   } catch {
     return null;
   }
-  db.update(apiKeys).set({ lastUsedAt: Date.now() }).where(eq(apiKeys.id, row.id)).run();
-  return { memberId: row.memberId, permissions };
 }
 
 export function verifyApiKey(db: FluxmailDb, key: string): boolean {
@@ -102,6 +133,7 @@ export function listApiKeys(db: FluxmailDb): ApiKeyInfo[] {
     .all()
     .map((r) => {
       const permissions = deserializePermissionPolicy(r.permissionProfile, r.customCapabilities);
+      const accountIds = deserializeAccountIds(r.accountIds);
       return {
         id: r.id,
         name: r.name,
@@ -110,8 +142,18 @@ export function listApiKeys(db: FluxmailDb): ApiKeyInfo[] {
         memberId: r.memberId,
         permissionProfile: permissions.profile,
         capabilities: permissions.capabilities,
+        accountIds,
       };
     });
+}
+
+export function updateApiKeyAccounts(db: FluxmailDb, id: string, accountIds: readonly string[] | null): boolean {
+  const result = db
+    .update(apiKeys)
+    .set({ accountIds: serializeAccountIds(accountIds) })
+    .where(eq(apiKeys.id, id))
+    .run();
+  return result.changes > 0;
 }
 
 export function updateApiKeyPermissions(db: FluxmailDb, id: string, permissions: PermissionPolicy): boolean {

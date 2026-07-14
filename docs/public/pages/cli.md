@@ -1,7 +1,7 @@
 ---
 title: 'CLI reference'
 description: 'Every command the Fluxmail CLI exposes for running the server and managing accounts, members, API keys, config, and licenses.'
-updated: '2026-07-13'
+updated: '2026-07-14'
 ---
 
 > **Running under Docker?** Prefix any of these with `docker compose exec fluxmail` so the command runs inside the container, e.g. `docker compose exec fluxmail fluxmail accounts list`.
@@ -18,21 +18,24 @@ To run a command without a global installation, replace `fluxmail` with `npx -y 
 | Command | Description | Options |
 | --- | --- | --- |
 | `fluxmail serve` | Run the HTTP server (Streamable HTTP MCP at /mcp) | None |
-| `fluxmail stdio` | Run as a stdio MCP server (for Claude Desktop / Claude Code local config) | `--profile <profile>`, `--allow <capability>` |
+| `fluxmail stdio` | Run as a stdio MCP server (for Claude Desktop / Claude Code local config) | `--member <member>`, `--account <account>`, `--profile <profile>`, `--allow <capability>` |
 | `fluxmail accounts` | Manage connected email accounts | None |
-| `fluxmail accounts add <provider>` | Connect a Gmail or IMAP account | `--reauthorize <account-id>`, `--member <member>`, `--local`, `--hosted`, `--email <address>`, `--display-name <name>`, `--imap-host <host>`, `--imap-port <port>`, `--imap-security <mode>`, `--imap-user <user>`, `--imap-password-env <name>`, `--smtp-host <host>`, `--smtp-port <port>`, `--smtp-security <mode>`, `--smtp-user <user>`, `--smtp-password-env <name>`, `--sent-folder <path>`, `--drafts-folder <path>`, `--trash-folder <path>`, `--archive-folder <path>`, `--spam-folder <path>`, `--no-save-sent` |
+| `fluxmail accounts add <provider>` | Connect a Gmail or IMAP account | `--reauthorize <account-id>`, `--owner <member>`, `--member <member>`, `--shared`, `--share-with <member>`, `--local`, `--hosted`, `--email <address>`, `--display-name <name>`, `--imap-host <host>`, `--imap-port <port>`, `--imap-security <mode>`, `--imap-user <user>`, `--imap-password-env <name>`, `--smtp-host <host>`, `--smtp-port <port>`, `--smtp-security <mode>`, `--smtp-user <user>`, `--smtp-password-env <name>`, `--sent-folder <path>`, `--drafts-folder <path>`, `--trash-folder <path>`, `--archive-folder <path>`, `--spam-folder <path>`, `--no-save-sent` |
 | `fluxmail accounts configure <accountId>` | Set special folder paths for an IMAP account | `--sent-folder <path>`, `--drafts-folder <path>`, `--trash-folder <path>`, `--archive-folder <path>`, `--spam-folder <path>` |
 | `fluxmail accounts list` | List connected accounts | None |
 | `fluxmail accounts remove <accountId>` | Disconnect an account and delete its stored tokens | None |
-| `fluxmail accounts assign <accountId>` | Assign a mailbox to a member, or make it shared | `--member <member>`, `--shared` |
+| `fluxmail accounts assign <accountId>` | Change mailbox ownership | `--owner <member>`, `--member <member>`, `--shared` |
+| `fluxmail accounts access <accountId>` | Set who can access a mailbox | `--owner-only`, `--shared`, `--share-with <member>` |
 | `fluxmail members` | Manage members (people using this instance) | None |
-| `fluxmail members add` | Add a member (subject to the plan seat limit) | `--name <name>`, `--email <email>` |
+| `fluxmail members add` | Add a member (subject to the plan seat limit) | `--name <name>`, `--email <email>`, `--role <role>` |
 | `fluxmail members list` | List members with their mailbox and API key counts | None |
-| `fluxmail members remove <memberId>` | Remove a member; their mailboxes become shared and their API keys are revoked | None |
+| `fluxmail members remove <memberId>` | Remove a member after reassigning or removing their mailboxes | None |
+| `fluxmail members role <member> <role>` | Change a member role | None |
 | `fluxmail apikey` | Manage API keys for the HTTP MCP endpoint | None |
 | `fluxmail apikey capabilities` | List MCP capabilities for custom permission policies | None |
-| `fluxmail apikey create` | Create an API key (shown once) | `--name <name>`, `--member <member>`, `--profile <profile>`, `--allow <capability>` |
+| `fluxmail apikey create` | Create an API key (shown once) | `--name <name>`, `--member <member>`, `--account <account>`, `--profile <profile>`, `--allow <capability>` |
 | `fluxmail apikey list` | List API keys | None |
+| `fluxmail apikey accounts <keyId>` | Replace or clear an API key mailbox allowlist | `--account <account>`, `--all-accounts` |
 | `fluxmail apikey permissions <keyId>` | Change the MCP permissions for an API key | `--profile <profile>`, `--allow <capability>` |
 | `fluxmail apikey revoke <keyId>` | Revoke an API key | None |
 | `fluxmail license` | Manage the paid-tier license | None |

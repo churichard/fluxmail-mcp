@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 import { serve } from '@hono/node-server';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { EmailError } from '@fluxmail/core';
+import { EmailError, type AccountSharingMode } from '@fluxmail/core';
 import { createContext } from './context.js';
 import {
   configFilePath,
@@ -24,8 +24,14 @@ import {
   selectGmailConnectionMode,
   validateAccountConnectionFlags,
 } from './accounts/gmailConnection.js';
-import { createApiKey, listApiKeys, revokeApiKey, updateApiKeyPermissions } from './storage/apiKeys.js';
-import { addMember, findMember, listMembers, removeMember } from './storage/members.js';
+import {
+  createApiKey,
+  listApiKeys,
+  revokeApiKey,
+  updateApiKeyAccounts,
+  updateApiKeyPermissions,
+} from './storage/apiKeys.js';
+import { addMember, findMember, listMembers, removeMember, setMemberRole, type MemberRole } from './storage/members.js';
 import { activateLicense } from './licensing/activation.js';
 import { LICENSE_KEY_PATTERN, releaseLicense } from './licensing/client.js';
 import { licensePublicKeys, verifyLease } from './licensing/lease.js';
@@ -38,7 +44,6 @@ import {
 } from './licensing/entitlements.js';
 import { loadInstanceId, startLicenseRefresher } from './licensing/refresher.js';
 import { VERSION } from './version.js';
-import { countPending } from './storage/scheduledSends.js';
 import type { FluxmailDb } from './storage/db.js';
 import type { ImapCredentials, ImapSecurity } from '@fluxmail/provider-imap';
 import {
@@ -60,7 +65,10 @@ import {
 
 interface AddAccountOptions {
   reauthorize?: string;
+  owner?: string;
   member?: string;
+  shared?: boolean;
+  shareWith: string[];
   local?: boolean;
   hosted?: boolean;
   email?: string;
@@ -88,8 +96,23 @@ interface PermissionOptions {
   allow: string[];
 }
 
+interface ScopedMcpOptions extends PermissionOptions {
+  member: string;
+  account: string[];
+}
+
 function collectOption(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function accountIdsFromRefs(ctx: ReturnType<typeof createContext>, refs: readonly string[]): string[] | null {
+  return refs.length ? [...new Set(refs.map((ref) => ctx.registry.findAccount(ref).id))] : null;
+}
+
+function sharingMode(shared: boolean | undefined, sharedMemberIds: readonly string[]): AccountSharingMode {
+  if (shared) return 'all';
+  if (sharedMemberIds.length) return 'selected';
+  return 'private';
 }
 
 export function permissionPolicyFromOptions(opts: PermissionOptions, requireSelection = false): PermissionPolicy {
@@ -255,13 +278,15 @@ export function createCliProgram(): Command {
         console.log(`  MCP endpoint:   ${ctx.config.publicUrl}/mcp`);
         console.log(`  Auth mode:      ${ctx.config.authMode}`);
         if (ctx.config.authMode === 'apikey' && listApiKeys(ctx.db).length === 0) {
-          console.log('  Note: no API keys exist yet. Run "fluxmail apikey create --name <name>" to create one.');
+          console.log(
+            '  Note: no API keys exist yet. Run "fluxmail apikey create --name <name> --member <member>" to create one.',
+          );
         }
         const accounts = ctx.registry.listAccounts();
         console.log(
           accounts.length
             ? `  Accounts:       ${accounts.map((a) => `${a.email} (${a.status})`).join(', ')}`
-            : '  Accounts:       none (run "fluxmail accounts add gmail" or "fluxmail accounts add imap")',
+            : '  Accounts:       none (run "fluxmail accounts add gmail --owner <member>" or the IMAP equivalent)',
         );
         console.log(`  Plan:           ${planLine(getEntitlements(ctx.db))}`);
         warnLicense(ctx.db, console.log);
@@ -277,14 +302,19 @@ export function createCliProgram(): Command {
   program
     .command('stdio')
     .description('Run as a stdio MCP server (for Claude Desktop / Claude Code local config)')
+    .requiredOption('--member <member>', 'Member (id or email) using this MCP process')
+    .option('--account <account>', 'Limit access to one mailbox; repeat as needed', collectOption, [])
     .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
     .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
-    .action(async (opts: PermissionOptions) => {
+    .action(async (opts: ScopedMcpOptions) => {
       installTelemetrySignalHandlers();
       installTelemetryStreamEndHandler(process.stdin);
       const ctx = createContext();
       const permissions = permissionPolicyFromOptions(opts);
-      const server = buildMcpServer(ctx.service, {
+      const member = findMember(ctx.db, opts.member);
+      const accountIds = accountIdsFromRefs(ctx, opts.account);
+      const scopedService = ctx.service.withScope({ memberId: member.id, role: member.role, accountIds });
+      const server = buildMcpServer(scopedService, {
         permissions,
         maxAttachmentBytes: ctx.config.maxAttachmentBytes,
         telemetry: ctx.telemetry,
@@ -302,7 +332,7 @@ export function createCliProgram(): Command {
       });
       console.error('Fluxmail MCP server running on stdio');
       warnLicense(ctx.db);
-      const { pending } = countPending(ctx.db);
+      const pending = scopedService.listScheduled().filter((send) => send.status === 'pending').length;
       if (pending > 0) console.error(`Scheduled sends pending: ${pending}`);
     });
 
@@ -312,7 +342,10 @@ export function createCliProgram(): Command {
     .command('add')
     .argument('<provider>', 'Email provider: gmail or imap')
     .option('--reauthorize <account-id>', 'Reconnect an existing account')
-    .option('--member <member>', 'Member (id or email) who owns the new mailbox; omit for a shared mailbox')
+    .option('--owner <member>', 'Member (id or email) who owns the new mailbox')
+    .option('--member <member>', 'Deprecated alias for --owner')
+    .option('--shared', 'Share the mailbox with every member')
+    .option('--share-with <member>', 'Share with one member; repeat as needed', collectOption, [])
     .option('--local', 'Use the local browser callback for Gmail')
     .option('--hosted', 'Use FLUXMAIL_PUBLIC_URL for the Gmail callback')
     .option('--email <address>', 'Mailbox address (required for IMAP)')
@@ -344,19 +377,35 @@ export function createCliProgram(): Command {
       warnLicense(ctx.db);
       try {
         validateAccountConnectionFlags(provider, opts);
-        if (opts.reauthorize && opts.member) {
+        if (opts.owner && opts.member) {
+          throw new EmailError('invalid_request', '--owner and --member cannot be combined. Use --owner.');
+        }
+        if (opts.shared && opts.shareWith.length) {
+          throw new EmailError('invalid_request', '--shared and --share-with cannot be combined.');
+        }
+        const ownerRef = opts.owner ?? opts.member;
+        if (opts.member) console.error('Warning: --member is deprecated; use --owner.');
+        if (opts.reauthorize && (ownerRef || opts.shared || opts.shareWith.length)) {
           throw new EmailError(
             'invalid_request',
-            '--member cannot be combined with --reauthorize; use "fluxmail accounts assign" to change ownership.',
+            'Ownership and sharing options cannot be combined with --reauthorize. Use "fluxmail accounts assign" or "fluxmail accounts access".',
           );
         }
         // Resolve before the OAuth flow so a typo fails fast.
-        const member = opts.member ? findMember(ctx.db, opts.member) : undefined;
+        const owner = ownerRef ? findMember(ctx.db, ownerRef) : undefined;
         const existing = opts.reauthorize ? ctx.registry.getAccount(opts.reauthorize) : undefined;
         if (existing && existing.provider !== provider) {
           throw new EmailError('invalid_request', `Account ${existing.id} uses ${existing.provider}, not ${provider}.`);
         }
         if (!existing) ctx.registry.assertCanAddAccount();
+        if (!existing && !owner) {
+          throw new EmailError('invalid_request', '--owner <id-or-email> is required when connecting a mailbox.');
+        }
+        const sharedMemberIds = opts.shareWith.map((ref) => findMember(ctx.db, ref).id);
+        const access = {
+          sharingMode: sharingMode(opts.shared, sharedMemberIds),
+          sharedMemberIds,
+        };
 
         if (provider === 'imap') {
           const previousCredentials = existing ? ctx.registry.loadImapCredentials(existing.id) : undefined;
@@ -410,8 +459,9 @@ export function createCliProgram(): Command {
             email,
             credentials,
             opts.displayName,
-            member?.id,
+            owner?.id,
             opts.reauthorize,
+            access,
           );
           console.log(`Connected ${account.email} (account id: ${account.id})`);
           for (const warning of warnings) console.log(`Warning: ${warning.message}.`);
@@ -421,8 +471,9 @@ export function createCliProgram(): Command {
         const gmailConnectionMode = selectGmailConnectionMode(ctx.config, opts);
         if (gmailConnectionMode === 'hosted') {
           const { connectionUrl } = prepareHostedGmailConnection(ctx.db, ctx.config, {
-            ...(member ? { memberId: member.id } : {}),
+            ...(owner ? { memberId: owner.id } : {}),
             ...(existing ? { reauthorizeAccountId: existing.id } : {}),
+            ...(!existing ? { sharingMode: access.sharingMode, sharedMemberIds: access.sharedMemberIds } : {}),
           });
           console.log('\nOpen this URL in your browser to connect Gmail:\n');
           console.log(`  ${connectionUrl}\n`);
@@ -445,18 +496,18 @@ export function createCliProgram(): Command {
                   'Try again and choose the matching Google account.',
               );
             }
-            return ctx.registry.addGmailAccount(result.email, result.tokens, result.displayName, member?.id);
+            return ctx.registry.addGmailAccount(result.email, result.tokens, result.displayName, owner?.id, access);
           },
         );
         console.log(
           `\nConnected ${account.email} (account id: ${account.id})` +
-            (member && account.memberId === member.id ? ` for member ${member.name}` : ''),
+            (owner && account.ownerId === owner.id ? ` for member ${owner.name}` : ''),
         );
-        if (member && account.memberId !== member.id) {
+        if (owner && account.ownerId !== owner.id) {
           // The mailbox was already connected; re-auth keeps its existing owner.
           console.log(
             `${account.email} was already connected, so its ownership is unchanged. ` +
-              `To assign it to ${member.name}, run "fluxmail accounts assign ${account.id} --member ${member.id}".`,
+              `To assign it to ${owner.name}, run "fluxmail accounts assign ${account.id} --owner ${owner.id}".`,
           );
         }
       } catch (err) {
@@ -546,13 +597,19 @@ export function createCliProgram(): Command {
       warnLicense(ctx.db);
       const all = ctx.registry.listAccounts();
       if (!all.length) {
-        console.log('No accounts connected. Run "fluxmail accounts add gmail" or "fluxmail accounts add imap".');
+        console.log(
+          'No accounts connected. Run "fluxmail accounts add gmail --owner <member>" or the IMAP equivalent.',
+        );
         return;
       }
       const memberNames = new Map(listMembers(ctx.db).map((m) => [m.id, m.name]));
       for (const a of all) {
-        const owner = a.memberId ? (memberNames.get(a.memberId) ?? a.memberId) : 'shared';
-        console.log(`${a.id}  ${a.provider}  ${a.email}  [${a.status}]  owner=${owner}`);
+        const owner = a.ownerId ? (memberNames.get(a.ownerId) ?? a.ownerId) : '-';
+        const access =
+          a.sharingMode === 'selected'
+            ? `selected:${a.sharedMemberIds.map((id) => memberNames.get(id) ?? id).join(',')}`
+            : a.sharingMode;
+        console.log(`${a.id}  ${a.provider}  ${a.email}  [${a.status}]  owner=${owner}  access=${access}`);
       }
     });
 
@@ -570,19 +627,65 @@ export function createCliProgram(): Command {
   accounts
     .command('assign')
     .argument('<accountId>')
-    .option('--member <member>', 'Member (id or email) to own the mailbox')
-    .option('--shared', 'Make the mailbox shared across the instance')
-    .description('Assign a mailbox to a member, or make it shared')
-    .action((accountId: string, opts: { member?: string; shared?: boolean }) => {
+    .option('--owner <member>', 'Member (id or email) to own the mailbox')
+    .option('--member <member>', 'Deprecated alias for --owner')
+    .option('--shared', 'Deprecated alias for sharing with all members')
+    .description('Change mailbox ownership')
+    .action((accountId: string, opts: { owner?: string; member?: string; shared?: boolean }) => {
       const ctx = createContext();
       warnLicense(ctx.db);
       try {
-        if (!opts.member === !opts.shared) {
-          throw new EmailError('invalid_request', 'Pass exactly one of --member <member> or --shared.');
+        if (opts.owner && opts.member) {
+          throw new EmailError('invalid_request', '--owner and --member cannot be combined. Use --owner.');
         }
-        const member = opts.member ? findMember(ctx.db, opts.member) : undefined;
-        const account = ctx.registry.assignAccountMember(accountId, member?.id ?? null);
-        console.log(member ? `${account.email} is now owned by ${member.name}` : `${account.email} is now shared`);
+        const ownerRef = opts.owner ?? opts.member;
+        if (!ownerRef && !opts.shared) {
+          throw new EmailError('invalid_request', 'Pass --owner <member>.');
+        }
+        if (ownerRef && opts.shared) {
+          throw new EmailError('invalid_request', '--owner and --shared cannot be combined.');
+        }
+        if (opts.member) console.error('Warning: --member is deprecated; use --owner.');
+        if (opts.shared) {
+          console.error('Warning: "accounts assign --shared" is deprecated; use "accounts access --shared".');
+          const account = ctx.registry.setAccountAccess(accountId, { sharingMode: 'all' });
+          console.log(`${account.email} is now shared with every member. Its owner is unchanged.`);
+          return;
+        }
+        const owner = findMember(ctx.db, ownerRef!);
+        const account = ctx.registry.assignAccountOwner(accountId, owner.id);
+        console.log(`${account.email} is now owned by ${owner.name}.`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  accounts
+    .command('access')
+    .argument('<accountId>')
+    .option('--owner-only', 'Only the owner can access the mailbox')
+    .option('--shared', 'Share the mailbox with every member')
+    .option('--share-with <member>', 'Replace selected access with this member; repeat as needed', collectOption, [])
+    .description('Set who can access a mailbox')
+    .action((accountId: string, opts: { ownerOnly?: boolean; shared?: boolean; shareWith: string[] }) => {
+      const ctx = createContext();
+      warnLicense(ctx.db);
+      try {
+        const choices =
+          Number(Boolean(opts.ownerOnly)) + Number(Boolean(opts.shared)) + Number(opts.shareWith.length > 0);
+        if (choices !== 1) {
+          throw new EmailError(
+            'invalid_request',
+            'Pass exactly one of --owner-only, --shared, or one or more --share-with options.',
+          );
+        }
+        const sharedMemberIds = opts.shareWith.map((ref) => findMember(ctx.db, ref).id);
+        const account = ctx.registry.setAccountAccess(accountId, {
+          sharingMode: sharingMode(opts.shared, sharedMemberIds),
+          sharedMemberIds,
+        });
+        console.log(`Updated access for ${account.email}: ${account.sharingMode}.`);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
@@ -595,13 +698,21 @@ export function createCliProgram(): Command {
     .command('add')
     .requiredOption('--name <name>', 'Member name')
     .option('--email <email>', 'Member email, usable as a shorthand in --member flags')
+    .option('--role <role>', 'Member role: admin or member')
     .description('Add a member (subject to the plan seat limit)')
-    .action((opts: { name: string; email?: string }) => {
+    .action((opts: { name: string; email?: string; role?: string }) => {
       const ctx = createContext();
       warnLicense(ctx.db);
       try {
-        const member = addMember(ctx.db, { name: opts.name, ...(opts.email ? { email: opts.email } : {}) });
-        console.log(`Added member ${member.name} (id: ${member.id})`);
+        if (opts.role && opts.role !== 'admin' && opts.role !== 'member') {
+          throw new EmailError('invalid_request', '--role must be "admin" or "member".');
+        }
+        const member = addMember(ctx.db, {
+          name: opts.name,
+          ...(opts.email ? { email: opts.email } : {}),
+          ...(opts.role ? { role: opts.role as MemberRole } : {}),
+        });
+        console.log(`Added member ${member.name} (id: ${member.id}, role: ${member.role})`);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
@@ -620,22 +731,42 @@ export function createCliProgram(): Command {
         return;
       }
       for (const m of all) {
-        console.log(`${m.id}  ${m.name}  email=${m.email ?? '-'}  mailboxes=${m.accountCount}  keys=${m.apiKeyCount}`);
+        console.log(
+          `${m.id}  ${m.name}  role=${m.role}  email=${m.email ?? '-'}  mailboxes=${m.accountCount}  keys=${m.apiKeyCount}`,
+        );
       }
     });
 
   membersCmd
     .command('remove')
     .argument('<memberId>')
-    .description('Remove a member; their mailboxes become shared and their API keys are revoked')
+    .description('Remove a member after reassigning or removing their mailboxes')
     .action((memberId: string) => {
       const ctx = createContext();
       warnLicense(ctx.db);
       try {
-        const { name, freedAccounts, revokedApiKeys } = removeMember(ctx.db, memberId);
-        console.log(
-          `Removed ${name}. ${freedAccounts} mailbox(es) are now shared and ${revokedApiKeys} API key(s) revoked.`,
-        );
+        const { name, revokedApiKeys } = removeMember(ctx.db, memberId);
+        console.log(`Removed ${name} and revoked ${revokedApiKeys} API key(s).`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  membersCmd
+    .command('role')
+    .argument('<member>', 'Member id or email')
+    .argument('<role>', 'admin or member')
+    .description('Change a member role')
+    .action((memberRef: string, role: string) => {
+      const ctx = createContext();
+      warnLicense(ctx.db);
+      try {
+        if (role !== 'admin' && role !== 'member') {
+          throw new EmailError('invalid_request', 'Role must be "admin" or "member".');
+        }
+        const member = setMemberRole(ctx.db, memberRef, role);
+        console.log(`${member.name} now has the ${member.role} role.`);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
@@ -654,20 +785,22 @@ export function createCliProgram(): Command {
   apikey
     .command('create')
     .requiredOption('--name <name>', 'Human-readable key name')
-    .option('--member <member>', 'Member (id or email) the key is issued to')
+    .requiredOption('--member <member>', 'Member (id or email) the key is issued to')
+    .option('--account <account>', 'Limit the key to one mailbox; repeat as needed', collectOption, [])
     .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
     .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
     .description('Create an API key (shown once)')
-    .action((opts: { name: string; member?: string } & PermissionOptions) => {
+    .action((opts: { name: string; member: string; account: string[] } & PermissionOptions) => {
       const ctx = createContext();
       warnLicense(ctx.db);
       try {
-        const member = opts.member ? findMember(ctx.db, opts.member) : undefined;
+        const member = findMember(ctx.db, opts.member);
+        const accountIds = accountIdsFromRefs(ctx, opts.account);
         const permissions = permissionPolicyFromOptions(opts);
-        const { key, info } = createApiKey(ctx.db, opts.name, member?.id, permissions);
+        const { key, info } = createApiKey(ctx.db, opts.name, member.id, permissions, accountIds);
         console.log(
           `Created API key "${info.name}" (id: ${info.id}, profile: ${info.permissionProfile})` +
-            (member ? ` for member ${member.name}` : '') +
+            ` for member ${member.name}` +
             '\n',
         );
         console.log(`  ${key}\n`);
@@ -686,18 +819,47 @@ export function createCliProgram(): Command {
       warnLicense(ctx.db);
       const keys = listApiKeys(ctx.db);
       if (!keys.length) {
-        console.log('No API keys. Run "fluxmail apikey create --name <name>".');
+        console.log('No API keys. Run "fluxmail apikey create --name <name> --member <member>".');
         return;
       }
       const memberNames = new Map(listMembers(ctx.db).map((m) => [m.id, m.name]));
       for (const k of keys) {
         const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : 'never';
-        const member = k.memberId ? (memberNames.get(k.memberId) ?? k.memberId) : '-';
+        const member = k.memberId ? (memberNames.get(k.memberId) ?? k.memberId) : 'system';
+        const accountScope = k.accountIds === null ? 'all granted' : k.accountIds.join(',') || 'none';
         console.log(
-          `${k.id}  ${k.name}  member=${member}  profile=${k.permissionProfile}` +
+          `${k.id}  ${k.name}  member=${member}  accounts=${accountScope}  profile=${k.permissionProfile}` +
             (k.permissionProfile === 'custom' ? `  allows=${k.capabilities.join(',')}` : '') +
             `  created=${new Date(k.createdAt).toISOString()}  lastUsed=${lastUsed}`,
         );
+      }
+    });
+
+  apikey
+    .command('accounts')
+    .argument('<keyId>')
+    .option('--account <account>', 'Replace the allowlist with this mailbox; repeat as needed', collectOption, [])
+    .option('--all-accounts', 'Clear the allowlist')
+    .description('Replace or clear an API key mailbox allowlist')
+    .action((keyId: string, opts: { account: string[]; allAccounts?: boolean }) => {
+      const ctx = createContext();
+      warnLicense(ctx.db);
+      try {
+        if (Boolean(opts.allAccounts) === Boolean(opts.account.length)) {
+          throw new EmailError('invalid_request', 'Pass --all-accounts or at least one --account.');
+        }
+        const accountIds = opts.allAccounts ? null : accountIdsFromRefs(ctx, opts.account);
+        if (!updateApiKeyAccounts(ctx.db, keyId, accountIds)) {
+          throw new EmailError('not_found', `No key with id ${keyId}.`);
+        }
+        console.log(
+          accountIds === null
+            ? `Cleared the mailbox allowlist for ${keyId}.`
+            : `Updated ${keyId} to ${accountIds.length} mailbox(es).`,
+        );
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
       }
     });
 

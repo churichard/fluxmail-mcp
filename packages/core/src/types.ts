@@ -1,4 +1,5 @@
 export type Provider = 'gmail' | 'outlook' | 'imap';
+export type AccountSharingMode = 'private' | 'all' | 'selected';
 
 export interface Capabilities {
   /** Gmail: many-to-many labels. Outlook/IMAP: a message lives in exactly one folder. */
@@ -18,7 +19,12 @@ export interface Account {
   displayName?: string;
   status: 'active' | 'auth_error' | 'disabled';
   capabilities: Capabilities;
-  /** Owning member on the instance; absent means the mailbox is shared. */
+  /** Owning member on the instance. */
+  ownerId?: string;
+  sharingMode: AccountSharingMode;
+  /** Populated when sharingMode is selected. */
+  sharedMemberIds: string[];
+  /** @deprecated Use ownerId. */
   memberId?: string;
 }
 

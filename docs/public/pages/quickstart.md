@@ -1,7 +1,7 @@
 ---
 title: 'Quickstart'
 description: 'Install the self-hosted Fluxmail MCP server, connect Gmail or an IMAP mailbox, and add it to your AI agent in about 10 minutes.'
-updated: '2026-07-13'
+updated: '2026-07-14'
 ---
 
 Fluxmail is a self-hosted MCP server that connects AI agents to Gmail and IMAP/SMTP mailboxes. It runs on your machine or a server you control and gives any MCP client the same tools to read, search, draft, send, and organize mail over stdio or Streamable HTTP.
@@ -39,7 +39,15 @@ which fluxmail
 
 Keep that path handy. Some desktop apps start with a limited `PATH`. If your client cannot find `fluxmail`, use the absolute path returned by this command.
 
-To run Fluxmail without installing it globally, replace `fluxmail` in any local command with `npx -y fluxmail@latest`. For example: `npx -y fluxmail@latest accounts add gmail`.
+To run Fluxmail without installing it globally, replace `fluxmail` in any local command with `npx -y fluxmail@latest`.
+
+Create the member whose mailbox you are connecting. Even a personal instance needs one member because every MCP connection and mailbox is scoped to a person.
+
+```bash
+fluxmail members add --name "Your name" --email you@example.com
+```
+
+The first member is an administrator.
 
 ### 2. Connect an email account
 
@@ -54,7 +62,7 @@ Store the Google credentials once, then start the browser consent flow:
 ```bash
 fluxmail config set GOOGLE_CLIENT_ID <your-client-id>.apps.googleusercontent.com
 fluxmail config set GOOGLE_CLIENT_SECRET <your-client-secret>
-fluxmail accounts add gmail
+fluxmail accounts add gmail --owner you@example.com
 ```
 
 #### Option B: IMAP and SMTP
@@ -63,6 +71,7 @@ Find the IMAP and SMTP hostnames for your email provider, then run the command b
 
 ```bash
 fluxmail accounts add imap \
+  --owner you@example.com \
   --email you@example.com \
   --imap-host imap.example.com \
   --smtp-host smtp.example.com
@@ -72,13 +81,13 @@ The [IMAP setup guide](/docs/connect-an-imap-mailbox) covers app passwords, cust
 
 ### 3. Connect your agent
 
-Every stdio client launches `fluxmail stdio`. These examples use Fluxmail's default `full` profile, which includes every tool. See [Limit what an MCP client can do](/docs/permissions) if you want to restrict a connection.
+Every stdio client launches `fluxmail stdio` with the member it acts for. These examples use Fluxmail's default `full` profile, which includes every tool. See [Limit what an MCP client can do](/docs/permissions) if you want to restrict a connection.
 
 <details>
 <summary>Claude Code</summary>
 
 ```bash
-claude mcp add fluxmail -- fluxmail stdio
+claude mcp add fluxmail -- fluxmail stdio --member you@example.com
 ```
 
 </details>
@@ -93,7 +102,7 @@ Add to `claude_desktop_config.json` (Settings → Developer → Edit Config):
   "mcpServers": {
     "fluxmail": {
       "command": "fluxmail",
-      "args": ["stdio"]
+      "args": ["stdio", "--member", "you@example.com"]
     }
   }
 }
@@ -109,7 +118,7 @@ Open Settings → Plugins → MCPs → Add server, then enter:
 - Name: `Fluxmail`
 - Type: `STDIO`
 - Command to launch: `fluxmail`
-- Argument: `stdio`
+- Arguments: `stdio`, `--member`, `you@example.com`
 
 Save, then restart the app so it picks up the change.
 
@@ -119,7 +128,7 @@ Save, then restart the app so it picks up the change.
 <summary>Codex CLI</summary>
 
 ```bash
-codex mcp add fluxmail -- fluxmail stdio
+codex mcp add fluxmail -- fluxmail stdio --member you@example.com
 ```
 
 Or in `~/.codex/config.toml`:
@@ -127,7 +136,7 @@ Or in `~/.codex/config.toml`:
 ```toml
 [mcp_servers.fluxmail]
 command = "fluxmail"
-args = ["stdio"]
+args = ["stdio", "--member", "you@example.com"]
 ```
 
 </details>
@@ -142,7 +151,7 @@ Add to `~/.cursor/mcp.json` (or `.cursor/mcp.json` in a project):
   "mcpServers": {
     "fluxmail": {
       "command": "fluxmail",
-      "args": ["stdio"]
+      "args": ["stdio", "--member", "you@example.com"]
     }
   }
 }
@@ -159,7 +168,7 @@ Add to `~/.hermes/config.yaml`, then run `/reload-mcp` (or use the dashboard at 
 mcp_servers:
   fluxmail:
     command: 'fluxmail'
-    args: ['stdio']
+    args: ['stdio', '--member', 'you@example.com']
 ```
 
 </details>
@@ -174,7 +183,7 @@ Add to `~/.gemini/settings.json`:
   "mcpServers": {
     "fluxmail": {
       "command": "fluxmail",
-      "args": ["stdio"]
+      "args": ["stdio", "--member", "you@example.com"]
     }
   }
 }
@@ -185,7 +194,7 @@ Add to `~/.gemini/settings.json`:
 <details>
 <summary>Other stdio clients</summary>
 
-Register `fluxmail` as the command with `stdio` as its argument.
+Register `fluxmail` as the command with `stdio`, `--member`, and the member's email address as its arguments.
 
 </details>
 
@@ -221,7 +230,10 @@ Gmail requires a Google Cloud OAuth app that you own. Complete the **Create a Go
 
 ```bash
 docker compose up -d
-docker compose exec fluxmail fluxmail accounts add gmail
+docker compose exec fluxmail \
+  fluxmail members add --name "Your name" --email you@example.com
+docker compose exec fluxmail \
+  fluxmail accounts add gmail --owner you@example.com
 ```
 
 On local Docker, the command prints a Google consent URL and waits for the callback on `localhost:8976`. On a remote deployment with `FLUXMAIL_PUBLIC_URL` set, it prints a one-time connection link instead. Open the link in your browser, choose the Google account, and approve access. Hosted links expire after 10 minutes and do not require an API key.
@@ -232,9 +244,12 @@ Find your provider's IMAP and SMTP hostnames. Start the container, then pass the
 
 ```bash
 docker compose up -d
+docker compose exec fluxmail \
+  fluxmail members add --name "Your name" --email you@example.com
 export IMAP_PASSWORD='your-app-password'
 docker compose exec -e IMAP_PASSWORD fluxmail \
   fluxmail accounts add imap \
+  --owner you@example.com \
   --email you@example.com \
   --imap-host imap.example.com \
   --smtp-host smtp.example.com \
@@ -248,10 +263,11 @@ The [IMAP setup guide](/docs/connect-an-imap-mailbox) covers app passwords, cust
 Create a key for the MCP client. Fluxmail displays the key once, so copy it when it appears:
 
 ```bash
-docker compose exec fluxmail fluxmail apikey create --name laptop
+docker compose exec fluxmail \
+  fluxmail apikey create --name laptop --member you@example.com
 ```
 
-New API keys use the `full` profile by default. See [Limit what an MCP client can do](/docs/permissions) to choose a narrower profile or change the key later.
+The key can reach mailboxes available to that member. Add `--account <account-id>` one or more times to narrow it further. New API keys use the `full` profile by default. See [Limit what an MCP client can do](/docs/permissions) to choose a narrower profile or change the key later.
 
 ### 4. Connect your agent
 

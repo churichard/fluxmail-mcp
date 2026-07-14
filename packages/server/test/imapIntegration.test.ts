@@ -11,6 +11,7 @@ import { SendScheduler } from '../src/scheduler/sendScheduler.js';
 import { EmailService } from '../src/service/emailService.js';
 import { openDb, type FluxmailDb } from '../src/storage/db.js';
 import { createScheduledSend, getScheduledSend } from '../src/storage/scheduledSends.js';
+import { addMember } from '../src/storage/members.js';
 
 const host = process.env.GREENMAIL_HOST;
 
@@ -65,7 +66,8 @@ describe.skipIf(!host).sequential('IMAP account persistence integration', () => 
     let db = openDb(dbPath);
     let registry = new AccountRegistry(db, appConfig);
     expect(await registry.testImapCredentials('server@localhost', credentials)).toEqual([]);
-    const account = registry.addImapAccount('server@localhost', credentials);
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addImapAccount('server@localhost', credentials, undefined, owner.id);
     const firstProvider = registry.getProvider(account.id);
     const draft = await firstProvider.createDraft({
       to: [{ email: 'server@localhost' }],

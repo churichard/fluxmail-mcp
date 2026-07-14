@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { EmailError } from '@fluxmail/core';
 import { AccountRegistry } from '../src/accounts/registry.js';
-import { accountCredentials, oauthTokens, openDb } from '../src/storage/db.js';
+import { accountCredentials, accounts, members, oauthTokens, openDb } from '../src/storage/db.js';
 import { addMember } from '../src/storage/members.js';
 import { decryptString } from '../src/storage/crypto.js';
 import type { FluxmailConfig } from '../src/config.js';
@@ -46,8 +46,9 @@ describe('AccountRegistry', () => {
     const config = testConfig();
     const db = openDb(':memory:');
     const registry = new AccountRegistry(db, config);
+    const owner = addMember(db, { name: 'Owner' });
 
-    const account = registry.addGmailAccount('me@example.com', tokens);
+    const account = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
     expect(account.provider).toBe('gmail');
     expect(account.status).toBe('active');
 
@@ -58,12 +59,14 @@ describe('AccountRegistry', () => {
   });
 
   it('enforces the Personal-plan mailbox limit', () => {
-    const registry = new AccountRegistry(openDb(':memory:'), testConfig());
-    registry.addGmailAccount('one@example.com', tokens);
-    registry.addGmailAccount('two@example.com', tokens);
-    registry.addGmailAccount('three@example.com', tokens);
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const owner = addMember(db, { name: 'Owner' });
+    registry.addGmailAccount('one@example.com', tokens, undefined, owner.id);
+    registry.addGmailAccount('two@example.com', tokens, undefined, owner.id);
+    registry.addGmailAccount('three@example.com', tokens, undefined, owner.id);
     try {
-      registry.addGmailAccount('four@example.com', tokens);
+      registry.addGmailAccount('four@example.com', tokens, undefined, owner.id);
       expect.unreachable();
     } catch (err) {
       expect((err as EmailError).code).toBe('entitlement_exceeded');
@@ -75,7 +78,8 @@ describe('AccountRegistry', () => {
     const config = testConfig();
     const db = openDb(':memory:');
     const registry = new AccountRegistry(db, config);
-    const account = registry.addImapAccount('me@example.com', imapCredentials);
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addImapAccount('me@example.com', imapCredentials, undefined, owner.id);
 
     expect(account).toMatchObject({
       provider: 'imap',
@@ -88,8 +92,10 @@ describe('AccountRegistry', () => {
 
   it('updates IMAP folder configuration and evicts the cached provider', () => {
     const config = testConfig();
-    const registry = new AccountRegistry(openDb(':memory:'), config);
-    const account = registry.addImapAccount('me@example.com', imapCredentials);
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, config);
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addImapAccount('me@example.com', imapCredentials, undefined, owner.id);
     const firstProvider = registry.getProvider(account.id);
     const updated = { ...imapCredentials, folderOverrides: { sent: 'Sent Items', drafts: 'Drafts' } };
 
@@ -116,10 +122,12 @@ describe('AccountRegistry', () => {
   });
 
   it('rejects reauthorization for a different IMAP mailbox', () => {
-    const registry = new AccountRegistry(openDb(':memory:'), testConfig());
-    const account = registry.addImapAccount('me@example.com', imapCredentials);
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addImapAccount('me@example.com', imapCredentials, undefined, owner.id);
     expect(() =>
-      registry.addImapAccount('other@example.com', imapCredentials, undefined, undefined, account.id),
+      registry.addImapAccount('other@example.com', imapCredentials, undefined, owner.id, account.id),
     ).toThrow(/does not match IMAP mailbox/);
   });
 
@@ -153,11 +161,63 @@ describe('AccountRegistry', () => {
     });
   });
 
+  it('keeps Gmail and cascades cleanup for legacy cross-provider duplicates', () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-deduplicate-'));
+    const dbPath = path.join(dataDir, 'fluxmail.db');
+    const sqlite = new Database(dbPath);
+    sqlite.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE accounts (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        email TEXT NOT NULL,
+        display_name TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE account_credentials (
+        account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+        encrypted_credentials TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO accounts VALUES ('acct_imap', 'imap', 'Me@example.com', NULL, 'active', 1);
+      INSERT INTO accounts VALUES ('acct_gmail', 'gmail', 'me@example.com', NULL, 'active', 2);
+      INSERT INTO account_credentials VALUES ('acct_imap', 'imap-secret', 1);
+      INSERT INTO account_credentials VALUES ('acct_gmail', 'gmail-secret', 2);
+    `);
+    sqlite.close();
+
+    const db = openDb(dbPath);
+    expect(new AccountRegistry(db, testConfig()).listAccounts().map((account) => account.id)).toEqual(['acct_gmail']);
+    expect(
+      db
+        .select()
+        .from(accountCredentials)
+        .all()
+        .map((row) => row.accountId),
+    ).toEqual(['acct_gmail']);
+    expect(() =>
+      db
+        .insert(accounts)
+        .values({
+          id: 'acct_duplicate',
+          provider: 'imap',
+          email: 'ME@EXAMPLE.COM',
+          status: 'active',
+          createdAt: 3,
+          sharingMode: 'all',
+        })
+        .run(),
+    ).toThrow(/UNIQUE/);
+  });
+
   it('detects the mailbox limit before starting an OAuth flow', () => {
-    const registry = new AccountRegistry(openDb(':memory:'), testConfig());
-    registry.addGmailAccount('one@example.com', tokens);
-    registry.addGmailAccount('two@example.com', tokens);
-    registry.addGmailAccount('three@example.com', tokens);
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const owner = addMember(db, { name: 'Owner' });
+    registry.addGmailAccount('one@example.com', tokens, undefined, owner.id);
+    registry.addGmailAccount('two@example.com', tokens, undefined, owner.id);
+    registry.addGmailAccount('three@example.com', tokens, undefined, owner.id);
 
     expect(() => registry.assertCanAddAccount()).toThrow(
       /Personal plan allows 3 connected mailboxes.*--reauthorize <account-id>/,
@@ -171,7 +231,40 @@ describe('AccountRegistry', () => {
 
     const account = registry.addGmailAccount('one@example.com', tokens, undefined, member.id);
     expect(account.memberId).toBe(member.id);
+    expect(account.ownerId).toBe(member.id);
+    expect(account.sharingMode).toBe('private');
     expect(registry.listAccounts()[0]?.memberId).toBe(member.id);
+  });
+
+  it('replaces private, global, and selected mailbox access', () => {
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const owner = addMember(db, { name: 'Owner' });
+    db.insert(members)
+      .values({ id: 'member_guest', name: 'Guest', email: null, role: 'member', createdAt: Date.now() + 1 })
+      .run();
+    const account = registry.addGmailAccount('one@example.com', tokens, undefined, owner.id);
+
+    expect(registry.setAccountAccess(account.id, { sharingMode: 'all' }).sharingMode).toBe('all');
+    expect(
+      registry.setAccountAccess(account.id, { sharingMode: 'selected', sharedMemberIds: ['member_guest'] }),
+    ).toMatchObject({ sharingMode: 'selected', sharedMemberIds: ['member_guest'] });
+    expect(registry.setAccountAccess(account.id, { sharingMode: 'private' })).toMatchObject({
+      sharingMode: 'private',
+      sharedMemberIds: [],
+    });
+  });
+
+  it('treats mailbox addresses as case-insensitive across providers', () => {
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const owner = addMember(db, { name: 'Owner' });
+    const first = registry.addGmailAccount('Me@Example.com', tokens, undefined, owner.id);
+    expect(registry.addGmailAccount('me@example.com', tokens, undefined, owner.id).id).toBe(first.id);
+    expect(() => registry.addImapAccount('ME@example.com', imapCredentials, undefined, owner.id)).toThrow(
+      /already connected through gmail/,
+    );
+    expect(registry.findAccount('mE@EXAMPLE.com').id).toBe(first.id);
   });
 
   it('rejects an unknown member when adding a mailbox', () => {
@@ -181,15 +274,15 @@ describe('AccountRegistry', () => {
     );
   });
 
-  it('assignAccountMember moves a mailbox between a member and shared', () => {
+  it('requires an owner during creation and reassignment', () => {
     const db = openDb(':memory:');
     const registry = new AccountRegistry(db, testConfig());
     const member = addMember(db, { name: 'Alice' });
-    const account = registry.addGmailAccount('one@example.com', tokens);
-    expect(account.memberId).toBeUndefined();
+    expect(() => registry.addGmailAccount('one@example.com', tokens)).toThrow(/owner is required/i);
+    const account = registry.addGmailAccount('one@example.com', tokens, undefined, member.id);
 
     expect(registry.assignAccountMember(account.id, member.id).memberId).toBe(member.id);
-    expect(registry.assignAccountMember(account.id, null).memberId).toBeUndefined();
+    expect(() => registry.assignAccountMember(account.id, null)).toThrow(/must have an owner/i);
   });
 
   it('re-authenticating keeps the existing owner', () => {
@@ -214,14 +307,17 @@ describe('AccountRegistry', () => {
       END;
     `);
     const registry = new AccountRegistry(db, testConfig());
+    const owner = addMember(db, { name: 'Owner' });
 
-    expect(() => registry.addGmailAccount('me@example.com', tokens)).toThrow(/token write failed/);
+    expect(() => registry.addGmailAccount('me@example.com', tokens, undefined, owner.id)).toThrow(/token write failed/);
     expect(registry.listAccounts()).toEqual([]);
   });
 
   it('re-adding the same address re-authenticates instead of erroring', () => {
-    const registry = new AccountRegistry(openDb(':memory:'), testConfig());
-    const first = registry.addGmailAccount('me@example.com', tokens);
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const owner = addMember(db, { name: 'Owner' });
+    const first = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
     const second = registry.addGmailAccount('me@example.com', { ...tokens, refresh_token: 'rt_new' });
     expect(second.id).toBe(first.id);
     expect(registry.listAccounts()).toHaveLength(1);
@@ -234,8 +330,10 @@ describe('AccountRegistry', () => {
       dataDir,
       dbPath: path.join(dataDir, 'fluxmail.db'),
     };
-    const firstRegistry = new AccountRegistry(openDb(config.dbPath), config);
-    const account = firstRegistry.addGmailAccount('me@example.com', tokens);
+    const firstDb = openDb(config.dbPath);
+    const firstRegistry = new AccountRegistry(firstDb, config);
+    const owner = addMember(firstDb, { name: 'Owner' });
+    const account = firstRegistry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
     const cachedProvider = firstRegistry.getProvider(account.id);
 
     const secondRegistry = new AccountRegistry(openDb(config.dbPath), config);
@@ -245,17 +343,21 @@ describe('AccountRegistry', () => {
   });
 
   it('resolveAccountId defaults to the sole account and errors when ambiguous or empty', () => {
-    const registry = new AccountRegistry(openDb(':memory:'), testConfig());
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
     expect(() => registry.resolveAccountId()).toThrow(/No email accounts/);
-    const account = registry.addGmailAccount('me@example.com', tokens);
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
     expect(registry.resolveAccountId()).toBe(account.id);
     expect(registry.resolveAccountId(account.id)).toBe(account.id);
     expect(() => registry.resolveAccountId('acct_nope')).toThrow(EmailError);
   });
 
   it('removeAccount deletes the account', () => {
-    const registry = new AccountRegistry(openDb(':memory:'), testConfig());
-    const account = registry.addGmailAccount('me@example.com', tokens);
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
     registry.removeAccount(account.id);
     expect(registry.listAccounts()).toHaveLength(0);
   });

@@ -21,7 +21,7 @@ import {
 import type { AccountRegistry } from '../accounts/registry.js';
 import { assertWithinQuota, checkLicenseState, type Entitlements } from '../licensing/entitlements.js';
 import type { FluxmailDb } from '../storage/db.js';
-import { listMembers } from '../storage/members.js';
+import { listMembers, type MemberRole } from '../storage/members.js';
 import {
   cancelScheduledSend,
   countPending,
@@ -39,10 +39,13 @@ export interface SendInput extends DraftInput {
   replyAll?: boolean;
 }
 
-/** The mailboxes an API key may reach: everything for admin keys, shared + owned for member keys. */
 export interface AccessScope {
-  /** Member the key is scoped to; null grants unscoped admin access. */
+  /** null identifies a trusted local caller or a migrated system credential. */
   memberId: string | null;
+  /** Omitted for trusted local callers; null for management-only system credentials. */
+  role?: MemberRole | null;
+  /** Optional extra narrowing applied after member mailbox grants. */
+  accountIds?: string[] | null;
 }
 
 const ADMIN_SCOPE: AccessScope = { memberId: null };
@@ -58,7 +61,7 @@ export interface ForwardInput {
 
 export interface ServiceStatus {
   accounts: Array<
-    Pick<Account, 'id' | 'provider' | 'email' | 'status' | 'memberId'> & {
+    Pick<Account, 'id' | 'provider' | 'email' | 'status' | 'ownerId' | 'memberId'> & {
       error?: { code: string; message: string };
       warnings?: string[];
     }
@@ -138,9 +141,8 @@ export class EmailService {
   ) {}
 
   /**
-   * A view of this service restricted to one member's mailboxes (shared + owned).
-   * The HTTP layer scopes each request to the authenticated API key's member;
-   * unscoped admin keys keep full access.
+   * A view restricted to a member's mailbox grants and optional connection
+   * allowlist. Trusted local callers use the default service instead.
    */
   withScope(scope: AccessScope): EmailService {
     const scoped = new EmailService(this.registry, this.db, scope);
@@ -148,18 +150,44 @@ export class EmailService {
     return scoped;
   }
 
-  /** Shared mailboxes and, for member keys, the member's own mailboxes. */
+  private isTrustedLocal(): boolean {
+    return this.scope.memberId === null && this.scope.role === undefined;
+  }
+
+  private isAdministrator(): boolean {
+    return (
+      this.isTrustedLocal() || this.scope.role === 'admin' || (this.scope.memberId === null && this.scope.role === null)
+    );
+  }
+
   private canAccess(account: Account): boolean {
-    return this.scope.memberId === null || account.memberId == null || account.memberId === this.scope.memberId;
+    const memberId = this.scope.memberId;
+    const granted =
+      this.isTrustedLocal() ||
+      (memberId !== null &&
+        (account.ownerId === memberId ||
+          account.memberId === memberId ||
+          (account.sharingMode === undefined && account.ownerId === undefined && account.memberId === undefined) ||
+          account.sharingMode === 'all' ||
+          (account.sharingMode === 'selected' && account.sharedMemberIds.includes(memberId))));
+    const allowlist = this.scope.accountIds;
+    return granted && (allowlist == null || allowlist.includes(account.id));
   }
 
   private accessibleAccounts(): Account[] {
     const all = this.registry.listAccounts();
-    return this.scope.memberId === null ? all : all.filter((a) => this.canAccess(a));
+    return all.filter((a) => this.canAccess(a));
+  }
+
+  private metadataAccounts(): Account[] {
+    if (!this.isAdministrator()) return this.accessibleAccounts();
+    const all = this.registry.listAccounts();
+    const allowlist = this.scope.accountIds;
+    return allowlist == null ? all : all.filter((account) => allowlist.includes(account.id));
   }
 
   /**
-   * Resolve an account id within the current scope. A member-scoped key defaults
+   * Resolve an account id within the current scope. A member connection defaults
    * to its sole accessible mailbox and can never reach another member's mailbox;
    * inaccessible ids surface as not_found so a key cannot probe for their existence.
    */
@@ -171,7 +199,7 @@ export class EmailService {
       }
       return account.id;
     }
-    if (this.scope.memberId === null) return this.registry.resolveAccountId();
+    if (this.isTrustedLocal()) return this.registry.resolveAccountId();
     const accessible = this.accessibleAccounts();
     if (accessible.length === 0) {
       throw new EmailError('invalid_request', 'No email accounts are available for this member.');
@@ -210,15 +238,15 @@ export class EmailService {
   }
 
   listAccounts(): Account[] {
-    return this.accessibleAccounts();
+    return this.metadataAccounts();
   }
 
   async status(): Promise<ServiceStatus> {
-    const accounts = this.accessibleAccounts();
+    const accessibleAccounts = this.accessibleAccounts();
     const errors = new Map<string, { code: string; message: string }>();
     const warnings = new Map<string, string[]>();
     await Promise.all(
-      accounts
+      accessibleAccounts
         .filter((account) => account.status !== 'disabled')
         .map(async (account) => {
           try {
@@ -249,15 +277,16 @@ export class EmailService {
         }),
     );
 
-    const admin = this.scope.memberId === null;
+    const admin = this.isAdministrator();
     const license = admin ? checkLicenseState(this.db) : undefined;
     return {
       // Re-read so statuses reflect any markStatus writes from the live checks above.
-      accounts: this.accessibleAccounts().map(({ id, provider, email, status, memberId }) => ({
+      accounts: this.metadataAccounts().map(({ id, provider, email, status, ownerId, memberId }) => ({
         id,
         provider,
         email,
         status,
+        ...(ownerId ? { ownerId } : {}),
         ...(memberId ? { memberId } : {}),
         ...(errors.has(id) ? { error: errors.get(id)! } : {}),
         ...(warnings.has(id) ? { warnings: warnings.get(id)! } : {}),
@@ -280,7 +309,7 @@ export class EmailService {
    * while the license is in its grace period or has lapsed.
    */
   enforceQuota(): string | undefined {
-    if (this.scope.memberId !== null) {
+    if (!this.isAdministrator()) {
       const state = checkLicenseState(this.db);
       if (state.overQuota) {
         throw new EmailError(
@@ -295,7 +324,7 @@ export class EmailService {
   }
 
   private scheduledStatus(): ServiceStatus['scheduled'] {
-    if (this.scope.memberId === null) {
+    if (this.isTrustedLocal()) {
       const { pending, nextSendAt } = countPending(this.db);
       return {
         pending,
@@ -404,7 +433,7 @@ export class EmailService {
     }
     // Listing must work across accounts, but a member key only sees its own mailboxes'.
     const rows = listScheduledSends(this.db);
-    if (this.scope.memberId === null) return rows.map(toScheduledInfo);
+    if (this.isTrustedLocal()) return rows.map(toScheduledInfo);
     const accessible = new Set(this.accessibleAccounts().map((a) => a.id));
     return rows.filter((r) => accessible.has(r.accountId)).map(toScheduledInfo);
   }

@@ -9,6 +9,7 @@ import {
   createApiKey,
   listApiKeys,
   revokeApiKey,
+  updateApiKeyAccounts,
   updateApiKeyPermissions,
   verifyApiKey,
 } from '../src/storage/apiKeys.js';
@@ -61,7 +62,8 @@ describe('crypto', () => {
 describe('api keys', () => {
   it('creates, verifies, and revokes', () => {
     const db = openDb(':memory:');
-    const { key, info } = createApiKey(db, 'test');
+    const member = addMember(db, { name: 'Alice' });
+    const { key, info } = createApiKey(db, 'test', member.id);
     expect(key).toMatch(/^fmk_/);
     expect(verifyApiKey(db, key)).toBe(true);
     expect(verifyApiKey(db, 'fmk_wrong')).toBe(false);
@@ -72,8 +74,9 @@ describe('api keys', () => {
 
   it('allows multiple keys', () => {
     const db = openDb(':memory:');
-    createApiKey(db, 'first');
-    createApiKey(db, 'second');
+    const member = addMember(db, { name: 'Alice' });
+    createApiKey(db, 'first', member.id);
+    createApiKey(db, 'second', member.id);
     expect(listApiKeys(db)).toHaveLength(2);
   });
 
@@ -83,6 +86,7 @@ describe('api keys', () => {
     const { key, info } = createApiKey(db, 'alice-key', member.id);
     expect(info.memberId).toBe(member.id);
     expect(listApiKeys(db)[0]?.memberId).toBe(member.id);
+    expect(authenticateApiKey(db, key)?.role).toBe('admin');
 
     removeMember(db, member.id);
     expect(listApiKeys(db)).toHaveLength(0);
@@ -94,10 +98,16 @@ describe('api keys', () => {
     expect(() => createApiKey(db, 'key', 'member_nope')).toThrow(/No member with id/);
   });
 
+  it('does not create memberless system credentials', () => {
+    const db = openDb(':memory:');
+    expect(() => createApiKey(db, 'system')).toThrow(/member is required/i);
+  });
+
   it('stores named and custom permission policies', () => {
     const db = openDb(':memory:');
-    const readOnly = createApiKey(db, 'reader', undefined, permissionPolicyForProfile('read-only'));
-    const custom = createApiKey(db, 'organizer', undefined, customPermissionPolicy(['mail.read', 'mail.trash']));
+    const member = addMember(db, { name: 'Alice' });
+    const readOnly = createApiKey(db, 'reader', member.id, permissionPolicyForProfile('read-only'));
+    const custom = createApiKey(db, 'organizer', member.id, customPermissionPolicy(['mail.read', 'mail.trash']));
 
     expect(authenticateApiKey(db, readOnly.key)?.permissions).toEqual(permissionPolicyForProfile('read-only'));
     expect(authenticateApiKey(db, custom.key)?.permissions).toEqual(
@@ -108,7 +118,8 @@ describe('api keys', () => {
 
   it('updates permissions without rotating the key', () => {
     const db = openDb(':memory:');
-    const { key, info } = createApiKey(db, 'test');
+    const member = addMember(db, { name: 'Alice' });
+    const { key, info } = createApiKey(db, 'test', member.id);
 
     expect(updateApiKeyPermissions(db, info.id, permissionPolicyForProfile('read-only'))).toBe(true);
     expect(authenticateApiKey(db, key)?.permissions).toEqual(permissionPolicyForProfile('read-only'));
@@ -117,12 +128,41 @@ describe('api keys', () => {
 
   it('fails authentication closed for malformed stored permissions', () => {
     const db = openDb(':memory:');
-    const { key, info } = createApiKey(db, 'test');
+    const member = addMember(db, { name: 'Alice' });
+    const { key, info } = createApiKey(db, 'test', member.id);
     db.update(apiKeys)
       .set({ permissionProfile: 'custom', customCapabilities: '["mail.read","unknown"]' })
       .where(eq(apiKeys.id, info.id))
       .run();
 
+    expect(authenticateApiKey(db, key)).toBeNull();
+  });
+
+  it('stores, replaces, clears, and validates mailbox allowlists', () => {
+    const db = openDb(':memory:');
+    const member = addMember(db, { name: 'Alice' });
+    db.insert(accounts)
+      .values({
+        id: 'acct_1',
+        provider: 'gmail',
+        email: 'alice@example.com',
+        status: 'active',
+        createdAt: Date.now(),
+        memberId: member.id,
+        sharingMode: 'private',
+      })
+      .run();
+    const { key, info } = createApiKey(db, 'scoped', member.id, undefined, ['acct_1', 'acct_1']);
+
+    expect(authenticateApiKey(db, key)?.accountIds).toEqual(['acct_1']);
+    db.delete(accounts).where(eq(accounts.id, 'acct_1')).run();
+    expect(authenticateApiKey(db, key)?.accountIds).toEqual(['acct_1']);
+    expect(updateApiKeyAccounts(db, info.id, ['acct_deleted'])).toBe(true);
+    expect(authenticateApiKey(db, key)?.accountIds).toEqual(['acct_deleted']);
+    expect(updateApiKeyAccounts(db, info.id, null)).toBe(true);
+    expect(authenticateApiKey(db, key)?.accountIds).toBeNull();
+
+    db.update(apiKeys).set({ accountIds: '{bad json' }).where(eq(apiKeys.id, info.id)).run();
     expect(authenticateApiKey(db, key)).toBeNull();
   });
 });
@@ -133,6 +173,8 @@ describe('Gmail connection grants', () => {
     const created = createGmailConnectionGrant(db, {
       memberId: 'member_1',
       reauthorizeAccountId: 'acct_1',
+      sharingMode: 'selected',
+      sharedMemberIds: ['member_2'],
     });
 
     expect(Buffer.from(created.token, 'base64url')).toHaveLength(32);
@@ -147,6 +189,8 @@ describe('Gmail connection grants', () => {
         expiresAt: created.expiresAt,
         memberId: 'member_1',
         reauthorizeAccountId: 'acct_1',
+        sharingMode: 'selected',
+        sharedMemberIds: ['member_2'],
       },
     });
     expect(inspectGmailConnectionGrant(db, created.token)).toBe('used');

@@ -24,6 +24,8 @@ MCP tools are thin wrappers over `EmailService`, which owns account routing, rep
 
 ## How permissions are enforced
 
-Stdio connections receive the permission policy passed when the process starts. Streamable HTTP connections receive the policy stored with their API key. Fluxmail registers only the tools and `modify_emails` actions allowed by that policy, then checks the capability again when the tool runs.
+Every connection acts for one member. Fluxmail first limits the connection to mailboxes that member can reach, then applies an optional account allowlist. An administrator can manage members and mailbox access, but the role does not grant access to private mailboxes.
+
+Stdio connections receive their member, account scope, and permission policy when the process starts. Streamable HTTP connections receive the same information from their API key. Fluxmail registers only the tools and `modify_emails` actions allowed by that policy, then checks mailbox access and capabilities again when a tool runs.
 
 Attachments are returned as embedded MCP resources. The Gmail and IMAP providers enforce the configured decoded-size limit before returning the file. The default limit is 10 MB, and the hard maximum is 25 MB.

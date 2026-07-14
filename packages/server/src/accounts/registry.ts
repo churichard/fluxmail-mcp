@@ -1,16 +1,21 @@
 import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { OAuth2Client, type Credentials } from 'google-auth-library';
-import { EmailError, type Account, type EmailProvider, type Provider } from '@fluxmail/core';
+import { EmailError, type Account, type AccountSharingMode, type EmailProvider, type Provider } from '@fluxmail/core';
 import { GmailProvider, GMAIL_CAPABILITIES } from '@fluxmail/provider-gmail';
 import { ImapProvider, IMAP_CAPABILITIES, type ImapCredentials } from '@fluxmail/provider-imap';
 import type { FluxmailConfig } from '../config.js';
-import { accountCredentials, accounts, oauthTokens, type FluxmailDb } from '../storage/db.js';
+import { accountCredentials, accountMemberShares, accounts, oauthTokens, type FluxmailDb } from '../storage/db.js';
 import { decryptString, encryptString } from '../storage/crypto.js';
 import { assertAccountLimit, getEntitlements } from '../licensing/entitlements.js';
 import { getMember } from '../storage/members.js';
 import { requireGoogleConfig } from './googleAuth.js';
 import { SqliteImapStateStore } from '../storage/imapState.js';
+
+export interface AccountAccessInput {
+  sharingMode: AccountSharingMode;
+  sharedMemberIds?: readonly string[];
+}
 
 export class AccountRegistry {
   private readonly providers = new Map<string, { provider: EmailProvider; encryptedCredentials: string }>();
@@ -27,6 +32,12 @@ export class AccountRegistry {
   }
 
   listAccounts(): Account[] {
+    const shares = new Map<string, string[]>();
+    for (const row of this.db.select().from(accountMemberShares).all()) {
+      const memberIds = shares.get(row.accountId) ?? [];
+      memberIds.push(row.memberId);
+      shares.set(row.accountId, memberIds);
+    }
     return this.db
       .select()
       .from(accounts)
@@ -38,7 +49,9 @@ export class AccountRegistry {
         ...(row.displayName ? { displayName: row.displayName } : {}),
         status: row.status as Account['status'],
         capabilities: row.provider === 'imap' ? IMAP_CAPABILITIES : GMAIL_CAPABILITIES,
-        ...(row.memberId ? { memberId: row.memberId } : {}),
+        sharingMode: row.sharingMode as AccountSharingMode,
+        sharedMemberIds: shares.get(row.id) ?? [],
+        ...(row.memberId ? { ownerId: row.memberId, memberId: row.memberId } : {}),
       }));
   }
 
@@ -46,6 +59,41 @@ export class AccountRegistry {
     const account = this.listAccounts().find((a) => a.id === accountId);
     if (!account) throw new EmailError('not_found', `No account with id "${accountId}"`);
     return account;
+  }
+
+  /** Resolve an account by canonical id or mailbox address. Email matching is case-insensitive. */
+  findAccount(ref: string): Account {
+    const normalized = ref.trim().toLowerCase();
+    const account = this.listAccounts().find(
+      (candidate) => candidate.id === ref || candidate.email.toLowerCase() === normalized,
+    );
+    if (!account) {
+      throw new EmailError('not_found', `No account with id or email "${ref}".`);
+    }
+    return account;
+  }
+
+  private normalizeAccess(ownerId: string | undefined, access?: AccountAccessInput): Required<AccountAccessInput> {
+    const sharingMode = access?.sharingMode ?? (ownerId ? 'private' : 'all');
+    const sharedMemberIds = sharingMode === 'selected' ? [...new Set(access?.sharedMemberIds ?? [])] : [];
+    for (const memberId of sharedMemberIds) getMember(this.db, memberId);
+    return { sharingMode, sharedMemberIds };
+  }
+
+  private writeAccess(
+    db: Pick<FluxmailDb, 'update' | 'delete' | 'insert'>,
+    accountId: string,
+    ownerId: string | undefined,
+    access?: AccountAccessInput,
+  ): void {
+    const normalized = this.normalizeAccess(ownerId, access);
+    db.update(accounts).set({ sharingMode: normalized.sharingMode }).where(eq(accounts.id, accountId)).run();
+    db.delete(accountMemberShares).where(eq(accountMemberShares.accountId, accountId)).run();
+    if (normalized.sharingMode === 'selected' && normalized.sharedMemberIds.length) {
+      db.insert(accountMemberShares)
+        .values(normalized.sharedMemberIds.map((memberId) => ({ accountId, memberId })))
+        .run();
+    }
   }
 
   /** Fail before OAuth when a new account would exceed the current plan. */
@@ -70,7 +118,7 @@ export class AccountRegistry {
     if (all.length === 0) {
       throw new EmailError(
         'invalid_request',
-        'No email accounts are connected yet. Run "fluxmail accounts add gmail" or "fluxmail accounts add imap".',
+        'No email accounts are connected yet. Run "fluxmail accounts add gmail --owner <member>" or "fluxmail accounts add imap --owner <member>".',
       );
     }
     if (all.length > 1) {
@@ -174,12 +222,24 @@ export class AccountRegistry {
     return provider;
   }
 
-  addGmailAccount(email: string, tokens: Credentials, displayName?: string, memberId?: string): Account {
+  addGmailAccount(
+    email: string,
+    tokens: Credentials,
+    displayName?: string,
+    memberId?: string,
+    access?: AccountAccessInput,
+  ): Account {
     // Validate up front for a clean not_found instead of a FK constraint error.
     if (memberId) getMember(this.db, memberId);
     const existing = this.db.select().from(accounts).all();
-    const duplicate = existing.find((a) => a.provider === 'gmail' && a.email === email);
+    const duplicate = existing.find((a) => a.email.toLowerCase() === email.toLowerCase());
     if (duplicate) {
+      if (duplicate.provider !== 'gmail') {
+        throw new EmailError(
+          'invalid_request',
+          `${duplicate.email} is already connected through ${duplicate.provider}. Remove it before connecting Gmail.`,
+        );
+      }
       // Re-authenticating an existing account: refresh tokens, clear error
       // state. Ownership is untouched; reassign with assignAccountMember.
       this.db.transaction((tx) => {
@@ -191,6 +251,9 @@ export class AccountRegistry {
       });
       this.evictProvider(duplicate.id);
       return this.getAccount(duplicate.id);
+    }
+    if (!memberId) {
+      throw new EmailError('invalid_request', 'An owner is required when connecting a mailbox.');
     }
 
     const id = `acct_${randomBytes(6).toString('hex')}`;
@@ -206,9 +269,11 @@ export class AccountRegistry {
           status: 'active',
           createdAt: Date.now(),
           memberId: memberId ?? null,
+          sharingMode: this.normalizeAccess(memberId, access).sharingMode,
         })
         .run();
       this.writeTokens(tx, id, tokens);
+      this.writeAccess(tx, id, memberId, access);
     });
     return this.getAccount(id);
   }
@@ -239,14 +304,21 @@ export class AccountRegistry {
     displayName?: string,
     memberId?: string,
     reauthorizeId?: string,
+    access?: AccountAccessInput,
   ): Account {
     if (memberId) getMember(this.db, memberId);
     const existingRows = this.db.select().from(accounts).all();
     const duplicate = reauthorizeId
       ? existingRows.find((row) => row.id === reauthorizeId)
-      : existingRows.find((row) => row.provider === 'imap' && row.email === email);
+      : existingRows.find((row) => row.email.toLowerCase() === email.toLowerCase());
     if (duplicate) {
-      if (duplicate.provider !== 'imap' || duplicate.email !== email) {
+      if (duplicate.provider !== 'imap' || duplicate.email.toLowerCase() !== email.toLowerCase()) {
+        if (duplicate.provider !== 'imap' && duplicate.email.toLowerCase() === email.toLowerCase()) {
+          throw new EmailError(
+            'invalid_request',
+            `${duplicate.email} is already connected through ${duplicate.provider}. Remove it before connecting IMAP.`,
+          );
+        }
         throw new EmailError('invalid_request', `Account ${duplicate.id} does not match IMAP mailbox ${email}.`);
       }
       this.db.transaction((tx) => {
@@ -258,6 +330,12 @@ export class AccountRegistry {
       });
       this.evictProvider(duplicate.id);
       return this.getAccount(duplicate.id);
+    }
+    if (reauthorizeId) {
+      throw new EmailError('not_found', `No account with id "${reauthorizeId}".`);
+    }
+    if (!memberId) {
+      throw new EmailError('invalid_request', 'An owner is required when connecting a mailbox.');
     }
 
     const id = `acct_${randomBytes(6).toString('hex')}`;
@@ -272,9 +350,11 @@ export class AccountRegistry {
           status: 'active',
           createdAt: Date.now(),
           memberId: memberId ?? null,
+          sharingMode: this.normalizeAccess(memberId, access).sharingMode,
         })
         .run();
       this.writeCredentials(tx, id, credentials);
+      this.writeAccess(tx, id, memberId, access);
     });
     return this.getAccount(id);
   }
@@ -293,11 +373,22 @@ export class AccountRegistry {
     this.evictProvider(accountId);
   }
 
-  /** Assign a mailbox to a member, or make it shared again (memberId = null). */
+  /** Deprecated storage alias for assignAccountOwner. */
   assignAccountMember(accountId: string, memberId: string | null): Account {
     this.getAccount(accountId);
-    if (memberId) getMember(this.db, memberId);
+    if (!memberId) throw new EmailError('invalid_request', 'A mailbox must have an owner.');
+    getMember(this.db, memberId);
     this.db.update(accounts).set({ memberId }).where(eq(accounts.id, accountId)).run();
+    return this.getAccount(accountId);
+  }
+
+  assignAccountOwner(accountId: string, memberId: string): Account {
+    return this.assignAccountMember(accountId, memberId);
+  }
+
+  setAccountAccess(accountId: string, access: AccountAccessInput): Account {
+    const account = this.getAccount(accountId);
+    this.db.transaction((tx) => this.writeAccess(tx, accountId, account.ownerId, access));
     return this.getAccount(accountId);
   }
 

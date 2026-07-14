@@ -1,12 +1,14 @@
 ---
 title: 'Limit what an MCP client can do'
 description: 'Give each local or HTTP MCP connection only the Fluxmail email permissions it needs.'
-updated: '2026-07-13'
+updated: '2026-07-14'
 ---
 
 Fluxmail can limit the email actions available to each MCP connection. Give a research agent read-only access, or let an inbox organizer manage messages without granting send or permanent-delete access.
 
-Permissions control which tools Fluxmail exposes to the client, and which actions are accepted by certain tools, e.g. `modify_emails`.
+Permissions control which tools Fluxmail exposes to the client and which actions are accepted by tools such as `modify_emails`.
+
+Mailbox scope is separate from permissions. The member and optional account allowlist decide which mailboxes a connection can reach. The permission profile decides what it can do with those mailboxes. Fluxmail applies both checks to every connection.
 
 ## Choose a permission profile
 
@@ -25,7 +27,7 @@ Fluxmail uses `full` when you do not choose a profile. Set a narrower profile fo
 Pass a profile when your MCP client launches Fluxmail:
 
 ```bash
-fluxmail stdio --profile read-only
+fluxmail stdio --member you@example.com --profile read-only
 ```
 
 For a client config file, put the profile in the argument list:
@@ -35,7 +37,13 @@ For a client config file, put the profile in the argument list:
   "mcpServers": {
     "fluxmail": {
       "command": "fluxmail",
-      "args": ["stdio", "--profile", "read-only"]
+      "args": [
+        "stdio",
+        "--member",
+        "you@example.com",
+        "--profile",
+        "read-only"
+      ]
     }
   }
 }
@@ -43,11 +51,17 @@ For a client config file, put the profile in the argument list:
 
 ## Limit an HTTP connection
 
-HTTP permissions belong to the API key. Create a separate key for each MCP client so you can change or revoke one connection without affecting the others.
+HTTP permissions belong to the API key. Each key also belongs to a member. Create a separate key for each MCP client so you can change or revoke one connection without affecting the others.
 
 ```bash
-fluxmail apikey create --name research-agent --profile read-only
-fluxmail apikey create --name inbox-agent --profile read-write
+fluxmail apikey create \
+  --name research-agent \
+  --member you@example.com \
+  --profile read-only
+fluxmail apikey create \
+  --name inbox-agent \
+  --member you@example.com \
+  --profile read-write
 ```
 
 The key is shown once. `fluxmail apikey list` shows each key ID and permission profile without revealing the secret.
@@ -84,6 +98,7 @@ Create a custom HTTP key like this:
 ```bash
 fluxmail apikey create \
   --name drafting-agent \
+  --member you@example.com \
   --allow mail.read \
   --allow mail.drafts
 ```
@@ -91,7 +106,10 @@ fluxmail apikey create \
 The same options work with stdio:
 
 ```bash
-fluxmail stdio --allow mail.read --allow mail.organize
+fluxmail stdio \
+  --member you@example.com \
+  --allow mail.read \
+  --allow mail.organize
 ```
 
 Some workflows need more than one capability. Reply drafts need `mail.drafts` and `mail.read`; replies need `mail.send` and `mail.read`; forwarding also needs `mail.send` and `mail.read`.

@@ -1,7 +1,7 @@
 ---
 title: 'Connect Gmail to the MCP server'
 description: 'Create a Google OAuth app, connect Gmail or Google Workspace, and reconnect an expired token.'
-updated: '2026-07-12'
+updated: '2026-07-14'
 ---
 
 Fluxmail connects to Gmail through a Google Cloud OAuth app that you own. Your Google credentials and OAuth tokens stay with the Fluxmail server you run.
@@ -41,6 +41,12 @@ Copy the client ID and client secret after Google creates them.
 
 Choose the setup that matches how you run Fluxmail.
 
+Create the member who will own the mailbox if they do not exist yet:
+
+```bash
+fluxmail members add --name "Your name" --email you@example.com
+```
+
 ### Local stdio
 
 Store the Google credentials in Fluxmail's local config, then start the browser consent flow:
@@ -48,7 +54,7 @@ Store the Google credentials in Fluxmail's local config, then start the browser 
 ```bash
 fluxmail config set GOOGLE_CLIENT_ID <your-client-id>.apps.googleusercontent.com
 fluxmail config set GOOGLE_CLIENT_SECRET <your-client-secret>
-fluxmail accounts add gmail
+fluxmail accounts add gmail --owner you@example.com
 ```
 
 The credentials are saved in `~/.fluxmail/config.env`. `fluxmail config list` shows stored settings with secret values masked.
@@ -76,12 +82,15 @@ Start or recreate the container, then run the same account command inside it:
 
 ```bash
 docker compose up -d
-docker compose exec fluxmail fluxmail accounts add gmail
+docker compose exec fluxmail \
+  fluxmail members add --name "Your name" --email you@example.com
+docker compose exec fluxmail \
+  fluxmail accounts add gmail --owner you@example.com
 ```
 
 On local Docker, the command prints a Google consent URL and waits for the callback on `localhost:8976`. On a remote deployment with `FLUXMAIL_PUBLIC_URL` set, it prints a one-time connection link instead. Open the link in your browser, choose the Google account, and approve access. Hosted links expire after 10 minutes and do not require an admin API key.
 
-Fluxmail uses the hosted flow whenever `FLUXMAIL_PUBLIC_URL` is set. Without it, `fluxmail accounts add gmail` uses the local callback at `http://localhost:8976/oauth/callback`. For troubleshooting, pass `--hosted` or `--local` to choose a flow explicitly.
+Fluxmail uses the hosted flow whenever `FLUXMAIL_PUBLIC_URL` is set. Without it, `fluxmail accounts add gmail --owner you@example.com` uses the local callback at `http://localhost:8976/oauth/callback`. For troubleshooting, pass `--hosted` or `--local` to choose a flow explicitly.
 
 ## Optional: avoid seven-day token expiration
 

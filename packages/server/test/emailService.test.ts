@@ -158,6 +158,17 @@ describe('EmailService member scope', () => {
     capabilities: {},
     memberId: 'member_bob',
   };
+  const selected = {
+    id: 'acct_selected',
+    provider: 'gmail',
+    email: 'selected@example.com',
+    status: 'active',
+    capabilities: {},
+    ownerId: 'member_bob',
+    memberId: 'member_bob',
+    sharingMode: 'selected',
+    sharedMemberIds: ['member_ann'],
+  };
 
   function scopedRegistry(all: Array<Record<string, unknown>>, listFolders = vi.fn().mockResolvedValue([])) {
     const byId = new Map(all.map((a) => [a.id as string, a]));
@@ -221,6 +232,61 @@ describe('EmailService member scope', () => {
     const service = new EmailService(registry as never, testDb());
 
     expect(service.listAccounts().map((a) => a.id)).toEqual(['acct_shared', 'acct_ann', 'acct_bob']);
+  });
+
+  it('grants selected sharing and intersects it with a connection allowlist', async () => {
+    const { registry, listFolders } = scopedRegistry([ann, bob, selected]);
+    const service = new EmailService(registry as never, testDb()).withScope({
+      memberId: 'member_ann',
+      role: 'member',
+      accountIds: ['acct_selected'],
+    });
+
+    expect(service.listAccounts().map((account) => account.id)).toEqual(['acct_selected']);
+    await expect(service.listFolders('acct_selected')).resolves.toEqual([]);
+    await expect(service.listFolders('acct_ann')).rejects.toMatchObject({ code: 'not_found' });
+    expect(listFolders).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets admins view mailbox metadata without granting private mailbox content', async () => {
+    const { registry, listFolders } = scopedRegistry([ann, bob]);
+    const service = new EmailService(registry as never, testDb()).withScope({
+      memberId: 'member_ann',
+      role: 'admin',
+      accountIds: null,
+    });
+
+    expect(service.listAccounts().map((account) => account.id)).toEqual(['acct_ann', 'acct_bob']);
+    await expect(service.listFolders('acct_bob')).rejects.toMatchObject({ code: 'not_found' });
+    expect(listFolders).not.toHaveBeenCalled();
+  });
+
+  it('intersects admin metadata views with a connection allowlist', async () => {
+    const { registry, listFolders } = scopedRegistry([ann, bob]);
+    const service = new EmailService(registry as never, testDb()).withScope({
+      memberId: 'member_ann',
+      role: 'admin',
+      accountIds: ['acct_bob'],
+    });
+
+    expect(service.listAccounts().map((account) => account.id)).toEqual(['acct_bob']);
+    const status = await service.status();
+    expect(status.accounts.map((account) => account.id)).toEqual(['acct_bob']);
+    await expect(service.listFolders('acct_bob')).rejects.toMatchObject({ code: 'not_found' });
+    expect(listFolders).not.toHaveBeenCalled();
+  });
+
+  it('keeps migrated memberless credentials management-only', async () => {
+    const { registry, listFolders } = scopedRegistry([ann, bob]);
+    const service = new EmailService(registry as never, testDb()).withScope({
+      memberId: null,
+      role: null,
+      accountIds: null,
+    });
+
+    expect(service.listAccounts().map((account) => account.id)).toEqual(['acct_ann', 'acct_bob']);
+    await expect(service.listFolders('acct_ann')).rejects.toMatchObject({ code: 'not_found' });
+    expect(listFolders).not.toHaveBeenCalled();
   });
 
   it('isolates scheduled sends between members', () => {

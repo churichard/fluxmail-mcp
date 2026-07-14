@@ -1,4 +1,4 @@
-import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -7,8 +7,8 @@ import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EmailError } from '@fluxmail/core';
 import { accounts, openDb } from '../src/storage/db.js';
-import { addMember, findMember, getMember, listMembers, removeMember } from '../src/storage/members.js';
-import { createApiKey, listApiKeys } from '../src/storage/apiKeys.js';
+import { addMember, findMember, getMember, listMembers, removeMember, setMemberRole } from '../src/storage/members.js';
+import { authenticateApiKey, createApiKey, listApiKeys } from '../src/storage/apiKeys.js';
 import {
   assertWithinQuota,
   checkLicenseState,
@@ -59,12 +59,21 @@ describe('members', () => {
     const member = addMember(db, { name: 'Alice', email: 'Alice@Example.com' });
     expect(member.id).toMatch(/^member_[0-9a-f]{12}$/);
     expect(member.email).toBe('alice@example.com');
+    expect(member.role).toBe('admin');
 
     expect(getMember(db, member.id).name).toBe('Alice');
     expect(findMember(db, member.id).id).toBe(member.id);
     expect(findMember(db, 'alice@example.com').id).toBe(member.id);
     expect(listMembers(db)).toHaveLength(1);
     expect(() => findMember(db, 'nobody@example.com')).toThrow(/No member/);
+  });
+
+  it('uses explicit roles and reads role changes immediately', () => {
+    const db = openDb(':memory:');
+    const member = addMember(db, { name: 'Alice', role: 'member' });
+    expect(member.role).toBe('member');
+    expect(setMemberRole(db, member.id, 'admin').role).toBe('admin');
+    expect(getMember(db, member.id).role).toBe('admin');
   });
 
   it('rejects a duplicate email', () => {
@@ -96,7 +105,7 @@ describe('members', () => {
     expect(() => addMember(db, { name: 'Dave' })).toThrow(/team plan allows 3 members/);
   });
 
-  it('removing a member shares their mailboxes and revokes their API keys', () => {
+  it('blocks owner removal, then revokes keys after the mailbox is removed', () => {
     const db = openDb(':memory:');
     const member = addMember(db, { name: 'Alice' });
     db.insert(accounts)
@@ -110,14 +119,14 @@ describe('members', () => {
       })
       .run();
     createApiKey(db, 'alice-key', member.id);
-    const { info: adminKey } = createApiKey(db, 'admin-key');
 
+    expect(() => removeMember(db, member.id)).toThrow(/still owns 1 mailbox/);
+    db.delete(accounts).run();
     const result = removeMember(db, member.id);
-    expect(result).toEqual({ name: 'Alice', freedAccounts: 1, revokedApiKeys: 1 });
+    expect(result).toEqual({ name: 'Alice', revokedApiKeys: 1 });
     expect(listMembers(db)).toHaveLength(0);
-    expect(db.select().from(accounts).all()[0]?.memberId).toBeNull();
     // The member's key is gone, not promoted to an unscoped admin key.
-    expect(listApiKeys(db).map((k) => k.id)).toEqual([adminKey.id]);
+    expect(listApiKeys(db)).toEqual([]);
   });
 });
 
@@ -165,10 +174,34 @@ describe('plan quota', () => {
 });
 
 describe('API key migrations', () => {
+  it('promotes only the earliest existing member during role migration', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'fluxmail-role-migrate-'));
+    const dbPath = path.join(dir, 'fluxmail.db');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE members (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT,
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO members VALUES ('member_later', 'Later', NULL, 2);
+      INSERT INTO members VALUES ('member_first', 'First', NULL, 1);
+    `);
+    raw.close();
+
+    expect(listMembers(openDb(dbPath)).map(({ id, role }) => ({ id, role }))).toEqual([
+      { id: 'member_later', role: 'member' },
+      { id: 'member_first', role: 'admin' },
+    ]);
+  });
+
   it('adds member scope and full permissions to a pre-members database', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'fluxmail-migrate-'));
     const dbPath = path.join(dir, 'fluxmail.db');
     const raw = new Database(dbPath);
+    const legacyKey = 'fmk_legacy_system';
+    const legacyHash = createHash('sha256').update(legacyKey).digest('hex');
     raw.exec(`
       CREATE TABLE accounts (
         id TEXT PRIMARY KEY,
@@ -187,7 +220,7 @@ describe('API key migrations', () => {
         last_used_at INTEGER
       );
       INSERT INTO accounts (id, provider, email, created_at) VALUES ('acct_1', 'gmail', 'me@example.com', 1);
-      INSERT INTO api_keys (id, name, key_hash, created_at) VALUES ('key_1', 'old', 'hash', 1);
+      INSERT INTO api_keys (id, name, key_hash, created_at) VALUES ('key_1', 'old', '${legacyHash}', 1);
     `);
     raw.close();
 
@@ -195,10 +228,12 @@ describe('API key migrations', () => {
     const account = db.select().from(accounts).all()[0];
     expect(account?.id).toBe('acct_1');
     expect(account?.memberId).toBeNull();
-    expect(listApiKeys(db)[0]).toMatchObject({ memberId: null, permissionProfile: 'full' });
-    // Old rows behave as shared/unscoped, and members can be linked afterwards.
+    expect(account?.sharingMode).toBe('all');
+    expect(listApiKeys(db)[0]).toMatchObject({ memberId: null, permissionProfile: 'full', accountIds: null });
+    expect(authenticateApiKey(db, legacyKey)).toMatchObject({ memberId: null, role: null, accountIds: null });
+    // The first member becomes the owner while migrated sharing stays global.
     const member = addMember(db, { name: 'Alice' });
-    db.update(accounts).set({ memberId: member.id }).run();
     expect(db.select().from(accounts).all()[0]?.memberId).toBe(member.id);
+    expect(db.select().from(accounts).all()[0]?.sharingMode).toBe('all');
   });
 });

@@ -12,9 +12,10 @@ Fluxmail requires Node.js 20.20.x, or Node.js 22.22 or later.
 
 ```bash
 npm install -g fluxmail
+fluxmail members add --name "Your name" --email you@example.com
 ```
 
-Then follow the [quickstart](docs/public/pages/quickstart.md) to configure Gmail or IMAP and connect your MCP client. The published version is available at [fluxmail.ai/docs/quickstart](https://fluxmail.ai/docs/quickstart).
+Then follow the [quickstart](docs/public/pages/quickstart.md) to connect a mailbox, choose who can use it, and configure your MCP client. The published version is available at [fluxmail.ai/docs/quickstart](https://fluxmail.ai/docs/quickstart).
 
 ## Documentation
 

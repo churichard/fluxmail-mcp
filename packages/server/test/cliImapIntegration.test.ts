@@ -9,6 +9,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 const host = process.env.GREENMAIL_HOST;
 const cliPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/cli.js');
 const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-imap-'));
+const ownerEmail = 'cli-owner@localhost';
 
 function run(args: string[]) {
   return spawnSync(process.execPath, [cliPath, ...args], {
@@ -24,6 +25,9 @@ function run(args: string[]) {
 
 describe.skipIf(!host || !existsSync(cliPath)).sequential('IMAP CLI integration', () => {
   beforeAll(async () => {
+    const addedOwner = run(['members', 'add', '--name', 'CLI integration owner', '--email', ownerEmail]);
+    expect(addedOwner.status, addedOwner.stderr).toBe(0);
+
     const client = new ImapFlow({
       host: host!,
       port: 3993,
@@ -62,7 +66,7 @@ describe.skipIf(!host || !existsSync(cliPath)).sequential('IMAP CLI integration'
       '--smtp-user',
       'cli',
     ];
-    const added = run(['accounts', 'add', 'imap', ...connectionArgs]);
+    const added = run(['accounts', 'add', 'imap', '--owner', ownerEmail, ...connectionArgs]);
     expect(added.status, added.stderr).toBe(0);
     expect(added.stdout).toMatch(/Connected cli@localhost/);
     expect(added.stdout).toMatch(/Warning: no drafts folder could be resolved/);

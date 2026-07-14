@@ -21,13 +21,13 @@ Determine whether the user wants preparation, a dry run, or a live release.
 
 Complete a compatibility audit before editing any manifest. Do this even when the user supplies a version. Treat that version as a proposal until the audit confirms it.
 
-Use the nearest published GitHub Release tag that is an ancestor of the release candidate as the baseline. Do not use the version currently stored in `package.json` as the baseline because the repository may contain an unpublished version bump. Use the same published-release and ancestry checks described in `Generate and approve the changelog for a live release`.
+Decide whether the intended release is stable or a prerelease before selecting the baseline. For a stable release, consider only published, non-draft full releases. For a prerelease, consider all published, non-draft releases. From the eligible releases, use the nearest tag that is an ancestor of the release candidate. Do not use the version currently stored in `package.json` as the baseline because the repository may contain an unpublished version bump. Use the same filtering and ancestry checks described in `Generate and approve the changelog for a live release`.
 
 Inspect the complete first-parent range and the relevant diffs, not only commit or pull request titles:
 
 ```bash
 git fetch origin main --tags
-base_tag="<nearest-published-release-tag-that-is-an-ancestor-of-origin/main>"
+base_tag="<nearest-eligible-published-release-tag-that-is-an-ancestor-of-origin/main>"
 git log --first-parent --reverse --format='- %s (%h)' "$base_tag..origin/main"
 git diff --stat "$base_tag..origin/main"
 git diff "$base_tag..origin/main"
@@ -85,7 +85,7 @@ npm view @fluxmail/core@<version> version --json
 npm view @fluxmail/provider-gmail@<version> version --json
 npm view @fluxmail/provider-imap@<version> version --json
 docker manifest inspect ghcr.io/churichard/fluxmail-mcp:<version>
-curl -fsS 'https://registry.modelcontextprotocol.io/v0/servers/io.github.churichard%2Ffluxmail/versions/<version>' | jq -e --arg version '<version>' '.server.name == "io.github.churichard/fluxmail" and .server.version == $version'
+curl -fsS 'https://registry.modelcontextprotocol.io/v0.1/servers/io.github.churichard%2Ffluxmail/versions/<version>' | jq -e --arg version '<version>' '.server.name == "io.github.churichard/fluxmail" and .server.version == $version'
 gh release view v<version> --repo churichard/fluxmail-mcp --json tagName,name,body,targetCommitish,isDraft,isPrerelease,assets,url
 git ls-remote --tags origin 'refs/tags/v<version>' 'refs/tags/v<version>^{}'
 ```
@@ -197,6 +197,10 @@ if [[ -z "$npm_tag" ]]; then
   printf 'The npm tag must not be empty.\n' >&2
   false
 fi
+if [[ "$prerelease_state" != "true" && "$prerelease_state" != "false" ]]; then
+  printf 'The prerelease state must be true or false.\n' >&2
+  false
+fi
 for manifest in \
   package.json \
   packages/core/package.json \
@@ -218,9 +222,13 @@ if [[ "$server_version" != "$version" || "$registry_version" != "$version" ]]; t
   false
 fi
 git fetch origin --tags
+release_filter='.[] | select(.draft == false)'
+if [[ "$prerelease_state" == "false" ]]; then
+  release_filter='.[] | select(.draft == false and .prerelease == false)'
+fi
 published_tags="$(
   gh api --paginate 'repos/churichard/fluxmail-mcp/releases?per_page=100' \
-    --jq '.[] | select(.draft == false) | .tag_name'
+    --jq "$release_filter | .tag_name"
 )"
 while IFS= read -r candidate; do
   [[ -z "$candidate" ]] && continue
@@ -292,7 +300,9 @@ sed -n '1,$p' "$notes_file"
 
 For the first GitHub Release, leave `previous_tag` empty so GitHub generates notes from the repository history. Otherwise, use the nearest published release tag that is an ancestor of `release_sha`. This also produces the correct range when creating a missing GitHub Release for an older existing tag. `historical_backfill` becomes `true` when an existing published release descends from `release_sha`. The block records the computed values before the override comment. If unusual branching makes either value questionable, discard the generated local files and show both computed values to the user. If the user changes either value, rerun the block with the confirmed assignments immediately after the override comment, then audit the new notes before requesting approval. Later checks compare the current computation with the recorded computation while preserving the approved override.
 
-Curate the generated notes for end users. Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and use only the sections that apply: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, and `Security`. Omit empty sections and use the ISO 8601 release date in `YYYY-MM-DD` format. Keep the full changelog link that GitHub generates.
+Curate the generated notes for end users. Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and use only the sections that apply: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, and `Security`. Render each section as an H2 heading, such as `## Added`, never H1 or H3. Omit empty sections and keep the full changelog link that GitHub generates.
+
+Do not add a version or release-date heading to the GitHub Release body, such as `## 0.3.0 - 2026-07-14`. GitHub already displays the `v<version>` release title and publication date. Start the body with the breaking-change or migration notice when one exists; otherwise, start with the first applicable changelog section.
 
 Keep the GitHub Release title identical to the Git tag in `v<version>` format. Do not replace it with a product name or another title.
 
@@ -324,7 +334,31 @@ After auditing and editing the notes, save the final title and notes digest in t
 set -e
 state_file=".context/releases/v<version>/state.json"
 notes_file="$(jq -r '.notes_file' "$state_file")"
+version="$(jq -er '.version' "$state_file")"
 title="$(jq -er '.tag' "$state_file")"
+first_content_line="$(awk 'NF { print; exit }' "$notes_file")"
+heading_text="$(printf '%s\n' "$first_content_line" | sed -E 's/^#{1,6}[[:space:]]+//')"
+if [[ "$heading_text" == "$version" ||
+      "$heading_text" == "v${version}" ||
+      "$heading_text" == "[${version}]" ||
+      "$heading_text" == "[v${version}]" ||
+      "$heading_text" == "${version} - "* ||
+      "$heading_text" == "v${version} - "* ||
+      "$heading_text" == "[${version}] - "* ||
+      "$heading_text" == "[v${version}] - "* ]]; then
+  printf 'Remove the redundant version or release-date heading from the release notes.\n' >&2
+  false
+fi
+invalid_section_heading="$(
+  awk '
+    /^#+[[:space:]]+(Added|Changed|Deprecated|Removed|Fixed|Security)[[:space:]]*$/ &&
+    $0 !~ /^##[[:space:]]/ { print; exit }
+  ' "$notes_file"
+)"
+if [[ -n "$invalid_section_heading" ]]; then
+  printf 'Use H2 headings for changelog sections, for example ## Added. Found: %s\n' "$invalid_section_heading" >&2
+  false
+fi
 notes_sha256="$(shasum -a 256 "$notes_file" | awk '{print $1}')"
 state_tmp="${state_file}.tmp"
 jq \
@@ -490,7 +524,7 @@ publish_github_release() {
   local manifest manifest_version server_version registry_version
   local saved_computed_previous_tag saved_computed_historical_backfill
   local current_previous_tag current_previous_distance current_historical_backfill
-  local published_tags candidate candidate_commit distance
+  local published_tags release_filter candidate candidate_commit distance
   local remote_tag_sha tag_refs draft_json draft_state draft_asset_count
   local -a latest_args prerelease_args
   version="$(jq -er '.version' "$state_file")" || return 1
@@ -569,9 +603,13 @@ publish_github_release() {
   current_previous_distance=""
   current_historical_backfill=false
   git fetch origin --tags || return 1
+  release_filter='.[] | select(.draft == false)'
+  if [[ "$prerelease_state" == "false" ]]; then
+    release_filter='.[] | select(.draft == false and .prerelease == false)'
+  fi
   published_tags="$(
     gh api --paginate 'repos/churichard/fluxmail-mcp/releases?per_page=100' \
-      --jq '.[] | select(.draft == false) | .tag_name'
+      --jq "$release_filter | .tag_name"
   )" || return 1
   while IFS= read -r candidate; do
     [[ -z "$candidate" ]] && continue
@@ -685,7 +723,7 @@ npm view @fluxmail/core@<version> version --json
 npm view @fluxmail/provider-gmail@<version> version --json
 npm view @fluxmail/provider-imap@<version> version --json
 docker manifest inspect ghcr.io/churichard/fluxmail-mcp:<version>
-curl -fsS 'https://registry.modelcontextprotocol.io/v0/servers/io.github.churichard%2Ffluxmail/versions/<version>' | jq -e --arg version '<version>' '.server.name == "io.github.churichard/fluxmail" and .server.version == $version'
+curl -fsS 'https://registry.modelcontextprotocol.io/v0.1/servers/io.github.churichard%2Ffluxmail/versions/<version>' | jq -e --arg version '<version>' '.server.name == "io.github.churichard/fluxmail" and .server.version == $version'
 version="<version>"
 release_tag="v${version}"
 release_json="$(

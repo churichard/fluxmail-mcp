@@ -6,10 +6,9 @@ import { AccountRegistry } from '../src/accounts/registry.js';
 import { createApiKey } from '../src/storage/apiKeys.js';
 import { openDb } from '../src/storage/db.js';
 import { createGmailConnectionGrant } from '../src/storage/gmailConnectionGrants.js';
-import { addMember } from '../src/storage/members.js';
+import { addMember, setMemberRole } from '../src/storage/members.js';
 import { exchangeCode } from '../src/accounts/googleAuth.js';
 import { VERSION } from '../src/version.js';
-import { permissionPolicyForProfile } from '../src/permissions.js';
 import { EmailService } from '../src/service/emailService.js';
 
 vi.mock('../src/accounts/googleAuth.js', async (importOriginal) => ({
@@ -56,7 +55,8 @@ describe('HTTP app', () => {
 
   it('rejects query-string API keys on the MCP endpoint', async () => {
     const deps = appDeps('apikey');
-    const { key } = createApiKey(deps.db, 'test');
+    const member = addMember(deps.db, { name: 'Alice' });
+    const { key } = createApiKey(deps.db, 'test', member.id);
     const response = await createApp(deps).request(`/mcp?key=${encodeURIComponent(key)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -84,15 +84,15 @@ describe('HTTP app', () => {
 
   it('only lets admin keys start the server-hosted OAuth flow', async () => {
     const deps = appDeps('apikey');
-    const member = addMember(deps.db, { name: 'Alice' });
+    const member = addMember(deps.db, { name: 'Alice', role: 'member' });
     const { key: memberKey } = createApiKey(deps.db, 'alice-key', member.id);
-    const { key: adminKey } = createApiKey(deps.db, 'admin-key', undefined, permissionPolicyForProfile('read-only'));
     const app = createApp(deps);
 
-    const denied = await app.request(`/auth/google?key=${encodeURIComponent(memberKey)}`);
+    const denied = await app.request(`/auth/google?key=${encodeURIComponent(memberKey)}&owner=${member.id}`);
     expect(denied.status).toBe(401);
 
-    const allowed = await app.request(`/auth/google?key=${encodeURIComponent(adminKey)}`);
+    setMemberRole(deps.db, member.id, 'admin');
+    const allowed = await app.request(`/auth/google?key=${encodeURIComponent(memberKey)}&owner=${member.id}`);
     expect(allowed.status).toBe(302);
   });
 
@@ -174,9 +174,10 @@ describe('HTTP app', () => {
       });
     const deps = appDeps('apikey');
     const app = createApp(deps);
+    const member = addMember(deps.db, { name: 'Owner' });
 
     for (const code of ['first-code', 'second-code']) {
-      const { token } = createGmailConnectionGrant(deps.db);
+      const { token } = createGmailConnectionGrant(deps.db, { memberId: member.id, sharingMode: 'private' });
       const start = await app.request(`/auth/google/connect?token=${encodeURIComponent(token)}`, { method: 'POST' });
       const state = new URL(start.headers.get('location') ?? '').searchParams.get('state');
       const callback = await app.request(`/auth/google/callback?state=${state}&code=${code}`);
@@ -197,7 +198,12 @@ describe('HTTP app', () => {
     });
     const deps = appDeps('apikey');
     const member = addMember(deps.db, { name: 'Alice' });
-    const existing = deps.registry.addGmailAccount('expected@example.com', { refresh_token: 'old' });
+    const existing = deps.registry.addGmailAccount(
+      'expected@example.com',
+      { refresh_token: 'old' },
+      undefined,
+      member.id,
+    );
     const app = createApp(deps);
 
     const ownedGrant = createGmailConnectionGrant(deps.db, { memberId: member.id });
@@ -226,11 +232,12 @@ describe('HTTP app', () => {
       tokens: { refresh_token: 'refresh', id_token: 'id' },
     });
     const deps = appDeps('apikey');
+    const member = addMember(deps.db, { name: 'Owner' });
     for (const email of ['one@example.com', 'two@example.com', 'three@example.com']) {
-      deps.registry.addGmailAccount(email, { refresh_token: email });
+      deps.registry.addGmailAccount(email, { refresh_token: email }, undefined, member.id);
     }
     const app = createApp(deps);
-    const { token } = createGmailConnectionGrant(deps.db);
+    const { token } = createGmailConnectionGrant(deps.db, { memberId: member.id });
     const start = await app.request(`/auth/google/connect?token=${encodeURIComponent(token)}`, { method: 'POST' });
     const state = new URL(start.headers.get('location') ?? '').searchParams.get('state');
 
@@ -244,9 +251,11 @@ describe('HTTP app', () => {
     vi.mocked(exchangeCode).mockRejectedValue(
       new EmailError('invalid_request', 'Google did not return a refresh token.'),
     );
-    const app = createApp(appDeps('none'));
+    const deps = appDeps('none');
+    const member = addMember(deps.db, { name: 'Owner' });
+    const app = createApp(deps);
 
-    const start = await app.request('/auth/google');
+    const start = await app.request(`/auth/google?owner=${member.id}`);
     expect(start.status).toBe(302);
     const state = new URL(start.headers.get('location') ?? '').searchParams.get('state');
 
