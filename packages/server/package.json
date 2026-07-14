@@ -1,6 +1,6 @@
 {
   "name": "fluxmail",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "mcpName": "io.github.churichard/fluxmail",
   "description": "Fluxmail MCP server: unified email tools over Gmail, Outlook, and IMAP/SMTP",
   "license": "SEE LICENSE IN LICENSE.md",

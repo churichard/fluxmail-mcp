@@ -17,25 +17,59 @@ Determine whether the user wants preparation, a dry run, or a live release.
 
 `pnpm publish:all` always handles npm and Docker together. The Registry uses separate commands. Do not run `publish:all` when the user asks for only npm or only Docker. Explain that the repository has no single-destination mode and stop before publishing unless the user explicitly authorizes a manual destination-specific procedure.
 
+## Audit changes and choose a version
+
+Complete a compatibility audit before editing any manifest. Do this even when the user supplies a version. Treat that version as a proposal until the audit confirms it.
+
+Use the nearest published GitHub Release tag that is an ancestor of the release candidate as the baseline. Do not use the version currently stored in `package.json` as the baseline because the repository may contain an unpublished version bump. Use the same published-release and ancestry checks described in `Generate and approve the changelog for a live release`.
+
+Inspect the complete first-parent range and the relevant diffs, not only commit or pull request titles:
+
+```bash
+git fetch origin main --tags
+base_tag="<nearest-published-release-tag-that-is-an-ancestor-of-origin/main>"
+git log --first-parent --reverse --format='- %s (%h)' "$base_tag..origin/main"
+git diff --stat "$base_tag..origin/main"
+git diff "$base_tag..origin/main"
+```
+
+Review every public contract that changed, including CLI arguments and output, environment variables, MCP tool names and schemas, HTTP behavior, package exports and types, stored data, authentication, defaults, and runtime requirements. A change is breaking when an existing consumer must change code or configuration, or when existing input produces an incompatible result.
+
+Choose the next stable version from the highest-impact change in the range:
+
+| Current published version        | Highest-impact change                                | Required bump         |
+| -------------------------------- | ---------------------------------------------------- | --------------------- |
+| `1.0.0` or later                 | Breaking public contract                             | Major                 |
+| `0.y.z`, where `y` is at least 1 | Breaking public contract                             | Minor, to `0.(y+1).0` |
+| `0.0.z`                          | Breaking public contract or new public functionality | Minor, to `0.1.0`     |
+| Any version                      | Backward-compatible public functionality             | Minor                 |
+| Any version                      | Backward-compatible fixes only                       | Patch                 |
+
+Internal work, tests, documentation, and release tooling do not increase the required bump unless they change the public contract or correct instructions that users must follow. If a release contains several kinds of changes, use the largest required bump. A prerelease suffix does not reduce the required core version bump.
+
+Before changing manifests, report the baseline tag, audited commit range, breaking changes, highest-impact classification, and selected version. If a requested version is lower than the audit requires, stop and propose the minimum compliant version. If the audit finds no release-worthy change, stop instead of creating a version only to advance the number.
+
 ## Prepare the release
 
 1. Inspect `git status`, the current branch, and the latest `origin/main`.
 2. Preserve unrelated work. Start version changes only from a clean tree.
-3. Confirm the intended version, npm tag, and Git tag. Use `latest` for stable releases and `next` for prereleases unless the user specifies another npm tag. Use `v<version>` for the Git tag and the GitHub Release title.
-4. Keep these versions identical:
+3. Complete the compatibility audit and confirm that the intended version satisfies its required SemVer bump.
+4. Inspect the intended version at every release destination before changing manifests.
+5. Confirm the npm tag and Git tag. Use `latest` for stable releases and `next` for prereleases unless the user specifies another npm tag. Use `v<version>` for the Git tag and the GitHub Release title.
+6. Keep these versions identical:
    - The private root `package.json`
    - Every `packages/*/package.json`
    - The top-level `version` in `server.json`
    - The npm package version inside `server.json`
-5. Keep `packages/server/package.json#mcpName` identical to `server.json#name`.
+7. Keep `packages/server/package.json#mcpName` identical to `server.json#name`.
 
 Use the repository command to bump package manifests:
 
 ```bash
-pnpm version:bump patch
+pnpm version:bump <version>
 ```
 
-Replace `patch` with a specific version or another pnpm-supported increment when appropriate. The command does not create a commit or tag, and it does not update `server.json`. Update both version fields in `server.json` before continuing.
+Pass the audited version explicitly. Do not default to `patch` before reviewing the changes. The command does not create a commit or tag, and it does not update `server.json`. Update both version fields in `server.json` before continuing.
 
 The MCP Registry does not allow changing a published version or its metadata. Use a new package version for a new stable listing. If the user does not want a new release, update the source metadata only and state that the live listing will change with the next release.
 
@@ -280,6 +314,8 @@ fi
 ```
 
 Use the complete range to find every change that may affect users. Verify that each release-note entry maps to a commit in the range and that no user-facing change is missing. A commit does not need a release-note entry when it has no end-user impact. Remove internal, duplicate, speculative, or misleading entries. Never invent a change.
+
+Compare the finished changelog with the pre-bump compatibility audit. If the changelog audit uncovers a higher-impact change, the selected version is invalid. Stop before requesting approval, choose the minimum compliant version, update and validate every manifest again, merge the corrected release tree into `origin/main`, and regenerate the changelog.
 
 After auditing and editing the notes, save the final title and notes digest in the release state:
 
