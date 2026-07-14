@@ -65,6 +65,7 @@ describe('Google OAuth callback listener', () => {
       oauthPort: address.port,
       oauthHost: '127.0.0.1',
       authMode: 'apikey',
+      maxAttachmentBytes: 10 * 1024 * 1024,
       google: { clientId: 'client-id', clientSecret: 'client-secret' },
     };
 
@@ -108,6 +109,7 @@ describe('Google OAuth callback listener', () => {
       oauthPort: address.port,
       oauthHost: '127.0.0.1',
       authMode: 'apikey',
+      maxAttachmentBytes: 10 * 1024 * 1024,
       google: { clientId: 'client-id', clientSecret: 'client-secret' },
     };
 

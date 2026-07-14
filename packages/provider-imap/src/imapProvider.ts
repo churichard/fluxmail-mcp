@@ -1,5 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { ImapFlow, type FetchMessageObject, type ImapFlowOptions, type MessageEnvelopeObject } from 'imapflow';
+import {
+  ImapFlow,
+  type FetchMessageObject,
+  type ImapFlowOptions,
+  type MessageEnvelopeObject,
+  type MessageStructureObject,
+} from 'imapflow';
 import nodemailer, { type Transporter } from 'nodemailer';
 import PostalMime, { type Address as PostalAddress } from 'postal-mime';
 import {
@@ -32,6 +38,28 @@ const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
 export const POSTAL_OPTIONS = { maxNestingDepth: 100, maxHeadersSize: 2 * 1024 * 1024 } as const;
 const HEADER_NAMES = ['Message-ID', 'References', 'In-Reply-To'];
+
+function findStructurePart(
+  structure: MessageStructureObject | undefined,
+  partId: string,
+): MessageStructureObject | undefined {
+  if (!structure) return undefined;
+  const visit = (node: MessageStructureObject): MessageStructureObject | undefined => {
+    const part = node.part ?? (node === structure && !node.childNodes?.length ? '1' : undefined);
+    if (part === partId) return node;
+    for (const child of node.childNodes ?? []) {
+      const found = visit(child);
+      if (found) return found;
+    }
+    return undefined;
+  };
+  return visit(structure);
+}
+
+function bodyStructureSizeIsDecoded(node: MessageStructureObject | undefined): boolean {
+  const encoding = node?.encoding?.toLowerCase();
+  return encoding === '7bit' || encoding === '8bit' || encoding === 'binary';
+}
 
 export const IMAP_CAPABILITIES: Capabilities = {
   labels: false,
@@ -767,6 +795,33 @@ export class ImapProvider implements EmailProvider {
       group.push(location);
       groups.set(location.mailboxPath, group);
     }
+    const trashPath = this.resolved?.paths.trash;
+    if (action === 'untrash') {
+      if (!trashPath) this.requireRole('trash');
+      if ([...groups.keys()].some((path) => path !== trashPath)) {
+        throw new EmailError('invalid_request', 'The untrash action only accepts messages that are in Trash');
+      }
+    }
+    if (action === 'archive' && trashPath && groups.has(trashPath)) {
+      throw new EmailError('invalid_request', 'Use the untrash action before archiving a message from Trash');
+    }
+    let requestedMoveDestination: string | undefined;
+    if (typeof action === 'object' && 'move' in action) {
+      const roleDestination = this.resolved?.paths[action.move as FolderRole];
+      requestedMoveDestination = roleDestination ?? action.move;
+      if (!this.resolved?.selectablePaths.includes(requestedMoveDestination)) {
+        throw new EmailError('not_found', `No folder named "${action.move}"`);
+      }
+      const protectedDestinations = [this.resolved?.paths.archive, trashPath].filter(
+        (path): path is string => path !== undefined,
+      );
+      if (groups.has(trashPath ?? '') || protectedDestinations.includes(requestedMoveDestination)) {
+        throw new EmailError(
+          'invalid_request',
+          'Use the archive, trash, or untrash action when moving messages through a protected folder',
+        );
+      }
+    }
     for (const [path, group] of groups) {
       await this.withMailbox(path, async (client) => {
         const uids = group.map((location) => location.uid);
@@ -785,11 +840,7 @@ export class ImapProvider implements EmailProvider {
             this.requireRole('trash');
             destination = this.resolved?.paths.inbox ?? 'INBOX';
           } else if (typeof action === 'object' && 'move' in action) {
-            const roleDestination = this.resolved?.paths[action.move as FolderRole];
-            destination = roleDestination ?? action.move;
-            if (!this.resolved?.selectablePaths.includes(destination)) {
-              throw new EmailError('not_found', `No folder named "${action.move}"`);
-            }
+            destination = requestedMoveDestination!;
           } else throw new EmailError('invalid_request', `Unsupported IMAP modify action: ${String(action)}`);
           if (destination === path) return;
           const moved = await client.messageMove(uids, destination, { uid: true });
@@ -812,7 +863,11 @@ export class ImapProvider implements EmailProvider {
     }
   }
 
-  async getAttachment(messageId: string, attachmentId: string): Promise<{ meta: AttachmentMeta; content: Buffer }> {
+  async getAttachment(
+    messageId: string,
+    attachmentId: string,
+    opts: { maxBytes?: number } = {},
+  ): Promise<{ meta: AttachmentMeta; content: Buffer }> {
     const location = await this.options.store.findById(messageId);
     if (!location) throw new EmailError('not_found', `No message with id "${messageId}"`);
     return this.withMailbox(location.mailboxPath, async (client, uidValidity) => {
@@ -820,6 +875,18 @@ export class ImapProvider implements EmailProvider {
       const fetched = await client.fetchOne(location.uid, { bodyStructure: true }, { uid: true });
       if (!fetched) throw new EmailError('not_found', `No message with id "${messageId}"`);
       const meta = inspectStructure(fetched.bodyStructure).attachments.find((item) => item.id === attachmentId);
+      const structurePart = findStructurePart(fetched.bodyStructure, attachmentId);
+      if (
+        meta &&
+        opts.maxBytes !== undefined &&
+        bodyStructureSizeIsDecoded(structurePart) &&
+        meta.sizeBytes > opts.maxBytes
+      ) {
+        throw new EmailError('invalid_request', 'Attachment is too large to return through MCP.', {
+          sizeBytes: meta.sizeBytes,
+          maxBytes: opts.maxBytes,
+        });
+      }
       if (!meta && attachmentId.startsWith('raw-')) {
         const index = Number(attachmentId.slice(4));
         const raw = await client.fetchOne(location.uid, { source: true }, { uid: true });
@@ -833,6 +900,12 @@ export class ImapProvider implements EmailProvider {
             : attachment.content instanceof ArrayBuffer
               ? Buffer.from(attachment.content)
               : Buffer.from(attachment.content.buffer, attachment.content.byteOffset, attachment.content.byteLength);
+        if (opts.maxBytes !== undefined && content.length > opts.maxBytes) {
+          throw new EmailError('invalid_request', 'Attachment is too large to return through MCP.', {
+            sizeBytes: content.length,
+            maxBytes: opts.maxBytes,
+          });
+        }
         return {
           meta: {
             id: attachmentId,
@@ -848,8 +921,20 @@ export class ImapProvider implements EmailProvider {
       if (!meta) throw new EmailError('not_found', `No attachment with id "${attachmentId}"`);
       const downloaded = await client.download(location.uid, attachmentId, { uid: true });
       const chunks: Buffer[] = [];
-      for await (const chunk of downloaded.content) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      return { meta, content: Buffer.concat(chunks) };
+      let sizeBytes = 0;
+      for await (const chunk of downloaded.content) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        sizeBytes += bytes.length;
+        if (opts.maxBytes !== undefined && sizeBytes > opts.maxBytes) {
+          downloaded.content.destroy();
+          throw new EmailError('invalid_request', 'Attachment is too large to return through MCP.', {
+            sizeBytes,
+            maxBytes: opts.maxBytes,
+          });
+        }
+        chunks.push(bytes);
+      }
+      return { meta, content: Buffer.concat(chunks, sizeBytes) };
     });
   }
 }

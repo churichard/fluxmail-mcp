@@ -17,6 +17,11 @@ export interface GetMessageOpts {
   includeHeaders?: boolean;
 }
 
+export interface GetAttachmentOpts {
+  /** Reject content larger than this many decoded bytes. */
+  maxBytes?: number;
+}
+
 /**
  * The unified provider contract. Every provider package (gmail, outlook, imap)
  * implements exactly this; nothing above this layer knows which provider it
@@ -44,5 +49,9 @@ export interface EmailProvider {
 
   modify(ids: string[], action: ModifyAction): Promise<void>;
 
-  getAttachment(messageId: string, attachmentId: string): Promise<{ meta: AttachmentMeta; content: Buffer }>;
+  getAttachment(
+    messageId: string,
+    attachmentId: string,
+    opts?: GetAttachmentOpts,
+  ): Promise<{ meta: AttachmentMeta; content: Buffer }>;
 }

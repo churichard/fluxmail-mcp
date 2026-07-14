@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { ImapFlow, ListResponse } from 'imapflow';
 import type { Transporter } from 'nodemailer';
@@ -44,6 +45,83 @@ class MemoryStore implements ImapStateStore {
   async invalidateMailbox() {}
 }
 
+function attachmentProvider(size: number, chunks: Buffer[], encoding = 'binary') {
+  const store = new MemoryStore();
+  store.rows.set('m1', {
+    id: 'm1',
+    accountId: 'a1',
+    mailboxPath: 'INBOX',
+    uidValidity: '1',
+    uid: 7,
+    threadId: 't1',
+  });
+  const download = vi.fn().mockResolvedValue({
+    meta: {},
+    content: Readable.from(chunks),
+  });
+  const fake = {
+    usable: true,
+    mailbox: { uidValidity: 1n },
+    on: vi.fn(),
+    connect: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn(),
+    getMailboxLock: vi.fn().mockResolvedValue({ release: vi.fn() }),
+    fetchOne: vi.fn().mockResolvedValue({
+      bodyStructure: {
+        part: '1',
+        type: 'application/octet-stream',
+        encoding,
+        size,
+        disposition: 'attachment',
+        dispositionParameters: { filename: 'large.bin' },
+      },
+    }),
+    download,
+  };
+  const provider = new ImapProvider({
+    accountId: 'a1',
+    email: 'me@example.com',
+    credentials: {
+      imap: { host: 'imap.example.com', port: 993, security: 'tls', user: 'me', password: 'secret' },
+      smtp: { host: 'smtp.example.com', port: 587, security: 'starttls', user: 'me', password: 'secret' },
+      saveSent: true,
+    },
+    store,
+    imapFactory: () => fake as unknown as ImapFlow,
+  });
+  return { provider, download };
+}
+
+describe('ImapProvider attachment limits', () => {
+  it('rejects oversized body-structure metadata before downloading', async () => {
+    const { provider, download } = attachmentProvider(11, []);
+
+    await expect(provider.getAttachment('m1', '1', { maxBytes: 10 })).rejects.toMatchObject({
+      code: 'invalid_request',
+      data: { sizeBytes: 11, maxBytes: 10 },
+    });
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it('does not compare transfer-encoded metadata with the decoded limit', async () => {
+    const { provider, download } = attachmentProvider(11, [Buffer.alloc(8)], 'base64');
+
+    await expect(provider.getAttachment('m1', '1', { maxBytes: 10 })).resolves.toMatchObject({
+      content: Buffer.alloc(8),
+    });
+    expect(download).toHaveBeenCalledOnce();
+  });
+
+  it('stops a streamed download after it crosses the limit', async () => {
+    const { provider } = attachmentProvider(0, [Buffer.alloc(6), Buffer.alloc(6)]);
+
+    await expect(provider.getAttachment('m1', '1', { maxBytes: 10 })).rejects.toMatchObject({
+      code: 'invalid_request',
+      data: { sizeBytes: 12, maxBytes: 10 },
+    });
+  });
+});
+
 describe('ImapProvider safe folder fallbacks', () => {
   it('does not permanently delete when Trash is unresolved', async () => {
     const store = new MemoryStore();
@@ -84,6 +162,66 @@ describe('ImapProvider safe folder fallbacks', () => {
 
     await expect(provider.modify(['m1'], 'trash')).rejects.toMatchObject({ code: 'unsupported_capability' });
     expect(messageDelete).not.toHaveBeenCalled();
+  });
+
+  it('requires dedicated actions for protected folder transitions', async () => {
+    const store = new MemoryStore();
+    await store.save({
+      id: 'm1',
+      accountId: 'a1',
+      mailboxPath: 'INBOX',
+      uidValidity: '1',
+      uid: 7,
+      threadId: 't1',
+    });
+    const trash = folder('Deleted Items');
+    trash.specialUse = '\\Trash';
+    const archive = folder('Archive');
+    archive.specialUse = '\\Archive';
+    await store.save({
+      id: 'm2',
+      accountId: 'a1',
+      mailboxPath: 'Deleted Items',
+      uidValidity: '1',
+      uid: 8,
+      threadId: 't2',
+    });
+    const messageMove = vi.fn();
+    const fake = {
+      usable: true,
+      mailbox: false,
+      capabilities: new Map(),
+      on: vi.fn(),
+      connect: vi.fn(),
+      close: vi.fn(),
+      list: vi.fn().mockResolvedValue([folder('INBOX'), trash, archive]),
+      getMailboxLock: vi.fn(async () => {
+        fake.mailbox = { uidValidity: 1n } as never;
+        return { release: vi.fn() };
+      }),
+      messageMove,
+    };
+    const provider = new ImapProvider({
+      accountId: 'a1',
+      email: 'me@example.com',
+      credentials: {
+        imap: { host: 'imap.example.com', port: 993, security: 'tls', user: 'me', password: 'secret' },
+        smtp: { host: 'smtp.example.com', port: 587, security: 'starttls', user: 'me', password: 'secret' },
+        saveSent: true,
+      },
+      store,
+      imapFactory: () => fake as unknown as ImapFlow,
+    });
+
+    for (const [ids, action] of [
+      [['m1'], { move: 'Deleted Items' }],
+      [['m1'], { move: 'Archive' }],
+      [['m1'], 'untrash'],
+      [['m2'], 'archive'],
+    ] as const) {
+      await expect(provider.modify([...ids], action)).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    expect(messageMove).not.toHaveBeenCalled();
   });
 
   it('delivers without failing when Sent is unresolved', async () => {

@@ -55,7 +55,26 @@ Or with Codex CLI:
 codex mcp add fluxmail -- fluxmail stdio
 ```
 
+Stdio uses the full tool set by default. To connect a client that can only read mail and download attachments, add a profile to the command:
+
+```bash
+claude mcp add fluxmail-reader -- fluxmail stdio --profile read-only
+```
+
+The other profiles are `read-write` and `full`. Read-write clients can manage drafts and messages, including Trash, but they cannot send, forward, schedule, or permanently delete mail. Repeat `--allow <capability>` for a custom policy. Run `fluxmail apikey capabilities` to list the six capabilities.
+
 Fluxmail also supports Streamable HTTP for Docker and remote deployments.
+
+HTTP API keys accept the same profiles and custom capabilities:
+
+```bash
+fluxmail apikey create --name reader --profile read-only
+fluxmail apikey permissions <key-id> --profile read-write
+```
+
+API-key permissions control MCP tools. Member assignment separately controls which mailboxes a key can access. Local administration commands are not gated by API keys.
+
+Replies and forwards require both `mail.send` and `mail.read` because Fluxmail reads the original message.
 
 See the [setup guide](https://fluxmail.ai/docs/quickstart) for Google OAuth configuration, Docker deployment, supported MCP clients, environment variables, and the complete tool list.
 

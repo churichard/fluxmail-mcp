@@ -19,6 +19,7 @@ function config(publicUrlConfigured: boolean, publicUrl?: string): FluxmailConfi
     oauthPort: 8976,
     oauthHost: '127.0.0.1',
     authMode: 'apikey',
+    maxAttachmentBytes: 10 * 1024 * 1024,
     licenseServerUrl: 'https://license.invalid',
     google: { clientId: 'client-id', clientSecret: 'client-secret' },
   };

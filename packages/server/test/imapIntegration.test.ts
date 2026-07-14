@@ -29,6 +29,7 @@ function config(dbPath: string): FluxmailConfig {
     oauthPort: 8976,
     oauthHost: '127.0.0.1',
     authMode: 'apikey',
+    maxAttachmentBytes: 10 * 1024 * 1024,
     licenseServerUrl: 'https://license.invalid',
   };
 }

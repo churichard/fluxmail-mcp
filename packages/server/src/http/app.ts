@@ -8,8 +8,9 @@ import type { FluxmailConfig } from '../config.js';
 import type { FluxmailDb } from '../storage/db.js';
 import type { AccountRegistry } from '../accounts/registry.js';
 import type { AccessScope, EmailService } from '../service/emailService.js';
-import { authenticateApiKey } from '../storage/apiKeys.js';
+import { authenticateApiKey, type ApiKeyAuth } from '../storage/apiKeys.js';
 import { buildMcpServer } from '../mcp/buildServer.js';
+import { FULL_PERMISSION_POLICY } from '../permissions.js';
 import { buildAuthUrl, createOAuthClient, exchangeCode } from '../accounts/googleAuth.js';
 import {
   claimGmailConnectionGrant,
@@ -99,8 +100,8 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
   // Authenticate an MCP request and resolve the mailbox scope its key authorizes.
   // A member-scoped key is confined to shared and owned mailboxes; an admin key
   // (or authMode 'none') gets unscoped access.
-  const scopeForRequest = (c: { req: { header(name: string): string | undefined } }): AccessScope | null => {
-    if (config.authMode === 'none') return { memberId: null };
+  const authForRequest = (c: { req: { header(name: string): string | undefined } }): ApiKeyAuth | null => {
+    if (config.authMode === 'none') return { memberId: null, permissions: FULL_PERMISSION_POLICY };
     const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
     return bearer ? authenticateApiKey(db, bearer) : null;
   };
@@ -109,8 +110,8 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
 
   // Stateless Streamable HTTP: a fresh server+transport pair per request.
   app.post('/mcp', async (c) => {
-    const scope = scopeForRequest(c);
-    if (!scope) {
+    const auth = authForRequest(c);
+    if (!auth) {
       return c.json(
         {
           jsonrpc: '2.0',
@@ -126,7 +127,11 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     } catch {
       return c.json({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }, 400);
     }
-    const server = buildMcpServer(service.withScope(scope));
+    const scope: AccessScope = { memberId: auth.memberId };
+    const server = buildMcpServer(service.withScope(scope), {
+      permissions: auth.permissions,
+      maxAttachmentBytes: config.maxAttachmentBytes,
+    });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

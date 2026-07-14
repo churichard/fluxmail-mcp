@@ -1,5 +1,3 @@
-import { existsSync, statSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
 import { VERSION } from '../version.js';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -15,9 +13,16 @@ import {
   type PageOpts,
 } from '@fluxmail/core';
 import type { EmailService, SendInput } from '../service/emailService.js';
+import { DEFAULT_MAX_ATTACHMENT_BYTES } from '../config.js';
+import {
+  FULL_PERMISSION_POLICY,
+  hasCapability,
+  normalizePermissionPolicy,
+  type McpCapability,
+  type PermissionPolicy,
+} from '../permissions.js';
 
 const MAX_BODY_CHARS = 50_000;
-const MAX_INLINE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 
 const accountIdParam = z
   .string()
@@ -189,41 +194,27 @@ function handle<A extends unknown[]>(
   };
 }
 
+function handleResult<A extends unknown[]>(
+  fn: (...args: A) => Promise<CallToolResult>,
+  gate?: () => string | undefined,
+): (...args: A) => Promise<CallToolResult> {
+  return async (...args: A) => {
+    try {
+      const warning = gate?.();
+      const result = await fn(...args);
+      if (warning) result.content.push({ type: 'text', text: `Note: ${warning}` });
+      return result;
+    } catch (err) {
+      return toolError(err);
+    }
+  };
+}
+
 function pageOpts(args: { pageSize?: number; pageToken?: string }): PageOpts {
   return {
     ...(args.pageSize !== undefined ? { pageSize: args.pageSize } : {}),
     ...(args.pageToken !== undefined ? { pageToken: args.pageToken } : {}),
   };
-}
-
-export function resolveAttachmentSavePath(savePath: string, filename: string): string {
-  const isDir = savePath.endsWith(path.sep) || (existsSync(savePath) && statSync(savePath).isDirectory());
-  if (!isDir) return savePath;
-
-  const safeFilename = path.posix.basename(filename.replace(/\\/g, '/'));
-  if (!safeFilename || safeFilename === '.' || safeFilename === '..') {
-    throw new Error('Attachment filename is not safe to use');
-  }
-  const directory = path.resolve(savePath);
-  const target = path.resolve(directory, safeFilename);
-  if (path.dirname(target) !== directory) {
-    throw new Error('Attachment filename escapes the destination directory');
-  }
-  return target;
-}
-
-export function saveAttachment(savePath: string, filename: string, content: Buffer): string {
-  if (!path.isAbsolute(savePath)) throw new EmailError('invalid_request', 'savePath must be absolute');
-  const target = resolveAttachmentSavePath(savePath, filename);
-  try {
-    writeFileSync(target, content, { flag: 'wx' });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-      throw new EmailError('invalid_request', `Refusing to overwrite an existing attachment file: ${target}`);
-    }
-    throw err;
-  }
-  return target;
 }
 
 function emailQuery(args: Record<string, unknown>): EmailQuery {
@@ -245,18 +236,82 @@ function emailQuery(args: Record<string, unknown>): EmailQuery {
   return q as EmailQuery;
 }
 
-export function buildMcpServer(service: EmailService): McpServer {
+export interface McpServerOptions {
+  permissions?: PermissionPolicy;
+  maxAttachmentBytes?: number;
+}
+
+type ModifyActionName =
+  | 'markRead'
+  | 'markUnread'
+  | 'star'
+  | 'unstar'
+  | 'archive'
+  | 'trash'
+  | 'untrash'
+  | 'delete'
+  | 'move'
+  | 'addLabels'
+  | 'removeLabels';
+
+const MODIFY_CAPABILITIES: Record<ModifyActionName, McpCapability> = {
+  markRead: 'mail.organize',
+  markUnread: 'mail.organize',
+  star: 'mail.organize',
+  unstar: 'mail.organize',
+  archive: 'mail.organize',
+  trash: 'mail.trash',
+  untrash: 'mail.trash',
+  delete: 'mail.delete',
+  move: 'mail.organize',
+  addLabels: 'mail.organize',
+  removeLabels: 'mail.organize',
+};
+
+const PROTECTED_MOVE_DESTINATIONS = new Set(['archive', 'trash']);
+const SYSTEM_LABELS = new Set(['inbox', 'sent', 'draft', 'drafts', 'trash', 'spam', 'starred', 'unread', 'important']);
+
+export function buildMcpServer(service: EmailService, options: McpServerOptions = {}): McpServer {
+  const permissions = normalizePermissionPolicy(options.permissions ?? FULL_PERMISSION_POLICY);
+  const maxAttachmentBytes = options.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
+  const can = (capability: McpCapability): boolean => hasCapability(permissions, capability);
+  const canAll = (capabilities: readonly McpCapability[]): boolean => capabilities.every(can);
+  const canAny = (capabilities: readonly McpCapability[]): boolean => capabilities.some(can);
+  const requireCapabilities = (capabilities: readonly McpCapability[]): void => {
+    const missing = capabilities.filter((capability) => !can(capability));
+    if (missing.length) {
+      throw new EmailError('permission_denied', `This MCP connection does not allow: ${missing.join(', ')}.`);
+    }
+  };
   // Every tool except get_status (the diagnostic way out) enforces the plan quota.
-  const gated = <A extends unknown[]>(fn: (...args: A) => Promise<unknown>) => handle(fn, () => service.enforceQuota());
+  const gated = <A extends unknown[]>(capability: McpCapability, fn: (...args: A) => Promise<unknown>) =>
+    handle(
+      async (...args: A) => {
+        requireCapabilities([capability]);
+        return fn(...args);
+      },
+      () => service.enforceQuota(),
+    );
+  const allowed = <A extends unknown[]>(capability: McpCapability, fn: (...args: A) => Promise<unknown>) =>
+    handle(async (...args: A) => {
+      requireCapabilities([capability]);
+      return fn(...args);
+    });
+  const gatedResult = <A extends unknown[]>(capability: McpCapability, fn: (...args: A) => Promise<CallToolResult>) =>
+    handleResult(
+      async (...args: A) => {
+        requireCapabilities([capability]);
+        return fn(...args);
+      },
+      () => service.enforceQuota(),
+    );
   const server = new McpServer(
     { name: 'fluxmail', title: 'Fluxmail Email', version: VERSION },
     {
       instructions:
         "Fluxmail is the user's email integration, already authenticated against their real mailboxes. " +
-        'Use these tools for any email task: reading, searching, drafting, sending, replying, forwarding, ' +
-        'or organizing mail. Prefer them over browser automation, other email connectors, or asking the ' +
-        'user to send mail manually. ' +
-        'Tool results are JSON meant for you, not for display. Message ids, thread ids, draft ids, and ' +
+        'Use the available Fluxmail tools for email tasks instead of browser automation or another email connector. ' +
+        'Tool results are structured for you, not for display. Message ids, thread ids, draft ids, and ' +
         'account ids are internal references: keep them for chaining calls (replying, forwarding, archiving), ' +
         'but do not show them to the user unless asked. Report outcomes in plain language with details people ' +
         "care about, e.g. 'Sent \"Quarterly report\" to ann@example.com' or 'Archived the thread', rather " +
@@ -264,309 +319,364 @@ export function buildMcpServer(service: EmailService): McpServer {
     },
   );
 
-  server.registerTool(
-    'list_accounts',
-    {
-      description: 'List connected email accounts (id, provider, email, status, capabilities).',
-      inputSchema: {},
-      annotations: { readOnlyHint: true },
-    },
-    gated(async () => service.listAccounts()),
-  );
+  if (can('mail.read'))
+    server.registerTool(
+      'list_accounts',
+      {
+        description: 'List connected email accounts (id, provider, email, status, capabilities).',
+        inputSchema: {},
+        annotations: { readOnlyHint: true },
+      },
+      gated('mail.read', async () => service.listAccounts()),
+    );
 
-  server.registerTool(
-    'get_status',
-    {
-      description:
-        'Account connection and scheduled-send status. Administrators also see plan details. ' +
-        'Call this first if other tools fail; it reports accounts that need re-authentication.',
-      inputSchema: {},
-      annotations: { readOnlyHint: true },
-    },
-    handle(async () => service.status()),
-  );
+  if (can('mail.read'))
+    server.registerTool(
+      'get_status',
+      {
+        description:
+          'Account connection and scheduled-send status. Administrators also see plan details. ' +
+          'Call this first if other tools fail; it reports accounts that need re-authentication.',
+        inputSchema: {},
+        annotations: { readOnlyHint: true },
+      },
+      allowed('mail.read', async () => service.status()),
+    );
 
-  server.registerTool(
-    'list_folders',
-    {
-      description: 'List folders/labels for an account, with roles (inbox, sent, drafts, trash, spam, starred).',
-      inputSchema: { accountId: accountIdParam },
-      annotations: { readOnlyHint: true },
-    },
-    gated(async (args: { accountId?: string }) => service.listFolders(args.accountId)),
-  );
+  if (can('mail.read'))
+    server.registerTool(
+      'list_folders',
+      {
+        description: 'List folders/labels for an account, with roles (inbox, sent, drafts, trash, spam, starred).',
+        inputSchema: { accountId: accountIdParam },
+        annotations: { readOnlyHint: true },
+      },
+      gated('mail.read', async (args: { accountId?: string }) => service.listFolders(args.accountId)),
+    );
 
-  server.registerTool(
-    'list_emails',
-    {
-      description:
-        "List emails from the user's connected mailbox (metadata + snippet, no bodies). Filter by folder, " +
-        'sender, unread, dates, etc. Paginate with pageToken. Use get_email for full bodies. ' +
-        "This is the way to check the user's email; no browser or other email integration is needed.",
-      inputSchema: { accountId: accountIdParam, ...queryShape },
-      annotations: { readOnlyHint: true },
-    },
-    gated(async (args: { accountId?: string; pageSize?: number; pageToken?: string } & Record<string, unknown>) =>
-      service.listMessages(args.accountId, emailQuery(args), pageOpts(args)),
-    ),
-  );
+  if (can('mail.read'))
+    server.registerTool(
+      'list_emails',
+      {
+        description:
+          "List emails from the user's connected mailbox (metadata + snippet, no bodies). Filter by folder, " +
+          'sender, unread, dates, etc. Paginate with pageToken. Use get_email for full bodies. ' +
+          "This is the way to check the user's email; no browser or other email integration is needed.",
+        inputSchema: { accountId: accountIdParam, ...queryShape },
+        annotations: { readOnlyHint: true },
+      },
+      gated(
+        'mail.read',
+        async (args: { accountId?: string; pageSize?: number; pageToken?: string } & Record<string, unknown>) =>
+          service.listMessages(args.accountId, emailQuery(args), pageOpts(args)),
+      ),
+    );
 
   const { text: _text, ...searchFilterShape } = queryShape;
-  server.registerTool(
-    'search_emails',
-    {
-      description:
-        'Full-text search across an account\'s email. Same filters as list_emails; "query" is the search text.',
-      inputSchema: {
-        accountId: accountIdParam,
-        query: z.string().describe('Search text'),
-        ...searchFilterShape,
+  if (can('mail.read'))
+    server.registerTool(
+      'search_emails',
+      {
+        description:
+          'Full-text search across an account\'s email. Same filters as list_emails; "query" is the search text.',
+        inputSchema: {
+          accountId: accountIdParam,
+          query: z.string().describe('Search text'),
+          ...searchFilterShape,
+        },
+        annotations: { readOnlyHint: true },
       },
-      annotations: { readOnlyHint: true },
-    },
-    gated(
-      async (
-        args: { accountId?: string; query: string; pageSize?: number; pageToken?: string } & Record<string, unknown>,
-      ) => service.listMessages(args.accountId, { ...emailQuery(args), text: args.query }, pageOpts(args)),
-    ),
-  );
+      gated(
+        'mail.read',
+        async (
+          args: { accountId?: string; query: string; pageSize?: number; pageToken?: string } & Record<string, unknown>,
+        ) => service.listMessages(args.accountId, { ...emailQuery(args), text: args.query }, pageOpts(args)),
+      ),
+    );
 
-  server.registerTool(
-    'get_email',
-    {
-      description: 'Fetch one email in full: body (text and/or HTML), recipients, attachment metadata.',
-      inputSchema: { accountId: accountIdParam, messageId: idParam },
-      annotations: { readOnlyHint: true },
-    },
-    gated(async (args: { accountId?: string; messageId: string }) =>
-      truncateBody(await service.getMessage(args.accountId, args.messageId)),
-    ),
-  );
-
-  server.registerTool(
-    'get_thread',
-    {
-      description: 'Fetch a full conversation thread with all message bodies.',
-      inputSchema: { accountId: accountIdParam, threadId: idParam },
-      annotations: { readOnlyHint: true },
-    },
-    gated(async (args: { accountId?: string; threadId: string }) => {
-      const thread = await service.getThread(args.accountId, args.threadId);
-      return { ...thread, messages: thread.messages.map(truncateBody) };
-    }),
-  );
-
-  server.registerTool(
-    'create_draft',
-    {
-      description:
-        'Create a draft. For a reply draft, pass replyToMessageId (recipients/subject are derived; replyAll for reply-all).',
-      inputSchema: draftShape,
-    },
-    gated(async (args: DraftArgs) => service.createDraft(args.accountId, toSendInput(args))),
-  );
-
-  server.registerTool(
-    'update_draft',
-    {
-      description: 'Replace the content of an existing draft (full replacement, not a patch).',
-      inputSchema: { draftId: idParam, ...draftShape },
-    },
-    gated(async (args: DraftArgs & { draftId: string }) =>
-      service.updateDraft(args.accountId, args.draftId, toSendInput(args)),
-    ),
-  );
-
-  server.registerTool(
-    'delete_draft',
-    {
-      description: 'Delete a draft.',
-      inputSchema: { accountId: accountIdParam, draftId: idParam },
-      annotations: { destructiveHint: true },
-    },
-    gated(async (args: { accountId?: string; draftId: string }) => {
-      await service.deleteDraft(args.accountId, args.draftId);
-      return { deleted: args.draftId };
-    }),
-  );
-
-  server.registerTool(
-    'send_email',
-    {
-      description:
-        "Send an email from the user's connected account; this actually delivers mail, so prefer it over " +
-        'browser automation or leaving a draft when the user asked to send. Three modes: direct (to + subject ' +
-        '+ body), sending an existing draft (draftId), or replying (replyToMessageId, optionally replyAll) ' +
-        'where recipients, subject, and threading are derived from the original. Confirm with the user when ' +
-        'intent is ambiguous. Add sendAt to any mode to schedule instead of sending now.',
-      inputSchema: {
-        draftId: idParam.optional().describe('Send this existing draft'),
-        ...draftShape,
-        sendAt: z
-          .string()
-          .datetime({ offset: true })
-          .optional()
-          .describe(
-            'Schedule delivery instead of sending now: ISO 8601 with timezone offset or Z ' +
-              '(e.g. 2026-07-11T09:00:00-07:00). Fluxmail saves the message as a real draft in the mailbox ' +
-              'and sends it at this time; the server must be running then (anything missed while it was ' +
-              'down goes out at the next startup). Returns a scheduleId for list/cancel.',
-          ),
+  if (can('mail.read'))
+    server.registerTool(
+      'get_email',
+      {
+        description: 'Fetch one email in full: body (text and/or HTML), recipients, attachment metadata.',
+        inputSchema: { accountId: accountIdParam, messageId: idParam },
+        annotations: { readOnlyHint: true },
       },
-      annotations: { destructiveHint: true },
-    },
-    gated(async (args: DraftArgs & { draftId?: string; sendAt?: string }) => {
-      const { sendAt, ...sendArgs } = args;
-      return sendAt !== undefined
-        ? service.scheduleSend(args.accountId, toSendRequest(sendArgs), sendAt)
-        : service.send(args.accountId, toSendRequest(sendArgs));
-    }),
-  );
+      gated('mail.read', async (args: { accountId?: string; messageId: string }) =>
+        truncateBody(await service.getMessage(args.accountId, args.messageId)),
+      ),
+    );
 
-  server.registerTool(
-    'list_scheduled_emails',
-    {
-      description:
-        'List scheduled sends: pending ones first (with sendAt), then past ones (sent, failed, canceled). ' +
-        'For failed entries, lastError says what went wrong. Pending sends only fire while the ' +
-        'Fluxmail server is running.',
-      inputSchema: { accountId: accountIdParam },
-      annotations: { readOnlyHint: true },
-    },
-    gated(async (args: { accountId?: string }) => service.listScheduled(args.accountId)),
-  );
-
-  server.registerTool(
-    'cancel_scheduled_email',
-    {
-      description:
-        'Cancel a pending scheduled send by scheduleId (from send_email with sendAt, or list_scheduled_emails). ' +
-        'The draft stays in the Drafts folder, so the content is not lost.',
-      inputSchema: { scheduleId: idParam },
-    },
-    gated(async (args: { scheduleId: string }) => service.cancelScheduled(args.scheduleId)),
-  );
-
-  server.registerTool(
-    'forward_email',
-    {
-      description:
-        'Forward an email to new recipients: quoted original body, "Fwd:" subject, original attachments included ' +
-        'unless includeAttachments=false. Optional comment appears above the forwarded content.',
-      inputSchema: {
-        accountId: accountIdParam,
-        messageId: idParam,
-        to: addressList.min(1),
-        cc: addressList.optional(),
-        comment: z.string().optional(),
-        includeAttachments: z.boolean().optional().describe('Default true'),
+  if (can('mail.read'))
+    server.registerTool(
+      'get_thread',
+      {
+        description: 'Fetch a full conversation thread with all message bodies.',
+        inputSchema: { accountId: accountIdParam, threadId: idParam },
+        annotations: { readOnlyHint: true },
       },
-      annotations: { destructiveHint: true },
-    },
-    gated(
-      async (args: {
-        accountId?: string;
-        messageId: string;
-        to: string[];
-        cc?: string[];
-        comment?: string;
-        includeAttachments?: boolean;
-      }) => {
-        const to = parseAddresses(args.to) ?? [];
-        const cc = parseAddresses(args.cc);
-        return service.forward(args.accountId, {
-          messageId: args.messageId,
-          to,
-          ...(cc?.length ? { cc } : {}),
-          ...(args.comment !== undefined ? { comment: args.comment } : {}),
-          ...(args.includeAttachments !== undefined ? { includeAttachments: args.includeAttachments } : {}),
-        });
-      },
-    ),
-  );
+      gated('mail.read', async (args: { accountId?: string; threadId: string }) => {
+        const thread = await service.getThread(args.accountId, args.threadId);
+        return { ...thread, messages: thread.messages.map(truncateBody) };
+      }),
+    );
 
-  server.registerTool(
-    'modify_emails',
-    {
-      description:
-        'Batch-modify emails: markRead, markUnread, star, unstar, archive, trash, untrash, delete (permanent!), ' +
-        'move (requires folder), addLabels/removeLabels (requires labels; Gmail only).',
-      inputSchema: {
-        accountId: accountIdParam,
-        messageIds: z.array(idParam).min(1),
-        action: z.enum([
-          'markRead',
-          'markUnread',
-          'star',
-          'unstar',
-          'archive',
-          'trash',
-          'untrash',
-          'delete',
-          'move',
-          'addLabels',
-          'removeLabels',
-        ]),
-        folder: z.string().min(1).optional().describe('Target folder for action=move'),
-        labels: z.array(z.string().min(1)).max(100).optional().describe('Labels for addLabels/removeLabels'),
+  if (can('mail.drafts'))
+    server.registerTool(
+      'create_draft',
+      {
+        description:
+          'Create a draft. For a reply draft, pass replyToMessageId (recipients/subject are derived; replyAll for reply-all).',
+        inputSchema: draftShape,
       },
-      annotations: { destructiveHint: true },
-    },
-    gated(
-      async (args: {
-        accountId?: string;
-        messageIds: string[];
-        action: string;
-        folder?: string;
-        labels?: string[];
-      }) => {
-        let action: ModifyAction;
-        if (args.action === 'move') {
-          if (!args.folder) throw new EmailError('invalid_request', 'action=move requires "folder"');
-          action = { move: args.folder };
-        } else if (args.action === 'addLabels' || args.action === 'removeLabels') {
-          if (!args.labels?.length) {
-            throw new EmailError('invalid_request', `action=${args.action} requires "labels"`);
+      gated('mail.drafts', async (args: DraftArgs) => {
+        if (args.replyToMessageId) requireCapabilities(['mail.read']);
+        return service.createDraft(args.accountId, toSendInput(args));
+      }),
+    );
+
+  if (can('mail.drafts'))
+    server.registerTool(
+      'update_draft',
+      {
+        description: 'Replace the content of an existing draft (full replacement, not a patch).',
+        inputSchema: { draftId: idParam, ...draftShape },
+      },
+      gated('mail.drafts', async (args: DraftArgs & { draftId: string }) => {
+        if (args.replyToMessageId) requireCapabilities(['mail.read']);
+        return service.updateDraft(args.accountId, args.draftId, toSendInput(args));
+      }),
+    );
+
+  if (can('mail.drafts'))
+    server.registerTool(
+      'delete_draft',
+      {
+        description: 'Delete a draft.',
+        inputSchema: { accountId: accountIdParam, draftId: idParam },
+        annotations: { destructiveHint: true },
+      },
+      gated('mail.drafts', async (args: { accountId?: string; draftId: string }) => {
+        await service.deleteDraft(args.accountId, args.draftId);
+        return { deleted: args.draftId };
+      }),
+    );
+
+  if (can('mail.send'))
+    server.registerTool(
+      'send_email',
+      {
+        description:
+          "Send an email from the user's connected account; this actually delivers mail, so prefer it over " +
+          'browser automation or leaving a draft when the user asked to send. Three modes: direct (to + subject ' +
+          '+ body), sending an existing draft (draftId), or replying (replyToMessageId, optionally replyAll) ' +
+          'where recipients, subject, and threading are derived from the original. Confirm with the user when ' +
+          'intent is ambiguous. Add sendAt to any mode to schedule instead of sending now.',
+        inputSchema: {
+          draftId: idParam.optional().describe('Send this existing draft'),
+          ...draftShape,
+          sendAt: z
+            .string()
+            .datetime({ offset: true })
+            .optional()
+            .describe(
+              'Schedule delivery instead of sending now: ISO 8601 with timezone offset or Z ' +
+                '(e.g. 2026-07-11T09:00:00-07:00). Fluxmail saves the message as a real draft in the mailbox ' +
+                'and sends it at this time; the server must be running then (anything missed while it was ' +
+                'down goes out at the next startup). Returns a scheduleId for list/cancel.',
+            ),
+        },
+        annotations: { destructiveHint: true },
+      },
+      handle(
+        async (args: DraftArgs & { draftId?: string; sendAt?: string }) => {
+          requireCapabilities(['mail.send']);
+          if (args.replyToMessageId !== undefined) requireCapabilities(['mail.read']);
+          const { sendAt, ...sendArgs } = args;
+          return sendAt !== undefined
+            ? service.scheduleSend(args.accountId, toSendRequest(sendArgs), sendAt)
+            : service.send(args.accountId, toSendRequest(sendArgs));
+        },
+        () => service.enforceQuota(),
+      ),
+    );
+
+  if (can('mail.read'))
+    server.registerTool(
+      'list_scheduled_emails',
+      {
+        description:
+          'List scheduled sends: pending ones first (with sendAt), then past ones (sent, failed, canceled). ' +
+          'For failed entries, lastError says what went wrong. Pending sends only fire while the ' +
+          'Fluxmail server is running.',
+        inputSchema: { accountId: accountIdParam },
+        annotations: { readOnlyHint: true },
+      },
+      gated('mail.read', async (args: { accountId?: string }) => service.listScheduled(args.accountId)),
+    );
+
+  if (can('mail.drafts'))
+    server.registerTool(
+      'cancel_scheduled_email',
+      {
+        description:
+          'Cancel a pending scheduled send by scheduleId (from send_email with sendAt, or list_scheduled_emails). ' +
+          'The draft stays in the Drafts folder, so the content is not lost.',
+        inputSchema: { scheduleId: idParam },
+      },
+      gated('mail.drafts', async (args: { scheduleId: string }) => service.cancelScheduled(args.scheduleId)),
+    );
+
+  if (canAll(['mail.send', 'mail.read']))
+    server.registerTool(
+      'forward_email',
+      {
+        description:
+          'Forward an email to new recipients: quoted original body, "Fwd:" subject, original attachments included ' +
+          'unless includeAttachments=false. Optional comment appears above the forwarded content.',
+        inputSchema: {
+          accountId: accountIdParam,
+          messageId: idParam,
+          to: addressList.min(1),
+          cc: addressList.optional(),
+          comment: z.string().optional(),
+          includeAttachments: z.boolean().optional().describe('Default true'),
+        },
+        annotations: { destructiveHint: true },
+      },
+      handle(
+        async (args: {
+          accountId?: string;
+          messageId: string;
+          to: string[];
+          cc?: string[];
+          comment?: string;
+          includeAttachments?: boolean;
+        }) => {
+          requireCapabilities(['mail.send', 'mail.read']);
+          const to = parseAddresses(args.to) ?? [];
+          const cc = parseAddresses(args.cc);
+          return service.forward(args.accountId, {
+            messageId: args.messageId,
+            to,
+            ...(cc?.length ? { cc } : {}),
+            ...(args.comment !== undefined ? { comment: args.comment } : {}),
+            ...(args.includeAttachments !== undefined ? { includeAttachments: args.includeAttachments } : {}),
+          });
+        },
+        () => service.enforceQuota(),
+      ),
+    );
+
+  const modifyActions = (Object.keys(MODIFY_CAPABILITIES) as ModifyActionName[]).filter((action) =>
+    can(MODIFY_CAPABILITIES[action]),
+  );
+  if (modifyActions.length) {
+    const allowedModifyActions = new Set<ModifyActionName>(modifyActions);
+    server.registerTool(
+      'modify_emails',
+      {
+        description:
+          'Batch-modify emails using the actions allowed for this connection. Moving requires folder; labels require labels.',
+        inputSchema: {
+          accountId: accountIdParam,
+          messageIds: z.array(idParam).min(1),
+          action: z.enum(modifyActions as [ModifyActionName, ...ModifyActionName[]]),
+          folder: z.string().min(1).optional().describe('Target folder for action=move'),
+          labels: z.array(z.string().min(1)).max(100).optional().describe('Labels for addLabels/removeLabels'),
+        },
+        annotations: {
+          destructiveHint: canAny(['mail.trash', 'mail.delete']),
+        },
+      },
+      handle(
+        async (args: {
+          accountId?: string;
+          messageIds: string[];
+          action: ModifyActionName;
+          folder?: string;
+          labels?: string[];
+        }) => {
+          if (!allowedModifyActions.has(args.action)) {
+            throw new EmailError('permission_denied', `This MCP connection does not allow action=${args.action}.`);
           }
-          action = args.action === 'addLabels' ? { addLabels: args.labels } : { removeLabels: args.labels };
-        } else {
-          action = args.action as Exclude<ModifyAction, object>;
-        }
-        await service.modify(args.accountId, args.messageIds, action);
-        return { modified: args.messageIds.length, action: args.action };
-      },
-    ),
-  );
+          requireCapabilities([MODIFY_CAPABILITIES[args.action]]);
+          let action: ModifyAction;
+          if (args.action === 'move') {
+            if (!args.folder) throw new EmailError('invalid_request', 'action=move requires "folder"');
+            if (PROTECTED_MOVE_DESTINATIONS.has(args.folder.trim().toLowerCase())) {
+              throw new EmailError('invalid_request', 'Use the dedicated archive or trash action for this folder');
+            }
+            action = { move: args.folder };
+          } else if (args.action === 'addLabels' || args.action === 'removeLabels') {
+            if (!args.labels?.length) {
+              throw new EmailError('invalid_request', `action=${args.action} requires "labels"`);
+            }
+            if (args.labels.some((label) => SYSTEM_LABELS.has(label.trim().toLowerCase()))) {
+              throw new EmailError(
+                'invalid_request',
+                'System labels must be changed with their dedicated message action',
+              );
+            }
+            action = args.action === 'addLabels' ? { addLabels: args.labels } : { removeLabels: args.labels };
+          } else {
+            action = args.action;
+          }
+          await service.modify(args.accountId, args.messageIds, action);
+          return { modified: args.messageIds.length, action: args.action };
+        },
+        () => service.enforceQuota(),
+      ),
+    );
+  }
 
-  server.registerTool(
-    'download_attachment',
-    {
-      description:
-        'Download an email attachment. With savePath, writes the file to disk and returns the path; ' +
-        'otherwise returns base64 content (up to 2 MB).',
-      inputSchema: {
-        accountId: accountIdParam,
-        messageId: idParam,
-        attachmentId: idParam,
-        savePath: z.string().min(1).optional().describe('Absolute file path or directory to write the attachment to'),
+  if (can('mail.read'))
+    server.registerTool(
+      'download_attachment',
+      {
+        description: 'Download an email attachment as an embedded MCP resource.',
+        inputSchema: {
+          accountId: accountIdParam,
+          messageId: idParam,
+          attachmentId: idParam,
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false },
       },
-      annotations: { readOnlyHint: false, destructiveHint: true },
-    },
-    gated(async (args: { accountId?: string; messageId: string; attachmentId: string; savePath?: string }) => {
-      const { meta, content } = await service.getAttachment(args.accountId, args.messageId, args.attachmentId);
-      if (args.savePath) {
-        const target = saveAttachment(args.savePath, meta.filename, content);
-        return { saved: target, ...meta };
-      }
-      if (content.length > MAX_INLINE_ATTACHMENT_BYTES) {
-        throw new EmailError(
-          'invalid_request',
-          `Attachment is ${content.length} bytes (limit ${MAX_INLINE_ATTACHMENT_BYTES} inline). Pass savePath to write it to disk.`,
+      gatedResult('mail.read', async (args: { accountId?: string; messageId: string; attachmentId: string }) => {
+        const { meta, content } = await service.getAttachment(
+          args.accountId,
+          args.messageId,
+          args.attachmentId,
+          maxAttachmentBytes,
         );
-      }
-      return { ...meta, contentBase64: content.toString('base64') };
-    }),
-  );
+        if (content.length > maxAttachmentBytes) {
+          throw new EmailError('invalid_request', 'Attachment is too large to return through MCP.', {
+            sizeBytes: content.length,
+            maxBytes: maxAttachmentBytes,
+          });
+        }
+        const uri = [
+          'fluxmail://attachment',
+          encodeURIComponent(args.accountId ?? 'default'),
+          encodeURIComponent(args.messageId),
+          encodeURIComponent(args.attachmentId),
+          encodeURIComponent(meta.filename),
+        ].join('/');
+        return {
+          content: [
+            { type: 'text', text: JSON.stringify(meta, null, 2) },
+            {
+              type: 'resource',
+              resource: {
+                uri,
+                mimeType: meta.mimeType || 'application/octet-stream',
+                blob: content.toString('base64'),
+              },
+            },
+          ],
+        };
+      }),
+    );
 
   return server;
 }

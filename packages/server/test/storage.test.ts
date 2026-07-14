@@ -1,9 +1,18 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { EmailError } from '@fluxmail/core';
 import { decryptString, encryptString } from '../src/storage/crypto.js';
-import { accounts, gmailConnectionGrants, openDb } from '../src/storage/db.js';
-import { createApiKey, listApiKeys, revokeApiKey, verifyApiKey } from '../src/storage/apiKeys.js';
+import { accounts, apiKeys, gmailConnectionGrants, openDb } from '../src/storage/db.js';
+import {
+  authenticateApiKey,
+  createApiKey,
+  listApiKeys,
+  revokeApiKey,
+  updateApiKeyPermissions,
+  verifyApiKey,
+} from '../src/storage/apiKeys.js';
+import { customPermissionPolicy, permissionPolicyForProfile } from '../src/permissions.js';
 import {
   claimGmailConnectionGrant,
   createGmailConnectionGrant,
@@ -56,7 +65,7 @@ describe('api keys', () => {
     expect(key).toMatch(/^fmk_/);
     expect(verifyApiKey(db, key)).toBe(true);
     expect(verifyApiKey(db, 'fmk_wrong')).toBe(false);
-    expect(listApiKeys(db)).toHaveLength(1);
+    expect(listApiKeys(db)[0]).toMatchObject({ permissionProfile: 'full' });
     expect(revokeApiKey(db, info.id)).toBe(true);
     expect(verifyApiKey(db, key)).toBe(false);
   });
@@ -83,6 +92,38 @@ describe('api keys', () => {
   it('rejects an unknown member', () => {
     const db = openDb(':memory:');
     expect(() => createApiKey(db, 'key', 'member_nope')).toThrow(/No member with id/);
+  });
+
+  it('stores named and custom permission policies', () => {
+    const db = openDb(':memory:');
+    const readOnly = createApiKey(db, 'reader', undefined, permissionPolicyForProfile('read-only'));
+    const custom = createApiKey(db, 'organizer', undefined, customPermissionPolicy(['mail.read', 'mail.trash']));
+
+    expect(authenticateApiKey(db, readOnly.key)?.permissions).toEqual(permissionPolicyForProfile('read-only'));
+    expect(authenticateApiKey(db, custom.key)?.permissions).toEqual(
+      customPermissionPolicy(['mail.read', 'mail.trash']),
+    );
+    expect(listApiKeys(db).map((key) => key.permissionProfile)).toEqual(['read-only', 'custom']);
+  });
+
+  it('updates permissions without rotating the key', () => {
+    const db = openDb(':memory:');
+    const { key, info } = createApiKey(db, 'test');
+
+    expect(updateApiKeyPermissions(db, info.id, permissionPolicyForProfile('read-only'))).toBe(true);
+    expect(authenticateApiKey(db, key)?.permissions).toEqual(permissionPolicyForProfile('read-only'));
+    expect(updateApiKeyPermissions(db, 'key_missing', permissionPolicyForProfile('full'))).toBe(false);
+  });
+
+  it('fails authentication closed for malformed stored permissions', () => {
+    const db = openDb(':memory:');
+    const { key, info } = createApiKey(db, 'test');
+    db.update(apiKeys)
+      .set({ permissionProfile: 'custom', customCapabilities: '["mail.read","unknown"]' })
+      .where(eq(apiKeys.id, info.id))
+      .run();
+
+    expect(authenticateApiKey(db, key)).toBeNull();
   });
 });
 

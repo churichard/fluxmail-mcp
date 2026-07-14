@@ -5,6 +5,7 @@ export type EmailErrorCode =
   | 'invalid_request'
   | 'provider_unavailable'
   | 'entitlement_exceeded'
+  | 'permission_denied'
   | 'unsupported_capability';
 
 export class EmailError extends Error {

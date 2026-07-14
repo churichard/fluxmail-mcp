@@ -1,6 +1,17 @@
 export { createContext, type AppContext } from './context.js';
 export { createApp } from './http/app.js';
-export { buildMcpServer } from './mcp/buildServer.js';
+export { buildMcpServer, type McpServerOptions } from './mcp/buildServer.js';
+export {
+  MCP_CAPABILITIES,
+  NAMED_PERMISSION_PROFILES,
+  FULL_PERMISSION_POLICY,
+  permissionPolicyForProfile,
+  customPermissionPolicy,
+  type McpCapability,
+  type NamedPermissionProfile,
+  type PermissionProfile,
+  type PermissionPolicy,
+} from './permissions.js';
 export { EmailService, buildForwardBody, type SendInput, type ForwardInput } from './service/emailService.js';
 export { AccountRegistry } from './accounts/registry.js';
 export {

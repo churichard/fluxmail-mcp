@@ -1,69 +1,18 @@
-import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { EmailError } from '@fluxmail/core';
 import type { EmailService } from '../src/service/emailService.js';
-import { buildMcpServer, resolveAttachmentSavePath, saveAttachment, toSendRequest } from '../src/mcp/buildServer.js';
+import { buildMcpServer, toSendRequest, type McpServerOptions } from '../src/mcp/buildServer.js';
+import { customPermissionPolicy, permissionPolicyForProfile } from '../src/permissions.js';
 
-async function connectMcp(service: Partial<EmailService>) {
-  const server = buildMcpServer(service as EmailService);
+async function connectMcp(service: Partial<EmailService>, options?: McpServerOptions) {
+  const server = buildMcpServer(service as EmailService, options);
   const client = new Client({ name: 'test', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;
 }
-
-describe('resolveAttachmentSavePath', () => {
-  it('uses only the basename of an attachment filename for directory saves', () => {
-    const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-attachment-'));
-    expect(resolveAttachmentSavePath(directory, '../../.ssh/authorized_keys')).toBe(
-      path.join(directory, 'authorized_keys'),
-    );
-    expect(resolveAttachmentSavePath(`${directory}${path.sep}`, '..\\..\\config.env')).toBe(
-      path.join(directory, 'config.env'),
-    );
-  });
-
-  it('preserves an explicit file path selected by the caller', () => {
-    const target = path.join(tmpdir(), 'renamed.pdf');
-    expect(resolveAttachmentSavePath(target, '../../report.pdf')).toBe(target);
-  });
-
-  it('does not overwrite an explicitly selected file path', () => {
-    const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-attachment-'));
-    const target = path.join(directory, 'report.pdf');
-    writeFileSync(target, 'existing');
-
-    expect(() => saveAttachment(target, 'ignored.pdf', Buffer.from('replacement'))).toThrow(/Refusing to overwrite/);
-    expect(readFileSync(target, 'utf8')).toBe('existing');
-  });
-
-  it('does not overwrite an existing file during a directory save', () => {
-    const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-attachment-'));
-    const target = path.join(directory, 'report.pdf');
-    writeFileSync(target, 'existing');
-
-    expect(() => saveAttachment(directory, 'report.pdf', Buffer.from('replacement'))).toThrow(/Refusing to overwrite/);
-    expect(readFileSync(target, 'utf8')).toBe('existing');
-  });
-
-  it('does not follow a destination symlink during a directory save', () => {
-    const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-attachment-'));
-    const victim = path.join(directory, 'victim.txt');
-    writeFileSync(victim, 'existing');
-    symlinkSync(victim, path.join(directory, 'report.pdf'));
-
-    expect(() => saveAttachment(directory, 'report.pdf', Buffer.from('replacement'))).toThrow(/Refusing to overwrite/);
-    expect(readFileSync(victim, 'utf8')).toBe('existing');
-  });
-
-  it('rejects relative save paths', () => {
-    expect(() => saveAttachment('downloads', 'report.pdf', Buffer.from('data'))).toThrow(/must be absolute/);
-  });
-});
 
 describe('toSendRequest', () => {
   it('uses an existing draft when no replacement content is supplied', () => {
@@ -76,6 +25,184 @@ describe('toSendRequest', () => {
 
   it('rejects replyAll without a reply target', () => {
     expect(() => toSendRequest({ replyAll: true })).toThrow(/requires replyToMessageId/);
+  });
+});
+
+describe('MCP permissions', () => {
+  const readTools = [
+    'download_attachment',
+    'get_email',
+    'get_status',
+    'get_thread',
+    'list_accounts',
+    'list_emails',
+    'list_folders',
+    'list_scheduled_emails',
+    'search_emails',
+  ];
+
+  async function toolNames(options: McpServerOptions): Promise<string[]> {
+    const client = await connectMcp({ enforceQuota: () => undefined }, options);
+    return (await client.listTools()).tools.map((tool) => tool.name).sort();
+  }
+
+  it('advertises only read tools for the read-only profile', async () => {
+    await expect(toolNames({ permissions: permissionPolicyForProfile('read-only') })).resolves.toEqual(readTools);
+  });
+
+  it('uses mail.read for every read tool', async () => {
+    await expect(toolNames({ permissions: customPermissionPolicy(['mail.read']) })).resolves.toEqual(readTools);
+  });
+
+  it('adds safe write tools but not send tools for the read-write profile', async () => {
+    const names = await toolNames({ permissions: permissionPolicyForProfile('read-write') });
+    expect(names).toEqual(
+      [...readTools, 'cancel_scheduled_email', 'create_draft', 'delete_draft', 'modify_emails', 'update_draft'].sort(),
+    );
+    expect(names).not.toContain('send_email');
+    expect(names).not.toContain('forward_email');
+  });
+
+  it('uses one capability for trash and untrash but keeps permanent delete separate', async () => {
+    const modify = vi.fn().mockResolvedValue(undefined);
+    const client = await connectMcp({ enforceQuota: () => undefined, modify } as Partial<EmailService>, {
+      permissions: customPermissionPolicy(['mail.trash']),
+    });
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['modify_emails']);
+
+    const trashed = await client.callTool({
+      name: 'modify_emails',
+      arguments: { messageIds: ['m1'], action: 'trash' },
+    });
+    expect(trashed.isError).toBeFalsy();
+    expect(modify).toHaveBeenCalledWith(undefined, ['m1'], 'trash');
+
+    const restored = await client.callTool({
+      name: 'modify_emails',
+      arguments: { messageIds: ['m1'], action: 'untrash' },
+    });
+    expect(restored.isError).toBeFalsy();
+    expect(modify).toHaveBeenCalledWith(undefined, ['m1'], 'untrash');
+
+    const deleted = await client.callTool({
+      name: 'modify_emails',
+      arguments: { messageIds: ['m1'], action: 'delete' },
+    });
+    expect(deleted.isError).toBe(true);
+    expect(modify).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses mail.organize for reversible message organization', async () => {
+    const modify = vi.fn().mockResolvedValue(undefined);
+    const client = await connectMcp({ enforceQuota: () => undefined, modify } as Partial<EmailService>, {
+      permissions: customPermissionPolicy(['mail.organize']),
+    });
+
+    const tools = await client.listTools();
+    const modifyTool = tools.tools.find((tool) => tool.name === 'modify_emails');
+    expect(modifyTool?.inputSchema.properties?.action).toMatchObject({
+      enum: ['markRead', 'markUnread', 'star', 'unstar', 'archive', 'move', 'addLabels', 'removeLabels'],
+    });
+
+    for (const action of ['markRead', 'markUnread', 'star', 'unstar']) {
+      const result = await client.callTool({
+        name: 'modify_emails',
+        arguments: { messageIds: ['m1'], action },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(modify).toHaveBeenCalledWith(undefined, ['m1'], action);
+    }
+  });
+
+  it('does not let generic move or label permissions change Trash', async () => {
+    const modify = vi.fn().mockResolvedValue(undefined);
+    const client = await connectMcp({ enforceQuota: () => undefined, modify } as Partial<EmailService>, {
+      permissions: customPermissionPolicy(['mail.organize']),
+    });
+
+    for (const arguments_ of [
+      { messageIds: ['m1'], action: 'move', folder: 'Trash' },
+      { messageIds: ['m1'], action: 'move', folder: 'Archive' },
+      { messageIds: ['m1'], action: 'addLabels', labels: ['TRASH'] },
+      { messageIds: ['m1'], action: 'removeLabels', labels: ['INBOX'] },
+    ]) {
+      const result = await client.callTool({ name: 'modify_emails', arguments: arguments_ });
+      expect(result.isError).toBe(true);
+    }
+    expect(modify).not.toHaveBeenCalled();
+  });
+
+  it('requires read access to expose forwarding', async () => {
+    await expect(toolNames({ permissions: customPermissionPolicy(['mail.send']) })).resolves.not.toContain(
+      'forward_email',
+    );
+
+    const forward = vi.fn().mockResolvedValue({ id: 'm2', threadId: 't2' });
+    const client = await connectMcp({ enforceQuota: () => undefined, forward } as Partial<EmailService>, {
+      permissions: customPermissionPolicy(['mail.send', 'mail.read']),
+    });
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('forward_email');
+
+    const withAttachments = await client.callTool({
+      name: 'forward_email',
+      arguments: { messageId: 'm1', to: ['recipient@example.com'] },
+    });
+    expect(withAttachments.isError).toBeFalsy();
+    expect(forward).toHaveBeenCalledOnce();
+
+    const withoutAttachments = await client.callTool({
+      name: 'forward_email',
+      arguments: { messageId: 'm1', to: ['recipient@example.com'], includeAttachments: false },
+    });
+    expect(withoutAttachments.isError).toBeFalsy();
+    expect(forward).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('attachment tool', () => {
+  it('returns an embedded binary resource and passes the size limit to the service', async () => {
+    const getAttachment = vi.fn().mockResolvedValue({
+      meta: { id: 'a1', filename: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 3 },
+      content: Buffer.from('pdf'),
+    });
+    const client = await connectMcp({ enforceQuota: () => undefined, getAttachment } as Partial<EmailService>, {
+      permissions: permissionPolicyForProfile('read-only'),
+      maxAttachmentBytes: 3,
+    });
+
+    const result = await client.callTool({
+      name: 'download_attachment',
+      arguments: { accountId: 'acct_1', messageId: 'm1', attachmentId: 'a1' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(getAttachment).toHaveBeenCalledWith('acct_1', 'm1', 'a1', 3);
+    expect(result.content).toContainEqual({
+      type: 'resource',
+      resource: expect.objectContaining({
+        mimeType: 'application/pdf',
+        blob: Buffer.from('pdf').toString('base64'),
+      }),
+    });
+  });
+
+  it('checks the final decoded size even when a provider ignores the limit', async () => {
+    const getAttachment = vi.fn().mockResolvedValue({
+      meta: { id: 'a1', filename: 'large.bin', mimeType: 'application/octet-stream', sizeBytes: 4 },
+      content: Buffer.alloc(4),
+    });
+    const client = await connectMcp({ enforceQuota: () => undefined, getAttachment } as Partial<EmailService>, {
+      permissions: permissionPolicyForProfile('read-only'),
+      maxAttachmentBytes: 3,
+    });
+
+    const result = await client.callTool({
+      name: 'download_attachment',
+      arguments: { messageId: 'm1', attachmentId: 'a1' },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain('maxBytes');
   });
 });
 
@@ -145,6 +272,98 @@ describe('scheduled send tools', () => {
 
     expect(result.isError).toBe(true);
     expect(scheduleSend).not.toHaveBeenCalled();
+  });
+
+  it('uses mail.send for immediate and scheduled delivery', async () => {
+    const send = vi.fn().mockResolvedValue({ id: 'm1', threadId: 't1' });
+    const scheduleSend = vi.fn().mockResolvedValue({ scheduleId: 'sch_1', status: 'pending' });
+    const client = await connectMcp({ enforceQuota: () => undefined, send, scheduleSend } as Partial<EmailService>, {
+      permissions: customPermissionPolicy(['mail.send']),
+    });
+
+    const direct = await client.callTool({
+      name: 'send_email',
+      arguments: { to: ['bob@example.com'], subject: 'Hello', bodyText: 'Hi' },
+    });
+    expect(direct.isError).toBeFalsy();
+
+    const reply = await client.callTool({
+      name: 'send_email',
+      arguments: { replyToMessageId: 'm1', bodyText: 'Hi' },
+    });
+    expect(reply.isError).toBe(true);
+
+    const draft = await client.callTool({
+      name: 'send_email',
+      arguments: { draftId: 'draft_1' },
+    });
+    expect(draft.isError).toBeFalsy();
+
+    const scheduled = await client.callTool({
+      name: 'send_email',
+      arguments: {
+        to: ['bob@example.com'],
+        subject: 'Later',
+        bodyText: 'Hi',
+        sendAt: '2026-07-11T09:00:00-07:00',
+      },
+    });
+    expect(scheduled.isError).toBeFalsy();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(scheduleSend).toHaveBeenCalledOnce();
+  });
+
+  it('uses mail.send plus read access for replies', async () => {
+    const send = vi.fn().mockResolvedValue({ id: 'm2', threadId: 't1' });
+    const client = await connectMcp({ enforceQuota: () => undefined, send } as Partial<EmailService>, {
+      permissions: customPermissionPolicy(['mail.send', 'mail.read']),
+    });
+
+    const reply = await client.callTool({
+      name: 'send_email',
+      arguments: { replyToMessageId: 'm1', bodyText: 'Hi' },
+    });
+    expect(reply.isError).toBeFalsy();
+    expect(send).toHaveBeenCalledOnce();
+  });
+});
+
+describe('reply permissions', () => {
+  it('requires read access for reply drafts', async () => {
+    const createDraft = vi.fn();
+    const client = await connectMcp({ enforceQuota: () => undefined, createDraft } as Partial<EmailService>, {
+      permissions: customPermissionPolicy(['mail.drafts']),
+    });
+
+    const result = await client.callTool({
+      name: 'create_draft',
+      arguments: { replyToMessageId: 'm1', bodyText: 'Reply' },
+    });
+    expect(result.isError).toBe(true);
+    expect(createDraft).not.toHaveBeenCalled();
+  });
+
+  it('uses the normal create and update capabilities for reply drafts', async () => {
+    const createDraft = vi.fn().mockResolvedValue({ id: 'd1' });
+    const updateDraft = vi.fn().mockResolvedValue({ id: 'd1' });
+    const client = await connectMcp(
+      { enforceQuota: () => undefined, createDraft, updateDraft } as Partial<EmailService>,
+      { permissions: customPermissionPolicy(['mail.drafts', 'mail.read']) },
+    );
+
+    const created = await client.callTool({
+      name: 'create_draft',
+      arguments: { replyToMessageId: 'm1', bodyText: 'Reply' },
+    });
+    const updated = await client.callTool({
+      name: 'update_draft',
+      arguments: { draftId: 'd1', replyToMessageId: 'm1', bodyText: 'Updated reply' },
+    });
+
+    expect(created.isError).toBeFalsy();
+    expect(updated.isError).toBeFalsy();
+    expect(createDraft).toHaveBeenCalledOnce();
+    expect(updateDraft).toHaveBeenCalledOnce();
   });
 });
 

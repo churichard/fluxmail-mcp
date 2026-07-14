@@ -47,6 +47,8 @@ interface WalkedParts {
 interface ParsedAttachment {
   meta: AttachmentMeta;
   content?: Buffer;
+  /** Gmail's opaque ID from the current message response. */
+  providerAttachmentId?: string;
 }
 
 function parseAttachment(part: gmail_v1.Schema$MessagePart, path: number[]): ParsedAttachment | undefined {
@@ -75,12 +77,13 @@ function parseAttachment(part: gmail_v1.Schema$MessagePart, path: number[]): Par
   if (body?.attachmentId) {
     return {
       meta: {
-        id: body.attachmentId,
+        id: `part:${fallbackId}`,
         filename,
         mimeType: part.mimeType ?? '',
         sizeBytes: body.size ?? 0,
         ...metadata,
       },
+      providerAttachmentId: body.attachmentId,
     };
   }
   if (body?.data != null) {
@@ -137,7 +140,7 @@ export function findAttachment(
 
   const visit = (part: gmail_v1.Schema$MessagePart, partPath: number[]): ParsedAttachment | undefined => {
     const attachment = parseAttachment(part, partPath);
-    if (attachment?.meta.id === attachmentId) return attachment;
+    if (attachment?.meta.id === attachmentId || attachment?.providerAttachmentId === attachmentId) return attachment;
     for (const [index, child] of (part.parts ?? []).entries()) {
       const found = visit(child, [...partPath, index]);
       if (found) return found;

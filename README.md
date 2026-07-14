@@ -31,7 +31,7 @@ See the [quickstart](https://fluxmail.ai/docs/quickstart) for how to connect to 
 | `cancel_scheduled_email`                         | Cancel a scheduled send before delivery                                      |
 | `forward_email`                                  | Forward with quoted body and original attachments                            |
 | `modify_emails`                                  | Batch: read/unread, star, archive, trash, move, labels, delete               |
-| `download_attachment`                            | Inline base64 (up to 2 MB) or save to disk                                   |
+| `download_attachment`                            | Attachment data as an embedded MCP resource                                  |
 
 `fluxmail-mcp` computes reply recipients on the server (Reply-To or From, plus the original To/Cc minus your own address for reply-all), so an agent can reply-all without assembling the recipient list itself.
 
@@ -55,6 +55,7 @@ For a personal setup, `fluxmail config set` is the simplest: set `GOOGLE_CLIENT_
 | `FLUXMAIL_AUTH`                             | `apikey`                          | `none` disables MCP auth (trusted networks only)                   |
 | `FLUXMAIL_OAUTH_PORT`                       | `8976`                            | Loopback port for the CLI OAuth flow                               |
 | `FLUXMAIL_OAUTH_HOST`                       | `127.0.0.1`                       | OAuth listener bind address (`0.0.0.0` in Docker)                  |
+| `FLUXMAIL_MAX_ATTACHMENT_MB`                | `10`                              | Largest attachment returned through MCP, in MB; maximum `25`       |
 | `FLUXMAIL_LICENSE_KEY`                      | (none)                            | Paid-plan license key; usually set via `fluxmail license activate` |
 
 ## Connect Gmail
@@ -79,7 +80,7 @@ Using Docker? Prefix these commands with `docker compose exec fluxmail`, for exa
 
 ```
 fluxmail serve                      # HTTP server (MCP at /mcp)
-fluxmail stdio                      # stdio MCP server
+fluxmail stdio [--profile <profile>] # stdio MCP server; profile defaults to full
 fluxmail accounts add gmail         # OAuth consent flow; add --member <id-or-email> to set an owner
 fluxmail accounts add gmail --reauthorize <account-id>
 fluxmail accounts add imap --email <address> --imap-host <host> --smtp-host <host>
@@ -88,8 +89,10 @@ fluxmail accounts list | remove <id>
 fluxmail accounts assign <id> --member <id-or-email>   # or --shared
 fluxmail members add --name <name> [--email <email>]   # people using this instance
 fluxmail members list | remove <id>
-fluxmail apikey create --name <name>  # key for the HTTP endpoint (shown once); name it after the client using it
+fluxmail apikey create --name <name>  # HTTP key, shown once; defaults to the full tool profile
 fluxmail apikey create --name <name> --member <id-or-email>
+fluxmail apikey permissions <id> --profile <read-only|read-write|full>
+fluxmail apikey capabilities          # list capabilities for custom policies
 fluxmail apikey list | revoke <id>
 fluxmail config set <KEY> <value>   # persist settings in the data dir
 fluxmail config list | unset <KEY>
@@ -97,6 +100,32 @@ fluxmail license activate <key>     # unlock paid-plan limits
 fluxmail license status | deactivate
 fluxmail status
 ```
+
+MCP permissions and mailbox access are separate. A key's profile controls its tools. `--member` limits the key to that member's mailboxes plus shared mailboxes. Local CLI commands use access to the Fluxmail data directory and do not authenticate with an API key.
+
+The built-in profiles are `read-only`, `read-write`, and `full`. Read-write keys can manage drafts and messages, including Trash. They cannot send, forward, schedule, or permanently delete mail. For a custom policy, repeat `--allow` when creating or updating a key:
+
+```bash
+fluxmail apikey create --name search-client \
+  --allow mail.read
+
+fluxmail apikey permissions key_123 --allow mail.organize
+```
+
+Fluxmail has six capabilities:
+
+- `mail.read`: accounts, status, folders, messages, threads, attachments, and scheduled-send history
+- `mail.drafts`: create, update, and delete drafts; cancel scheduled sends
+- `mail.organize`: read state, stars, archive, move, Spam, and labels
+- `mail.trash`: trash and untrash
+- `mail.delete`: permanent deletion
+- `mail.send`: new messages, existing drafts, replies, forwards, and scheduled delivery
+
+Replies, forwards, and reply drafts also require `mail.read` because Fluxmail reads the original message.
+
+Run `fluxmail apikey capabilities` to print the complete list. Stdio accepts the same `--profile` and repeated `--allow` options, so each local MCP client can use a different policy.
+
+Attachments are returned through MCP instead of being written to the server filesystem. Binary data is base64-encoded on the wire, so Fluxmail limits decoded attachments to 10 MB by default. Set `FLUXMAIL_MAX_ATTACHMENT_MB` to a whole number from 1 through 25 if needed.
 
 ## Architecture
 

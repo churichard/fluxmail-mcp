@@ -164,8 +164,8 @@ describe('plan quota', () => {
   });
 });
 
-describe('member_id migration', () => {
-  it('adds member_id columns to a pre-members database', () => {
+describe('API key migrations', () => {
+  it('adds member scope and full permissions to a pre-members database', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'fluxmail-migrate-'));
     const dbPath = path.join(dir, 'fluxmail.db');
     const raw = new Database(dbPath);
@@ -195,7 +195,7 @@ describe('member_id migration', () => {
     const account = db.select().from(accounts).all()[0];
     expect(account?.id).toBe('acct_1');
     expect(account?.memberId).toBeNull();
-    expect(listApiKeys(db)[0]?.memberId).toBeNull();
+    expect(listApiKeys(db)[0]).toMatchObject({ memberId: null, permissionProfile: 'full' });
     // Old rows behave as shared/unscoped, and members can be linked afterwards.
     const member = addMember(db, { name: 'Alice' });
     db.update(accounts).set({ memberId: member.id }).run();
