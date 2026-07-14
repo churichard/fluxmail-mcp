@@ -10,10 +10,10 @@ Fluxmail requires Node.js 20.20.x, or Node.js 22.22 or later.
 npm install -g fluxmail
 ```
 
-To run Fluxmail without installing it globally, replace `fluxmail` in any local CLI command with `npx -y fluxmail@latest`. For example:
+To run Fluxmail without installing it globally:
 
 ```bash
-npx -y fluxmail@latest accounts add gmail
+npx fluxmail
 ```
 
 ## Connect Gmail
