@@ -10,6 +10,12 @@ Fluxmail requires Node.js 20.20.x, or Node.js 22.22 or later.
 npm install -g fluxmail
 ```
 
+To run Fluxmail without installing it globally, replace `fluxmail` in any local CLI command with `npx -y fluxmail@latest`. For example:
+
+```bash
+npx -y fluxmail@latest accounts add gmail
+```
+
 ## Connect Gmail
 
 Create a Google Cloud OAuth client with the Gmail API enabled, then save its credentials:
@@ -43,17 +49,19 @@ Fluxmail prompts for the password and stores it encrypted. Use `--imap-password-
 
 ## Connect an MCP client
 
-Configure your client to launch `fluxmail stdio`. For example, with Claude Code:
+Configure your client to launch Fluxmail through `npx`. For example, with Claude Code:
 
 ```bash
-claude mcp add fluxmail -- fluxmail stdio
+claude mcp add fluxmail -- npx -y fluxmail@latest stdio
 ```
 
 Or with Codex CLI:
 
 ```bash
-codex mcp add fluxmail -- fluxmail stdio
+codex mcp add fluxmail -- npx -y fluxmail@latest stdio
 ```
+
+Replace `@latest` with an exact version to keep your MCP client on that version. If you installed Fluxmail globally, you can use `fluxmail stdio` instead.
 
 Fluxmail also supports Streamable HTTP for Docker and remote deployments.
 

@@ -17,6 +17,12 @@
 npm install -g fluxmail
 ```
 
+To run Fluxmail without installing it globally, replace `fluxmail` in any local CLI command with `npx -y fluxmail@latest`. For example:
+
+```bash
+npx -y fluxmail@latest accounts add gmail
+```
+
 See the [quickstart](https://fluxmail.ai/docs/quickstart) for how to connect to your email provider and AI agent.
 
 ## Tools
