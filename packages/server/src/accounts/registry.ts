@@ -74,12 +74,10 @@ export class AccountRegistry {
   }
 
   private normalizeAccess(ownerId: string | undefined, access?: AccountAccessInput): Required<AccountAccessInput> {
-    const normalized: Required<AccountAccessInput> = access
-      ? { sharingMode: access.sharingMode, sharedMemberIds: [...new Set(access.sharedMemberIds ?? [])] }
-      : { sharingMode: ownerId ? 'private' : 'all', sharedMemberIds: [] };
-    if (normalized.sharingMode !== 'selected') normalized.sharedMemberIds = [];
-    for (const memberId of normalized.sharedMemberIds) getMember(this.db, memberId);
-    return normalized;
+    const sharingMode = access?.sharingMode ?? (ownerId ? 'private' : 'all');
+    const sharedMemberIds = sharingMode === 'selected' ? [...new Set(access?.sharedMemberIds ?? [])] : [];
+    for (const memberId of sharedMemberIds) getMember(this.db, memberId);
+    return { sharingMode, sharedMemberIds };
   }
 
   private writeAccess(

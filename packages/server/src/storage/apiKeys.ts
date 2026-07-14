@@ -2,8 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { EmailError } from '@fluxmail/core';
 import { apiKeys, type FluxmailDb } from './db.js';
-import { getMember } from './members.js';
-import type { MemberRole } from './members.js';
+import { getMember, type MemberRole } from './members.js';
 import {
   deserializePermissionPolicy,
   FULL_PERMISSION_POLICY,
@@ -27,8 +26,12 @@ export interface ApiKeyInfo {
   accountIds: string[] | null;
 }
 
+function uniqueAccountIds(accountIds: readonly string[]): string[] {
+  return [...new Set(accountIds)];
+}
+
 function serializeAccountIds(accountIds: readonly string[] | null): string | null {
-  return accountIds === null ? null : JSON.stringify([...new Set(accountIds)]);
+  return accountIds === null ? null : JSON.stringify(uniqueAccountIds(accountIds));
 }
 
 function deserializeAccountIds(value: string | null): string[] | null {
@@ -37,7 +40,7 @@ function deserializeAccountIds(value: string | null): string[] | null {
   if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === 'string')) {
     throw new Error('API key account scope must be a JSON array of strings.');
   }
-  return [...new Set(parsed)];
+  return uniqueAccountIds(parsed);
 }
 
 function hashKey(key: string): string {
@@ -82,7 +85,7 @@ export function createApiKey(
       memberId,
       permissionProfile: policy.profile,
       capabilities: policy.capabilities,
-      accountIds: accountIds === null ? null : [...new Set(accountIds)],
+      accountIds: accountIds === null ? null : uniqueAccountIds(accountIds),
     },
   };
 }

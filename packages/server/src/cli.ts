@@ -3,7 +3,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { Command } from 'commander';
 import { serve } from '@hono/node-server';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { EmailError } from '@fluxmail/core';
+import { EmailError, type AccountSharingMode } from '@fluxmail/core';
 import { createContext } from './context.js';
 import {
   configFilePath,
@@ -28,8 +28,7 @@ import {
   updateApiKeyAccounts,
   updateApiKeyPermissions,
 } from './storage/apiKeys.js';
-import { addMember, findMember, listMembers, removeMember, setMemberRole } from './storage/members.js';
-import type { MemberRole } from './storage/members.js';
+import { addMember, findMember, listMembers, removeMember, setMemberRole, type MemberRole } from './storage/members.js';
 import { activateLicense } from './licensing/activation.js';
 import { LICENSE_KEY_PATTERN, releaseLicense } from './licensing/client.js';
 import { licensePublicKeys, verifyLease } from './licensing/lease.js';
@@ -105,6 +104,12 @@ function collectOption(value: string, previous: string[]): string[] {
 
 function accountIdsFromRefs(ctx: ReturnType<typeof createContext>, refs: readonly string[]): string[] | null {
   return refs.length ? [...new Set(refs.map((ref) => ctx.registry.findAccount(ref).id))] : null;
+}
+
+function sharingMode(shared: boolean | undefined, sharedMemberIds: readonly string[]): AccountSharingMode {
+  if (shared) return 'all';
+  if (sharedMemberIds.length) return 'selected';
+  return 'private';
 }
 
 export function permissionPolicyFromOptions(opts: PermissionOptions, requireSelection = false): PermissionPolicy {
@@ -392,11 +397,7 @@ accounts
       }
       const sharedMemberIds = opts.shareWith.map((ref) => findMember(ctx.db, ref).id);
       const access = {
-        sharingMode: opts.shared
-          ? ('all' as const)
-          : sharedMemberIds.length
-            ? ('selected' as const)
-            : ('private' as const),
+        sharingMode: sharingMode(opts.shared, sharedMemberIds),
         sharedMemberIds,
       };
 
@@ -670,7 +671,7 @@ accounts
       }
       const sharedMemberIds = opts.shareWith.map((ref) => findMember(ctx.db, ref).id);
       const account = ctx.registry.setAccountAccess(accountId, {
-        sharingMode: opts.ownerOnly ? 'private' : opts.shared ? 'all' : 'selected',
+        sharingMode: sharingMode(opts.shared, sharedMemberIds),
         sharedMemberIds,
       });
       console.log(`Updated access for ${account.email}: ${account.sharingMode}.`);

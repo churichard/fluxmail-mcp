@@ -21,8 +21,7 @@ import {
 import type { AccountRegistry } from '../accounts/registry.js';
 import { assertWithinQuota, checkLicenseState, type Entitlements } from '../licensing/entitlements.js';
 import type { FluxmailDb } from '../storage/db.js';
-import { listMembers } from '../storage/members.js';
-import type { MemberRole } from '../storage/members.js';
+import { listMembers, type MemberRole } from '../storage/members.js';
 import {
   cancelScheduledSend,
   countPending,
@@ -162,15 +161,15 @@ export class EmailService {
   }
 
   private canAccess(account: Account): boolean {
-    let granted = this.isTrustedLocal();
-    if (this.scope.memberId !== null) {
-      granted =
-        account.ownerId === this.scope.memberId ||
-        account.memberId === this.scope.memberId ||
-        (account.sharingMode === undefined && account.ownerId === undefined && account.memberId === undefined) ||
-        account.sharingMode === 'all' ||
-        (account.sharingMode === 'selected' && account.sharedMemberIds.includes(this.scope.memberId));
-    }
+    const memberId = this.scope.memberId;
+    const granted =
+      this.isTrustedLocal() ||
+      (memberId !== null &&
+        (account.ownerId === memberId ||
+          account.memberId === memberId ||
+          (account.sharingMode === undefined && account.ownerId === undefined && account.memberId === undefined) ||
+          account.sharingMode === 'all' ||
+          (account.sharingMode === 'selected' && account.sharedMemberIds.includes(memberId))));
     const allowlist = this.scope.accountIds;
     return granted && (allowlist == null || allowlist.includes(account.id));
   }
