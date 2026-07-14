@@ -61,7 +61,6 @@ For a personal setup, `fluxmail config set` is the simplest: set `GOOGLE_CLIENT_
 | `FLUXMAIL_OAUTH_HOST`                       | `127.0.0.1`                       | OAuth listener bind address (`0.0.0.0` in Docker)                  |
 | `FLUXMAIL_MAX_ATTACHMENT_MB`                | `10`                              | Largest attachment returned through MCP, in MB; maximum `25`       |
 | `FLUXMAIL_LICENSE_KEY`                      | (none)                            | Paid-plan license key; usually set via `fluxmail license activate` |
-| `FLUXMAIL_TELEMETRY`                        | `1`                               | Set to `0` to turn off anonymous usage telemetry                   |
 
 ## Connect Gmail
 
@@ -97,55 +96,17 @@ fluxmail members list | remove <id>
 fluxmail apikey create --name <name>  # HTTP key, shown once; defaults to the full tool profile
 fluxmail apikey create --name <name> --member <id-or-email>
 fluxmail apikey permissions <id> --profile <read-only|read-write|full>
-fluxmail apikey capabilities          # list capabilities for custom policies
 fluxmail apikey list | revoke <id>
 fluxmail config set <KEY> <value>   # persist settings in the data dir
 fluxmail config list | unset <KEY>
-fluxmail telemetry status | enable | disable
 fluxmail license activate <key>     # unlock paid-plan limits
 fluxmail license status | deactivate
 fluxmail status
 ```
 
-MCP permissions and mailbox access are separate. A key's profile controls its tools. `--member` limits the key to that member's mailboxes plus shared mailboxes. Local CLI commands use access to the Fluxmail data directory and do not authenticate with an API key.
-
-The built-in profiles are `read-only`, `read-write`, and `full`. Read-write keys can manage drafts and messages, including Trash. They cannot send, forward, schedule, or permanently delete mail. For a custom policy, repeat `--allow` when creating or updating a key:
-
-```bash
-fluxmail apikey create --name search-client \
-  --allow mail.read
-
-fluxmail apikey permissions key_123 --allow mail.organize
-```
-
-Fluxmail has six capabilities:
-
-- `mail.read`: accounts, status, folders, messages, threads, attachments, and scheduled-send history
-- `mail.drafts`: create, update, and delete drafts; cancel scheduled sends
-- `mail.organize`: read state, stars, archive, move, Spam, and labels
-- `mail.trash`: trash and untrash
-- `mail.delete`: permanent deletion
-- `mail.send`: new messages, existing drafts, replies, forwards, and scheduled delivery
-
-Replies, forwards, and reply drafts also require `mail.read` because Fluxmail reads the original message.
-
-Run `fluxmail apikey capabilities` to print the complete list. Stdio accepts the same `--profile` and repeated `--allow` options, so each local MCP client can use a different policy.
+API key profiles control which MCP tools are available. Use `read-only`, `read-write`, or `full`. A key created with `--member` can access that member's mailboxes and shared mailboxes.
 
 Attachments are returned through MCP instead of being written to the server filesystem. Binary data is base64-encoded on the wire, so Fluxmail limits decoded attachments to 10 MB by default. Set `FLUXMAIL_MAX_ATTACHMENT_MB` to a whole number from 1 through 25 if needed.
-
-## Telemetry
-
-Fluxmail sends anonymous usage events to Fluxmail's PostHog project. These events show which CLI commands, MCP transports, and MCP tools are in use. They include the Fluxmail and Node.js versions, operating system, architecture, outcomes, and timing.
-
-Fluxmail does not send command arguments, email addresses, account or message IDs, search queries, subjects, message bodies, attachment names, file paths, API keys, license keys, or error messages. PostHog person profiles and GeoIP lookup are disabled. Each installation is counted with a random ID stored in the Fluxmail data directory.
-
-To turn telemetry off, run:
-
-```bash
-fluxmail telemetry disable
-```
-
-Use `fluxmail telemetry status` to check the setting and `fluxmail telemetry enable` to turn it back on. Fluxmail also respects `FLUXMAIL_TELEMETRY=0` and `DO_NOT_TRACK=1`. See [docs/telemetry.md](docs/telemetry.md) for the event list and the PostHog reports these events support.
 
 ## Architecture
 

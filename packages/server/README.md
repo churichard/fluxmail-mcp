@@ -61,26 +61,18 @@ Stdio uses the full tool set by default. To connect a client that can only read 
 claude mcp add fluxmail-reader -- fluxmail stdio --profile read-only
 ```
 
-The other profiles are `read-write` and `full`. Read-write clients can manage drafts and messages, including Trash, but they cannot send, forward, schedule, or permanently delete mail. Repeat `--allow <capability>` for a custom policy. Run `fluxmail apikey capabilities` to list the six capabilities.
-
 Fluxmail also supports Streamable HTTP for Docker and remote deployments.
 
-HTTP API keys accept the same profiles and custom capabilities:
+HTTP API keys use the same profiles:
 
 ```bash
 fluxmail apikey create --name reader --profile read-only
 fluxmail apikey permissions <key-id> --profile read-write
 ```
 
-API-key permissions control MCP tools. Member assignment separately controls which mailboxes a key can access. Local administration commands are not gated by API keys.
-
-Replies and forwards require both `mail.send` and `mail.read` because Fluxmail reads the original message.
+Assign a key to a member to limit it to that member's mailboxes and shared mailboxes.
 
 See the [setup guide](https://fluxmail.ai/docs/quickstart) for Google OAuth configuration, Docker deployment, supported MCP clients, environment variables, and the complete tool list.
-
-## Telemetry
-
-Fluxmail reports anonymous CLI and MCP feature usage to PostHog. It does not send command arguments, mailbox data, message content, account or message IDs, file paths, secrets, or error messages. Run `fluxmail telemetry disable` to turn it off. Use `fluxmail telemetry status` to check the setting or `fluxmail telemetry enable` to turn it back on. `FLUXMAIL_TELEMETRY=0` and `DO_NOT_TRACK=1` also disable telemetry. The [telemetry reference](https://github.com/churichard/fluxmail-mcp/blob/main/docs/telemetry.md) lists every event and property.
 
 ## License
 
