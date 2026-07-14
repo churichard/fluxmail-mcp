@@ -1,6 +1,6 @@
 {
   "name": "@fluxmail/provider-gmail",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Gmail adapter for the Fluxmail unified email API",
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
