@@ -1,0 +1,53 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.churichard/fluxmail",
+  "title": "Fluxmail",
+  "description": "Read, search, draft, send, and organize email through Gmail, Outlook, and IMAP/SMTP mailboxes.",
+  "websiteUrl": "https://fluxmail.ai",
+  "repository": {
+    "url": "https://github.com/churichard/fluxmail-mcp",
+    "source": "github",
+    "id": "1295539777",
+    "subfolder": "packages/server"
+  },
+  "version": "0.2.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "fluxmail",
+      "version": "0.2.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "stdio"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "GOOGLE_CLIENT_ID",
+          "description": "Google OAuth client ID. Required only when connecting Gmail accounts."
+        },
+        {
+          "name": "GOOGLE_CLIENT_SECRET",
+          "description": "Google OAuth client secret. Required only when connecting Gmail accounts.",
+          "isSecret": true
+        },
+        {
+          "name": "FLUXMAIL_DATA_DIR",
+          "description": "Directory for the Fluxmail database, encryption key, and stored settings.",
+          "format": "filepath",
+          "placeholder": "~/.fluxmail"
+        },
+        {
+          "name": "FLUXMAIL_LICENSE_KEY",
+          "description": "Optional Fluxmail license key for paid plan limits.",
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

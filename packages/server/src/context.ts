@@ -3,12 +3,14 @@ import { openDb, type FluxmailDb } from './storage/db.js';
 import { AccountRegistry } from './accounts/registry.js';
 import { EmailService } from './service/emailService.js';
 import { SendScheduler } from './scheduler/sendScheduler.js';
+import { getTelemetry, type Telemetry } from './telemetry.js';
 
 export interface AppContext {
   config: FluxmailConfig;
   db: FluxmailDb;
   registry: AccountRegistry;
   service: EmailService;
+  telemetry: Telemetry;
   /** Inert until start(); only the long-lived serve/stdio commands start it. */
   scheduler: SendScheduler;
 }
@@ -19,6 +21,7 @@ export function createContext(): AppContext {
   const registry = new AccountRegistry(db, config);
   const service = new EmailService(registry, db);
   const scheduler = new SendScheduler(db, service);
+  const telemetry = getTelemetry(config.dataDir);
   service.onScheduleChanged = () => scheduler.wake();
-  return { config, db, registry, service, scheduler };
+  return { config, db, registry, service, scheduler, telemetry };
 }

@@ -1,6 +1,11 @@
 export { createContext, type AppContext } from './context.js';
 export { createApp } from './http/app.js';
-export { buildMcpServer, type McpServerOptions } from './mcp/buildServer.js';
+export {
+  buildMcpServer,
+  type BuildMcpServerOptions,
+  type McpServerOptions,
+  type McpTransport,
+} from './mcp/buildServer.js';
 export {
   MCP_CAPABILITIES,
   NAMED_PERMISSION_PROFILES,
@@ -51,3 +56,11 @@ export {
   type ValidateOutcome,
 } from './licensing/client.js';
 export { refreshLicense, startLicenseRefresher, loadInstanceId, type RefreshResult } from './licensing/refresher.js';
+export {
+  createTelemetry,
+  isTelemetryEnabled,
+  setTelemetryEnabled,
+  telemetryDisabled,
+  type Telemetry,
+  type TelemetryProperties,
+} from './telemetry.js';

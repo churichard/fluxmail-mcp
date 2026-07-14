@@ -113,6 +113,11 @@ export function configFilePath(dataDir: string): string {
   return path.join(dataDir, 'config.env');
 }
 
+/** Apply settings persisted by `fluxmail config set` without overriding the current environment. */
+export function applyStoredConfig(dataDir: string): void {
+  applyDotEnvFile(configFilePath(dataDir));
+}
+
 /** Best-effort permission tightening: chmod fails on files owned by another user, but the read may still work. */
 function tryRestrictPermissions(file: string): void {
   try {
@@ -230,7 +235,7 @@ function loadEncryptionKey(dataDir: string): Buffer {
 export function loadConfig(): FluxmailConfig {
   // Precedence: shell env > cwd .env.local > cwd .env > data-dir config.env.
   const dataDir = resolveDataDir();
-  applyDotEnvFile(configFilePath(dataDir));
+  applyStoredConfig(dataDir);
 
   const port = readPort('FLUXMAIL_PORT', 8977);
   const oauthPort = readPort('FLUXMAIL_OAUTH_PORT', 8976);

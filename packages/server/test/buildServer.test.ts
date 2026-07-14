@@ -5,6 +5,7 @@ import { EmailError } from '@fluxmail/core';
 import type { EmailService } from '../src/service/emailService.js';
 import { buildMcpServer, toSendRequest, type McpServerOptions } from '../src/mcp/buildServer.js';
 import { customPermissionPolicy, permissionPolicyForProfile } from '../src/permissions.js';
+import type { Telemetry } from '../src/telemetry.js';
 
 async function connectMcp(service: Partial<EmailService>, options?: McpServerOptions) {
   const server = buildMcpServer(service as EmailService, options);
@@ -12,6 +13,23 @@ async function connectMcp(service: Partial<EmailService>, options?: McpServerOpt
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;
+}
+
+function telemetrySpy(): {
+  telemetry: Telemetry;
+  capture: ReturnType<typeof vi.fn>;
+  beginActivity: ReturnType<typeof vi.fn>;
+  finishActivity: ReturnType<typeof vi.fn>;
+} {
+  const capture = vi.fn();
+  const finishActivity = vi.fn();
+  const beginActivity = vi.fn(() => finishActivity);
+  return {
+    capture,
+    beginActivity,
+    finishActivity,
+    telemetry: { capture, beginActivity, shutdown: vi.fn().mockResolvedValue(undefined) },
+  };
 }
 
 describe('toSendRequest', () => {
@@ -364,6 +382,68 @@ describe('reply permissions', () => {
     expect(updated.isError).toBeFalsy();
     expect(createDraft).toHaveBeenCalledOnce();
     expect(updateDraft).toHaveBeenCalledOnce();
+  });
+});
+
+describe('tool telemetry', () => {
+  it('captures the tool, transport, outcome, and allowlisted feature properties', async () => {
+    const { telemetry, capture, beginActivity, finishActivity } = telemetrySpy();
+    const service = {
+      enforceQuota: () => undefined,
+      scheduleSend: vi.fn().mockResolvedValue({ scheduleId: 'sch_1', status: 'pending' }),
+    } as Partial<EmailService>;
+    const client = await connectMcp(service, { telemetry, transport: 'http' });
+
+    await client.callTool({
+      name: 'send_email',
+      arguments: {
+        to: ['private@example.com'],
+        subject: 'private subject',
+        bodyText: 'private body',
+        sendAt: '2026-07-11T09:00:00-07:00',
+      },
+    });
+
+    expect(capture).toHaveBeenCalledWith('mcp tool called', {
+      product_surface: 'mcp',
+      tool: 'send_email',
+      transport: 'http',
+      outcome: 'success',
+      duration_ms: expect.any(Number),
+      mode: 'direct',
+      scheduled: true,
+      reply_all: false,
+    });
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('private@example.com');
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('private subject');
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('private body');
+    expect(beginActivity).toHaveBeenCalledOnce();
+    expect(finishActivity).toHaveBeenCalledOnce();
+  });
+
+  it('captures a safe error code without the error message', async () => {
+    const { telemetry, capture } = telemetrySpy();
+    const service = {
+      enforceQuota: () => undefined,
+      listAccounts: vi.fn(() => {
+        throw new EmailError('provider_unavailable', 'private provider response');
+      }),
+    } as Partial<EmailService>;
+    const client = await connectMcp(service, { telemetry, transport: 'stdio' });
+
+    await client.callTool({ name: 'list_accounts', arguments: {} });
+
+    expect(capture).toHaveBeenCalledWith(
+      'mcp tool called',
+      expect.objectContaining({
+        product_surface: 'mcp',
+        tool: 'list_accounts',
+        transport: 'stdio',
+        outcome: 'error',
+        error_code: 'provider_unavailable',
+      }),
+    );
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('private provider response');
   });
 });
 

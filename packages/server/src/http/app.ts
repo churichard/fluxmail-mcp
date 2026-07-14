@@ -19,6 +19,7 @@ import {
   type GmailConnectionIntent,
 } from '../storage/gmailConnectionGrants.js';
 import { VERSION } from '../version.js';
+import type { Telemetry } from '../telemetry.js';
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -27,10 +28,11 @@ export interface AppDeps {
   db: FluxmailDb;
   registry: AccountRegistry;
   service: EmailService;
+  telemetry?: Telemetry;
 }
 
 export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
-  const { config, db, registry, service } = deps;
+  const { config, db, registry, service, telemetry } = deps;
   const app = new Hono<{ Bindings: HttpBindings }>();
   const oauthStates = new Map<string, { expiresAt: number; intent?: GmailConnectionIntent }>();
 
@@ -131,6 +133,8 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     const server = buildMcpServer(service.withScope(scope), {
       permissions: auth.permissions,
       maxAttachmentBytes: config.maxAttachmentBytes,
+      telemetry,
+      transport: 'http',
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

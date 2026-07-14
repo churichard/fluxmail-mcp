@@ -1,7 +1,8 @@
 {
   "name": "fluxmail",
-  "version": "0.2.0",
-  "description": "Fluxmail MCP server: unified email tools over Gmail and IMAP/SMTP",
+  "version": "0.2.1",
+  "mcpName": "io.github.churichard/fluxmail",
+  "description": "Fluxmail MCP server: unified email tools over Gmail, Outlook, and IMAP/SMTP",
   "license": "SEE LICENSE IN LICENSE.md",
   "homepage": "https://github.com/churichard/fluxmail-mcp#readme",
   "repository": {
@@ -32,7 +33,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": "^20.20.0 || >=22.22.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -51,6 +52,7 @@
     "drizzle-orm": "^0.45.2",
     "google-auth-library": "10.5.0",
     "hono": "^4.7.11",
+    "posthog-node": "^5.41.0",
     "zod": "^3.25.67"
   },
   "devDependencies": {

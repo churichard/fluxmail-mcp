@@ -1,4 +1,8 @@
-# fluxmail-mcp
+<p align="center">
+  <img src="docs/assets/fluxmail-banner.png" alt="Fluxmail" width="100%">
+</p>
+
+<p align="center"><a href="https://github.com/churichard/fluxmail-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/churichard/fluxmail-mcp/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;logo=github"></a> <a href="https://www.npmjs.com/package/fluxmail"><img alt="npm version" src="https://img.shields.io/npm/v/fluxmail?style=flat-square&amp;logo=npm&amp;color=1f4fcc"></a> <a href="https://github.com/churichard/fluxmail-mcp/pkgs/container/fluxmail-mcp"><img alt="Container image" src="https://img.shields.io/badge/GHCR-container-2496ED?style=flat-square&amp;logo=docker&amp;logoColor=white"></a></p>
 
 `fluxmail-mcp` is a self-hosted MCP server that connects AI agents to Gmail and IMAP/SMTP mailboxes. Agents get one set of tools to read, search, draft, send, and organize mail.
 
@@ -57,6 +61,7 @@ For a personal setup, `fluxmail config set` is the simplest: set `GOOGLE_CLIENT_
 | `FLUXMAIL_OAUTH_HOST`                       | `127.0.0.1`                       | OAuth listener bind address (`0.0.0.0` in Docker)                  |
 | `FLUXMAIL_MAX_ATTACHMENT_MB`                | `10`                              | Largest attachment returned through MCP, in MB; maximum `25`       |
 | `FLUXMAIL_LICENSE_KEY`                      | (none)                            | Paid-plan license key; usually set via `fluxmail license activate` |
+| `FLUXMAIL_TELEMETRY`                        | `1`                               | Set to `0` to turn off anonymous usage telemetry                   |
 
 ## Connect Gmail
 
@@ -96,6 +101,7 @@ fluxmail apikey capabilities          # list capabilities for custom policies
 fluxmail apikey list | revoke <id>
 fluxmail config set <KEY> <value>   # persist settings in the data dir
 fluxmail config list | unset <KEY>
+fluxmail telemetry status | enable | disable
 fluxmail license activate <key>     # unlock paid-plan limits
 fluxmail license status | deactivate
 fluxmail status
@@ -126,6 +132,20 @@ Replies, forwards, and reply drafts also require `mail.read` because Fluxmail re
 Run `fluxmail apikey capabilities` to print the complete list. Stdio accepts the same `--profile` and repeated `--allow` options, so each local MCP client can use a different policy.
 
 Attachments are returned through MCP instead of being written to the server filesystem. Binary data is base64-encoded on the wire, so Fluxmail limits decoded attachments to 10 MB by default. Set `FLUXMAIL_MAX_ATTACHMENT_MB` to a whole number from 1 through 25 if needed.
+
+## Telemetry
+
+Fluxmail sends anonymous usage events to Fluxmail's PostHog project. These events show which CLI commands, MCP transports, and MCP tools are in use. They include the Fluxmail and Node.js versions, operating system, architecture, outcomes, and timing.
+
+Fluxmail does not send command arguments, email addresses, account or message IDs, search queries, subjects, message bodies, attachment names, file paths, API keys, license keys, or error messages. PostHog person profiles and GeoIP lookup are disabled. Each installation is counted with a random ID stored in the Fluxmail data directory.
+
+To turn telemetry off, run:
+
+```bash
+fluxmail telemetry disable
+```
+
+Use `fluxmail telemetry status` to check the setting and `fluxmail telemetry enable` to turn it back on. Fluxmail also respects `FLUXMAIL_TELEMETRY=0` and `DO_NOT_TRACK=1`. See [docs/telemetry.md](docs/telemetry.md) for the event list and the PostHog reports these events support.
 
 ## Architecture
 

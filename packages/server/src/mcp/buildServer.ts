@@ -21,6 +21,7 @@ import {
   type McpCapability,
   type PermissionPolicy,
 } from '../permissions.js';
+import type { Telemetry, TelemetryProperties } from '../telemetry.js';
 
 const MAX_BODY_CHARS = 50_000;
 
@@ -175,29 +176,95 @@ function toolError(err: unknown): CallToolResult {
   return { isError: true, content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
 }
 
+export type McpTransport = 'http' | 'stdio' | 'unknown';
+
+export interface BuildMcpServerOptions {
+  permissions?: PermissionPolicy;
+  maxAttachmentBytes?: number;
+  telemetry?: Telemetry;
+  transport?: McpTransport;
+}
+
+export type McpServerOptions = BuildMcpServerOptions;
+
+function toolFeatureProperties(tool: string, args: unknown): TelemetryProperties {
+  if (!args || typeof args !== 'object') return {};
+  const input = args as Record<string, unknown>;
+
+  switch (tool) {
+    case 'create_draft':
+      return { reply: input.replyToMessageId !== undefined, reply_all: input.replyAll === true };
+    case 'send_email':
+      return {
+        mode: input.draftId !== undefined ? 'draft' : input.replyToMessageId !== undefined ? 'reply' : 'direct',
+        scheduled: input.sendAt !== undefined,
+        reply_all: input.replyAll === true,
+      };
+    case 'forward_email':
+      return { include_attachments: input.includeAttachments !== false };
+    case 'modify_emails':
+      return typeof input.action === 'string' ? { action: input.action } : {};
+    case 'download_attachment':
+      return { destination: 'inline' };
+    default:
+      return {};
+  }
+}
+
+function captureToolTelemetry(options: BuildMcpServerOptions, properties: TelemetryProperties): void {
+  try {
+    options.telemetry?.capture('mcp tool called', { ...properties, product_surface: 'mcp' });
+  } catch {
+    // An injected telemetry client must not affect MCP results.
+  }
+}
+
 function handleResult<A extends unknown[]>(
+  tool: string,
   fn: (...args: A) => Promise<CallToolResult>,
   gate?: () => string | undefined,
+  options: BuildMcpServerOptions = {},
 ): (...args: A) => Promise<CallToolResult> {
   return async (...args: A) => {
+    const finishActivity = options.telemetry?.beginActivity?.();
+    const startedAt = performance.now();
     try {
       // The gate throws when a lapsed license leaves the instance over quota,
       // and yields a renewal warning to attach while the license is in grace.
       const warning = gate?.();
       const result = await fn(...args);
       if (warning) result.content.push({ type: 'text', text: `Note: ${warning}` });
+      captureToolTelemetry(options, {
+        tool,
+        transport: options.transport ?? 'unknown',
+        outcome: 'success',
+        duration_ms: Math.round(performance.now() - startedAt),
+        ...toolFeatureProperties(tool, args[0]),
+      });
       return result;
     } catch (err) {
+      captureToolTelemetry(options, {
+        tool,
+        transport: options.transport ?? 'unknown',
+        outcome: 'error',
+        error_code: isEmailError(err) ? err.code : 'internal',
+        duration_ms: Math.round(performance.now() - startedAt),
+        ...toolFeatureProperties(tool, args[0]),
+      });
       return toolError(err);
+    } finally {
+      finishActivity?.();
     }
   };
 }
 
 function handle<A extends unknown[]>(
+  tool: string,
   fn: (...args: A) => Promise<unknown>,
   gate?: () => string | undefined,
+  options: BuildMcpServerOptions = {},
 ): (...args: A) => Promise<CallToolResult> {
-  return handleResult(async (...args: A) => ok(await fn(...args)), gate);
+  return handleResult(tool, async (...args: A) => ok(await fn(...args)), gate, options);
 }
 
 function pageOpts(args: { pageSize?: number; pageToken?: string }): PageOpts {
@@ -224,11 +291,6 @@ function emailQuery(args: Record<string, unknown>): EmailQuery {
   const q: Record<string, unknown> = {};
   for (const key of keys) if (args[key] !== undefined) q[key] = args[key];
   return q as EmailQuery;
-}
-
-export interface McpServerOptions {
-  permissions?: PermissionPolicy;
-  maxAttachmentBytes?: number;
 }
 
 type ModifyActionName =
@@ -261,7 +323,7 @@ const MODIFY_CAPABILITIES: Record<ModifyActionName, McpCapability> = {
 const PROTECTED_MOVE_DESTINATIONS = new Set(['archive', 'trash']);
 const SYSTEM_LABELS = new Set(['inbox', 'sent', 'draft', 'drafts', 'trash', 'spam', 'starred', 'unread', 'important']);
 
-export function buildMcpServer(service: EmailService, options: McpServerOptions = {}): McpServer {
+export function buildMcpServer(service: EmailService, options: BuildMcpServerOptions = {}): McpServer {
   const permissions = normalizePermissionPolicy(options.permissions ?? FULL_PERMISSION_POLICY);
   const maxAttachmentBytes = options.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
   const can = (capability: McpCapability): boolean => hasCapability(permissions, capability);
@@ -274,26 +336,43 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
     }
   };
   // Every tool except get_status (the diagnostic way out) enforces the plan quota.
-  const gated = <A extends unknown[]>(capability: McpCapability, fn: (...args: A) => Promise<unknown>) =>
+  const gated = <A extends unknown[]>(tool: string, capability: McpCapability, fn: (...args: A) => Promise<unknown>) =>
     handle(
+      tool,
       async (...args: A) => {
         requireCapabilities([capability]);
         return fn(...args);
       },
       () => service.enforceQuota(),
+      options,
     );
-  const allowed = <A extends unknown[]>(capability: McpCapability, fn: (...args: A) => Promise<unknown>) =>
-    handle(async (...args: A) => {
-      requireCapabilities([capability]);
-      return fn(...args);
-    });
-  const gatedResult = <A extends unknown[]>(capability: McpCapability, fn: (...args: A) => Promise<CallToolResult>) =>
+  const allowed = <A extends unknown[]>(
+    tool: string,
+    capability: McpCapability,
+    fn: (...args: A) => Promise<unknown>,
+  ) =>
+    handle(
+      tool,
+      async (...args: A) => {
+        requireCapabilities([capability]);
+        return fn(...args);
+      },
+      undefined,
+      options,
+    );
+  const gatedResult = <A extends unknown[]>(
+    tool: string,
+    capability: McpCapability,
+    fn: (...args: A) => Promise<CallToolResult>,
+  ) =>
     handleResult(
+      tool,
       async (...args: A) => {
         requireCapabilities([capability]);
         return fn(...args);
       },
       () => service.enforceQuota(),
+      options,
     );
   const server = new McpServer(
     { name: 'fluxmail', title: 'Fluxmail Email', version: VERSION },
@@ -317,7 +396,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         inputSchema: {},
         annotations: { readOnlyHint: true },
       },
-      gated('mail.read', async () => service.listAccounts()),
+      gated('list_accounts', 'mail.read', async () => service.listAccounts()),
     );
 
   if (can('mail.read'))
@@ -330,7 +409,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         inputSchema: {},
         annotations: { readOnlyHint: true },
       },
-      allowed('mail.read', async () => service.status()),
+      allowed('get_status', 'mail.read', async () => service.status()),
     );
 
   if (can('mail.read'))
@@ -341,7 +420,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         inputSchema: { accountId: accountIdParam },
         annotations: { readOnlyHint: true },
       },
-      gated('mail.read', async (args: { accountId?: string }) => service.listFolders(args.accountId)),
+      gated('list_folders', 'mail.read', async (args: { accountId?: string }) => service.listFolders(args.accountId)),
     );
 
   if (can('mail.read'))
@@ -356,6 +435,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         annotations: { readOnlyHint: true },
       },
       gated(
+        'list_emails',
         'mail.read',
         async (args: { accountId?: string; pageSize?: number; pageToken?: string } & Record<string, unknown>) =>
           service.listMessages(args.accountId, emailQuery(args), pageOpts(args)),
@@ -377,6 +457,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         annotations: { readOnlyHint: true },
       },
       gated(
+        'search_emails',
         'mail.read',
         async (
           args: { accountId?: string; query: string; pageSize?: number; pageToken?: string } & Record<string, unknown>,
@@ -392,7 +473,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         inputSchema: { accountId: accountIdParam, messageId: idParam },
         annotations: { readOnlyHint: true },
       },
-      gated('mail.read', async (args: { accountId?: string; messageId: string }) =>
+      gated('get_email', 'mail.read', async (args: { accountId?: string; messageId: string }) =>
         truncateBody(await service.getMessage(args.accountId, args.messageId)),
       ),
     );
@@ -405,7 +486,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         inputSchema: { accountId: accountIdParam, threadId: idParam },
         annotations: { readOnlyHint: true },
       },
-      gated('mail.read', async (args: { accountId?: string; threadId: string }) => {
+      gated('get_thread', 'mail.read', async (args: { accountId?: string; threadId: string }) => {
         const thread = await service.getThread(args.accountId, args.threadId);
         return { ...thread, messages: thread.messages.map(truncateBody) };
       }),
@@ -419,7 +500,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
           'Create a draft. For a reply draft, pass replyToMessageId (recipients/subject are derived; replyAll for reply-all).',
         inputSchema: draftShape,
       },
-      gated('mail.drafts', async (args: DraftArgs) => {
+      gated('create_draft', 'mail.drafts', async (args: DraftArgs) => {
         if (args.replyToMessageId) requireCapabilities(['mail.read']);
         return service.createDraft(args.accountId, toSendInput(args));
       }),
@@ -432,7 +513,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         description: 'Replace the content of an existing draft (full replacement, not a patch).',
         inputSchema: { draftId: idParam, ...draftShape },
       },
-      gated('mail.drafts', async (args: DraftArgs & { draftId: string }) => {
+      gated('update_draft', 'mail.drafts', async (args: DraftArgs & { draftId: string }) => {
         if (args.replyToMessageId) requireCapabilities(['mail.read']);
         return service.updateDraft(args.accountId, args.draftId, toSendInput(args));
       }),
@@ -446,7 +527,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         inputSchema: { accountId: accountIdParam, draftId: idParam },
         annotations: { destructiveHint: true },
       },
-      gated('mail.drafts', async (args: { accountId?: string; draftId: string }) => {
+      gated('delete_draft', 'mail.drafts', async (args: { accountId?: string; draftId: string }) => {
         await service.deleteDraft(args.accountId, args.draftId);
         return { deleted: args.draftId };
       }),
@@ -479,6 +560,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         annotations: { destructiveHint: true },
       },
       handle(
+        'send_email',
         async (args: DraftArgs & { draftId?: string; sendAt?: string }) => {
           requireCapabilities(['mail.send']);
           if (args.replyToMessageId !== undefined) requireCapabilities(['mail.read']);
@@ -488,6 +570,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
             : service.send(args.accountId, toSendRequest(sendArgs));
         },
         () => service.enforceQuota(),
+        options,
       ),
     );
 
@@ -502,7 +585,9 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         inputSchema: { accountId: accountIdParam },
         annotations: { readOnlyHint: true },
       },
-      gated('mail.read', async (args: { accountId?: string }) => service.listScheduled(args.accountId)),
+      gated('list_scheduled_emails', 'mail.read', async (args: { accountId?: string }) =>
+        service.listScheduled(args.accountId),
+      ),
     );
 
   if (can('mail.drafts'))
@@ -514,7 +599,9 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
           'The draft stays in the Drafts folder, so the content is not lost.',
         inputSchema: { scheduleId: idParam },
       },
-      gated('mail.drafts', async (args: { scheduleId: string }) => service.cancelScheduled(args.scheduleId)),
+      gated('cancel_scheduled_email', 'mail.drafts', async (args: { scheduleId: string }) =>
+        service.cancelScheduled(args.scheduleId),
+      ),
     );
 
   if (canAll(['mail.send', 'mail.read']))
@@ -535,6 +622,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         annotations: { destructiveHint: true },
       },
       handle(
+        'forward_email',
         async (args: {
           accountId?: string;
           messageId: string;
@@ -555,6 +643,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
           });
         },
         () => service.enforceQuota(),
+        options,
       ),
     );
 
@@ -580,6 +669,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         },
       },
       handle(
+        'modify_emails',
         async (args: {
           accountId?: string;
           messageIds: string[];
@@ -616,6 +706,7 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
           return { modified: args.messageIds.length, action: args.action };
         },
         () => service.enforceQuota(),
+        options,
       ),
     );
   }
@@ -632,40 +723,44 @@ export function buildMcpServer(service: EmailService, options: McpServerOptions 
         },
         annotations: { readOnlyHint: true, destructiveHint: false },
       },
-      gatedResult('mail.read', async (args: { accountId?: string; messageId: string; attachmentId: string }) => {
-        const { meta, content } = await service.getAttachment(
-          args.accountId,
-          args.messageId,
-          args.attachmentId,
-          maxAttachmentBytes,
-        );
-        if (content.length > maxAttachmentBytes) {
-          throw new EmailError('invalid_request', 'Attachment is too large to return through MCP.', {
-            sizeBytes: content.length,
-            maxBytes: maxAttachmentBytes,
-          });
-        }
-        const uri = [
-          'fluxmail://attachment',
-          encodeURIComponent(args.accountId ?? 'default'),
-          encodeURIComponent(args.messageId),
-          encodeURIComponent(args.attachmentId),
-          encodeURIComponent(meta.filename),
-        ].join('/');
-        return {
-          content: [
-            { type: 'text', text: JSON.stringify(meta, null, 2) },
-            {
-              type: 'resource',
-              resource: {
-                uri,
-                mimeType: meta.mimeType || 'application/octet-stream',
-                blob: content.toString('base64'),
+      gatedResult(
+        'download_attachment',
+        'mail.read',
+        async (args: { accountId?: string; messageId: string; attachmentId: string }) => {
+          const { meta, content } = await service.getAttachment(
+            args.accountId,
+            args.messageId,
+            args.attachmentId,
+            maxAttachmentBytes,
+          );
+          if (content.length > maxAttachmentBytes) {
+            throw new EmailError('invalid_request', 'Attachment is too large to return through MCP.', {
+              sizeBytes: content.length,
+              maxBytes: maxAttachmentBytes,
+            });
+          }
+          const uri = [
+            'fluxmail://attachment',
+            encodeURIComponent(args.accountId ?? 'default'),
+            encodeURIComponent(args.messageId),
+            encodeURIComponent(args.attachmentId),
+            encodeURIComponent(meta.filename),
+          ].join('/');
+          return {
+            content: [
+              { type: 'text', text: JSON.stringify(meta, null, 2) },
+              {
+                type: 'resource',
+                resource: {
+                  uri,
+                  mimeType: meta.mimeType || 'application/octet-stream',
+                  blob: content.toString('base64'),
+                },
               },
-            },
-          ],
-        };
-      }),
+            ],
+          };
+        },
+      ),
     );
 
   return server;

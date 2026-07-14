@@ -47,6 +47,13 @@ import {
   permissionPolicyForProfile,
   type PermissionPolicy,
 } from './permissions.js';
+import {
+  getTelemetry,
+  installTelemetryStreamEndHandler,
+  isTelemetryEnabled,
+  setTelemetryEnabled,
+  shutdownTelemetry,
+} from './telemetry.js';
 
 interface AddAccountOptions {
   reauthorize?: string;
@@ -174,14 +181,70 @@ program
   .description('Fluxmail, a self-hosted MCP server for your email')
   .version(VERSION, '-v, --version');
 
+function commandPath(command: Command): string {
+  const names: string[] = [];
+  for (let current: Command | null = command; current?.parent; current = current.parent) names.unshift(current.name());
+  return names.join(' ');
+}
+
+let telemetrySignalHandlersInstalled = false;
+const TELEMETRY_SIGNAL_SHUTDOWN_TIMEOUT_MS = 1_000;
+
+/** Flush queued telemetry before restoring Node's default signal behavior. */
+function installTelemetrySignalHandlers(): void {
+  if (telemetrySignalHandlersInstalled) return;
+  telemetrySignalHandlersInstalled = true;
+
+  const shutdownAndResignal = (signal: NodeJS.Signals): void => {
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+    process.off('SIGHUP', onSighup);
+    let resignaled = false;
+    const resignal = (): void => {
+      if (resignaled) return;
+      resignaled = true;
+      process.kill(process.pid, signal);
+    };
+    const timeout = setTimeout(resignal, TELEMETRY_SIGNAL_SHUTDOWN_TIMEOUT_MS);
+    void shutdownTelemetry().finally(() => {
+      clearTimeout(timeout);
+      resignal();
+    });
+  };
+  const onSigint = (): void => shutdownAndResignal('SIGINT');
+  const onSigterm = (): void => shutdownAndResignal('SIGTERM');
+  const onSighup = (): void => shutdownAndResignal('SIGHUP');
+
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+  process.once('SIGHUP', onSighup);
+}
+
+program.hook('preAction', (_command, actionCommand) => {
+  const command = commandPath(actionCommand);
+  // Respect the opt-out before creating a telemetry client or recording this command.
+  if (command === 'telemetry disable') return;
+  const dataDir = resolveDataDir();
+  getTelemetry(dataDir).capture('cli command used', {
+    product_surface: 'cli',
+    command,
+  });
+});
+
+program.hook('postAction', async (_command, actionCommand) => {
+  if (actionCommand.name() !== 'serve' && actionCommand.name() !== 'stdio') await shutdownTelemetry();
+});
+
 program
   .command('serve')
   .description('Run the HTTP server (Streamable HTTP MCP at /mcp)')
   .action(() => {
+    installTelemetrySignalHandlers();
     const ctx = createContext();
     const app = createApp(ctx);
     ctx.scheduler.start();
     serve({ fetch: app.fetch, port: ctx.config.port }, () => {
+      ctx.telemetry.capture('mcp server started', { product_surface: 'mcp', transport: 'http' });
       console.log(`Fluxmail listening on ${ctx.config.publicUrl}`);
       console.log(`  MCP endpoint:   ${ctx.config.publicUrl}/mcp`);
       console.log(`  Auth mode:      ${ctx.config.authMode}`);
@@ -211,14 +274,19 @@ program
   .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
   .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
   .action(async (opts: PermissionOptions) => {
+    installTelemetrySignalHandlers();
+    installTelemetryStreamEndHandler(process.stdin);
     const ctx = createContext();
     const permissions = permissionPolicyFromOptions(opts);
     const server = buildMcpServer(ctx.service, {
       permissions,
       maxAttachmentBytes: ctx.config.maxAttachmentBytes,
+      telemetry: ctx.telemetry,
+      transport: 'stdio',
     });
     ctx.scheduler.start();
     await server.connect(new StdioServerTransport());
+    ctx.telemetry.capture('mcp server started', { product_surface: 'mcp', transport: 'stdio' });
     // stdout belongs to the MCP protocol; log to stderr only.
     startLicenseRefresher({
       db: ctx.db,
@@ -808,6 +876,35 @@ configCmd
     }
   });
 
+const telemetryCmd = program.command('telemetry').description('Manage anonymous usage telemetry');
+
+telemetryCmd
+  .command('disable')
+  .description('Stop sending anonymous usage telemetry')
+  .action(() => {
+    const dataDir = resolveDataDir();
+    setTelemetryEnabled(dataDir, false);
+    console.log('Telemetry disabled.');
+  });
+
+telemetryCmd
+  .command('enable')
+  .description('Allow anonymous usage telemetry')
+  .action(() => {
+    const dataDir = resolveDataDir();
+    setTelemetryEnabled(dataDir, true);
+    unsetStoredConfig(dataDir, 'FLUXMAIL_TELEMETRY');
+    console.log('Telemetry enabled. FLUXMAIL_TELEMETRY=0 or DO_NOT_TRACK=1 can still turn it off.');
+  });
+
+telemetryCmd
+  .command('status')
+  .description('Show whether anonymous usage telemetry is enabled')
+  .action(() => {
+    const dataDir = resolveDataDir();
+    console.log(`Telemetry is ${isTelemetryEnabled(dataDir) ? 'enabled' : 'disabled'}.`);
+  });
+
 program
   .command('status')
   .description('Show accounts, members, entitlements, and provider availability')
@@ -817,7 +914,8 @@ program
     console.log(JSON.stringify(await ctx.service.status(), null, 2));
   });
 
-program.parseAsync(process.argv).catch((err: unknown) => {
+program.parseAsync(process.argv).catch(async (err: unknown) => {
   console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
   process.exitCode = 1;
+  await shutdownTelemetry();
 });

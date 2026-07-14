@@ -11,6 +11,7 @@ import {
   setStoredConfig,
   unsetStoredConfig,
 } from '../src/config.js';
+import { isTelemetryEnabled, telemetryDisabled, withStoredTelemetrySetting } from '../src/telemetry.js';
 
 const ENV_KEYS = [
   'FLUXMAIL_DATA_DIR',
@@ -22,6 +23,7 @@ const ENV_KEYS = [
   'FLUXMAIL_MAX_ATTACHMENT_MB',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
+  'FLUXMAIL_TELEMETRY',
   'FM_STORED_TEST',
 ];
 const saved: Record<string, string | undefined> = {};
@@ -101,6 +103,20 @@ describe('stored config', () => {
     process.env.GOOGLE_CLIENT_ID = 'shell-id';
     const config2 = loadConfig();
     expect(config2.google?.clientId).toBe('shell-id');
+  });
+
+  it('reads a stored telemetry opt-out without applying unrelated settings', () => {
+    const dir = tempDataDir();
+    setStoredConfig(dir, 'FLUXMAIL_TELEMETRY', '0');
+    setStoredConfig(dir, 'FLUXMAIL_LICENSE_KEY', 'stored-license');
+    const env: NodeJS.ProcessEnv = {};
+
+    const telemetryEnv = withStoredTelemetrySetting(dir, env);
+
+    expect(telemetryDisabled(telemetryEnv)).toBe(true);
+    expect(isTelemetryEnabled(dir)).toBe(false);
+    expect(telemetryEnv.FLUXMAIL_LICENSE_KEY).toBeUndefined();
+    expect(env.FLUXMAIL_TELEMETRY).toBeUndefined();
   });
 
   it('reads the OAuth listener host from the environment', () => {
