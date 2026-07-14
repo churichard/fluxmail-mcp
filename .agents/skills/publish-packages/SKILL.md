@@ -21,13 +21,13 @@ Determine whether the user wants preparation, a dry run, or a live release.
 
 Complete a compatibility audit before editing any manifest. Do this even when the user supplies a version. Treat that version as a proposal until the audit confirms it.
 
-Use the nearest published GitHub Release tag that is an ancestor of the release candidate as the baseline. Do not use the version currently stored in `package.json` as the baseline because the repository may contain an unpublished version bump. Use the same published-release and ancestry checks described in `Generate and approve the changelog for a live release`.
+Decide whether the intended release is stable or a prerelease before selecting the baseline. For a stable release, consider only published, non-draft full releases. For a prerelease, consider all published, non-draft releases. From the eligible releases, use the nearest tag that is an ancestor of the release candidate. Do not use the version currently stored in `package.json` as the baseline because the repository may contain an unpublished version bump. Use the same filtering and ancestry checks described in `Generate and approve the changelog for a live release`.
 
 Inspect the complete first-parent range and the relevant diffs, not only commit or pull request titles:
 
 ```bash
 git fetch origin main --tags
-base_tag="<nearest-published-release-tag-that-is-an-ancestor-of-origin/main>"
+base_tag="<nearest-eligible-published-release-tag-that-is-an-ancestor-of-origin/main>"
 git log --first-parent --reverse --format='- %s (%h)' "$base_tag..origin/main"
 git diff --stat "$base_tag..origin/main"
 git diff "$base_tag..origin/main"
@@ -85,7 +85,7 @@ npm view @fluxmail/core@<version> version --json
 npm view @fluxmail/provider-gmail@<version> version --json
 npm view @fluxmail/provider-imap@<version> version --json
 docker manifest inspect ghcr.io/churichard/fluxmail-mcp:<version>
-curl -fsS 'https://registry.modelcontextprotocol.io/v0/servers/io.github.churichard%2Ffluxmail/versions/<version>' | jq -e --arg version '<version>' '.server.name == "io.github.churichard/fluxmail" and .server.version == $version'
+curl -fsS 'https://registry.modelcontextprotocol.io/v0.1/servers/io.github.churichard%2Ffluxmail/versions/<version>' | jq -e --arg version '<version>' '.server.name == "io.github.churichard/fluxmail" and .server.version == $version'
 gh release view v<version> --repo churichard/fluxmail-mcp --json tagName,name,body,targetCommitish,isDraft,isPrerelease,assets,url
 git ls-remote --tags origin 'refs/tags/v<version>' 'refs/tags/v<version>^{}'
 ```
@@ -197,6 +197,10 @@ if [[ -z "$npm_tag" ]]; then
   printf 'The npm tag must not be empty.\n' >&2
   false
 fi
+if [[ "$prerelease_state" != "true" && "$prerelease_state" != "false" ]]; then
+  printf 'The prerelease state must be true or false.\n' >&2
+  false
+fi
 for manifest in \
   package.json \
   packages/core/package.json \
@@ -218,9 +222,13 @@ if [[ "$server_version" != "$version" || "$registry_version" != "$version" ]]; t
   false
 fi
 git fetch origin --tags
+release_filter='.[] | select(.draft == false)'
+if [[ "$prerelease_state" == "false" ]]; then
+  release_filter='.[] | select(.draft == false and .prerelease == false)'
+fi
 published_tags="$(
   gh api --paginate 'repos/churichard/fluxmail-mcp/releases?per_page=100' \
-    --jq '.[] | select(.draft == false) | .tag_name'
+    --jq "$release_filter | .tag_name"
 )"
 while IFS= read -r candidate; do
   [[ -z "$candidate" ]] && continue
@@ -490,7 +498,7 @@ publish_github_release() {
   local manifest manifest_version server_version registry_version
   local saved_computed_previous_tag saved_computed_historical_backfill
   local current_previous_tag current_previous_distance current_historical_backfill
-  local published_tags candidate candidate_commit distance
+  local published_tags release_filter candidate candidate_commit distance
   local remote_tag_sha tag_refs draft_json draft_state draft_asset_count
   local -a latest_args prerelease_args
   version="$(jq -er '.version' "$state_file")" || return 1
@@ -569,9 +577,13 @@ publish_github_release() {
   current_previous_distance=""
   current_historical_backfill=false
   git fetch origin --tags || return 1
+  release_filter='.[] | select(.draft == false)'
+  if [[ "$prerelease_state" == "false" ]]; then
+    release_filter='.[] | select(.draft == false and .prerelease == false)'
+  fi
   published_tags="$(
     gh api --paginate 'repos/churichard/fluxmail-mcp/releases?per_page=100' \
-      --jq '.[] | select(.draft == false) | .tag_name'
+      --jq "$release_filter | .tag_name"
   )" || return 1
   while IFS= read -r candidate; do
     [[ -z "$candidate" ]] && continue
@@ -685,7 +697,7 @@ npm view @fluxmail/core@<version> version --json
 npm view @fluxmail/provider-gmail@<version> version --json
 npm view @fluxmail/provider-imap@<version> version --json
 docker manifest inspect ghcr.io/churichard/fluxmail-mcp:<version>
-curl -fsS 'https://registry.modelcontextprotocol.io/v0/servers/io.github.churichard%2Ffluxmail/versions/<version>' | jq -e --arg version '<version>' '.server.name == "io.github.churichard/fluxmail" and .server.version == $version'
+curl -fsS 'https://registry.modelcontextprotocol.io/v0.1/servers/io.github.churichard%2Ffluxmail/versions/<version>' | jq -e --arg version '<version>' '.server.name == "io.github.churichard/fluxmail" and .server.version == $version'
 version="<version>"
 release_tag="v${version}"
 release_json="$(
