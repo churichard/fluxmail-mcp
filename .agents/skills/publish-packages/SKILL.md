@@ -300,7 +300,9 @@ sed -n '1,$p' "$notes_file"
 
 For the first GitHub Release, leave `previous_tag` empty so GitHub generates notes from the repository history. Otherwise, use the nearest published release tag that is an ancestor of `release_sha`. This also produces the correct range when creating a missing GitHub Release for an older existing tag. `historical_backfill` becomes `true` when an existing published release descends from `release_sha`. The block records the computed values before the override comment. If unusual branching makes either value questionable, discard the generated local files and show both computed values to the user. If the user changes either value, rerun the block with the confirmed assignments immediately after the override comment, then audit the new notes before requesting approval. Later checks compare the current computation with the recorded computation while preserving the approved override.
 
-Curate the generated notes for end users. Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and use only the sections that apply: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, and `Security`. Omit empty sections and use the ISO 8601 release date in `YYYY-MM-DD` format. Keep the full changelog link that GitHub generates.
+Curate the generated notes for end users. Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and use only the sections that apply: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, and `Security`. Render each section as an H2 heading, such as `## Added`, never H1 or H3. Omit empty sections and keep the full changelog link that GitHub generates.
+
+Do not add a version or release-date heading to the GitHub Release body, such as `## 0.3.0 - 2026-07-14`. GitHub already displays the `v<version>` release title and publication date. Start the body with the breaking-change or migration notice when one exists; otherwise, start with the first applicable changelog section.
 
 Keep the GitHub Release title identical to the Git tag in `v<version>` format. Do not replace it with a product name or another title.
 
@@ -332,7 +334,27 @@ After auditing and editing the notes, save the final title and notes digest in t
 set -e
 state_file=".context/releases/v<version>/state.json"
 notes_file="$(jq -r '.notes_file' "$state_file")"
+version="$(jq -er '.version' "$state_file")"
 title="$(jq -er '.tag' "$state_file")"
+first_content_line="$(awk 'NF { print; exit }' "$notes_file")"
+heading_text="$(printf '%s\n' "$first_content_line" | sed -E 's/^#{1,6}[[:space:]]+//')"
+if [[ "$heading_text" == "$version" ||
+      "$heading_text" == "v${version}" ||
+      "$heading_text" == "${version} - "* ||
+      "$heading_text" == "v${version} - "* ]]; then
+  printf 'Remove the redundant version or release-date heading from the release notes.\n' >&2
+  false
+fi
+invalid_section_heading="$(
+  awk '
+    /^#+[[:space:]]+(Added|Changed|Deprecated|Removed|Fixed|Security)[[:space:]]*$/ &&
+    $0 !~ /^##[[:space:]]/ { print; exit }
+  ' "$notes_file"
+)"
+if [[ -n "$invalid_section_heading" ]]; then
+  printf 'Use H2 headings for changelog sections, for example ## Added. Found: %s\n' "$invalid_section_heading" >&2
+  false
+fi
 notes_sha256="$(shasum -a 256 "$notes_file" | awk '{print $1}')"
 state_tmp="${state_file}.tmp"
 jq \
