@@ -21,7 +21,7 @@ import {
   selectGmailConnectionMode,
   validateAccountConnectionFlags,
 } from './accounts/gmailConnection.js';
-import { createApiKey, listApiKeys, revokeApiKey } from './storage/apiKeys.js';
+import { createApiKey, listApiKeys, revokeApiKey, updateApiKeyPermissions } from './storage/apiKeys.js';
 import { addMember, findMember, listMembers, removeMember } from './storage/members.js';
 import { activateLicense } from './licensing/activation.js';
 import { LICENSE_KEY_PATTERN, releaseLicense } from './licensing/client.js';
@@ -38,6 +38,15 @@ import { VERSION } from './version.js';
 import { countPending } from './storage/scheduledSends.js';
 import type { FluxmailDb } from './storage/db.js';
 import type { ImapCredentials, ImapSecurity } from '@fluxmail/provider-imap';
+import {
+  customPermissionPolicy,
+  FULL_PERMISSION_POLICY,
+  isNamedPermissionProfile,
+  MCP_CAPABILITIES,
+  NAMED_PERMISSION_PROFILES,
+  permissionPolicyForProfile,
+  type PermissionPolicy,
+} from './permissions.js';
 import {
   getTelemetry,
   installTelemetryStreamEndHandler,
@@ -69,6 +78,30 @@ interface AddAccountOptions {
   archiveFolder?: string;
   spamFolder?: string;
   saveSent: boolean;
+}
+
+interface PermissionOptions {
+  profile?: string;
+  allow: string[];
+}
+
+function collectOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+export function permissionPolicyFromOptions(opts: PermissionOptions, requireSelection = false): PermissionPolicy {
+  if (opts.profile && opts.allow.length) {
+    throw new Error('--profile cannot be combined with --allow.');
+  }
+  if (opts.profile) {
+    if (!isNamedPermissionProfile(opts.profile)) {
+      throw new Error(`Unknown profile "${opts.profile}". Expected one of: ${NAMED_PERMISSION_PROFILES.join(', ')}.`);
+    }
+    return permissionPolicyForProfile(opts.profile);
+  }
+  if (opts.allow.length) return customPermissionPolicy(opts.allow);
+  if (requireSelection) throw new Error('Choose --profile or at least one --allow capability.');
+  return FULL_PERMISSION_POLICY;
 }
 
 function connectionPort(value: string, option: string): number {
@@ -238,11 +271,19 @@ program
 program
   .command('stdio')
   .description('Run as a stdio MCP server (for Claude Desktop / Claude Code local config)')
-  .action(async () => {
+  .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
+  .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
+  .action(async (opts: PermissionOptions) => {
     installTelemetrySignalHandlers();
     installTelemetryStreamEndHandler(process.stdin);
     const ctx = createContext();
-    const server = buildMcpServer(ctx.service, { telemetry: ctx.telemetry, transport: 'stdio' });
+    const permissions = permissionPolicyFromOptions(opts);
+    const server = buildMcpServer(ctx.service, {
+      permissions,
+      maxAttachmentBytes: ctx.config.maxAttachmentBytes,
+      telemetry: ctx.telemetry,
+      transport: 'stdio',
+    });
     ctx.scheduler.start();
     await server.connect(new StdioServerTransport());
     ctx.telemetry.capture('mcp server started', { product_surface: 'mcp', transport: 'stdio' });
@@ -589,18 +630,30 @@ membersCmd
 const apikey = program.command('apikey').description('Manage API keys for the HTTP MCP endpoint');
 
 apikey
+  .command('capabilities')
+  .description('List MCP capabilities for custom permission policies')
+  .action(() => {
+    for (const capability of MCP_CAPABILITIES) console.log(capability);
+  });
+
+apikey
   .command('create')
   .requiredOption('--name <name>', 'Human-readable key name')
   .option('--member <member>', 'Member (id or email) the key is issued to')
+  .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
+  .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
   .description('Create an API key (shown once)')
-  .action((opts: { name: string; member?: string }) => {
+  .action((opts: { name: string; member?: string } & PermissionOptions) => {
     const ctx = createContext();
     warnLicense(ctx.db);
     try {
       const member = opts.member ? findMember(ctx.db, opts.member) : undefined;
-      const { key, info } = createApiKey(ctx.db, opts.name, member?.id);
+      const permissions = permissionPolicyFromOptions(opts);
+      const { key, info } = createApiKey(ctx.db, opts.name, member?.id, permissions);
       console.log(
-        `Created API key "${info.name}" (id: ${info.id})` + (member ? ` for member ${member.name}` : '') + '\n',
+        `Created API key "${info.name}" (id: ${info.id}, profile: ${info.permissionProfile})` +
+          (member ? ` for member ${member.name}` : '') +
+          '\n',
       );
       console.log(`  ${key}\n`);
       console.log('Store it now; it cannot be shown again.');
@@ -626,8 +679,33 @@ apikey
       const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : 'never';
       const member = k.memberId ? (memberNames.get(k.memberId) ?? k.memberId) : '-';
       console.log(
-        `${k.id}  ${k.name}  member=${member}  created=${new Date(k.createdAt).toISOString()}  lastUsed=${lastUsed}`,
+        `${k.id}  ${k.name}  member=${member}  profile=${k.permissionProfile}` +
+          (k.permissionProfile === 'custom' ? `  allows=${k.capabilities.join(',')}` : '') +
+          `  created=${new Date(k.createdAt).toISOString()}  lastUsed=${lastUsed}`,
       );
+    }
+  });
+
+apikey
+  .command('permissions')
+  .argument('<keyId>')
+  .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
+  .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
+  .description('Change the MCP permissions for an API key')
+  .action((keyId: string, opts: PermissionOptions) => {
+    const ctx = createContext();
+    warnLicense(ctx.db);
+    try {
+      const permissions = permissionPolicyFromOptions(opts, true);
+      if (!updateApiKeyPermissions(ctx.db, keyId, permissions)) {
+        console.error(`No key with id ${keyId}`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`Updated ${keyId} to profile ${permissions.profile}`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
     }
   });
 

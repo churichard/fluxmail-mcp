@@ -20,6 +20,7 @@ const ENV_KEYS = [
   'FLUXMAIL_PORT',
   'FLUXMAIL_OAUTH_PORT',
   'FLUXMAIL_OAUTH_HOST',
+  'FLUXMAIL_MAX_ATTACHMENT_MB',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
   'FLUXMAIL_TELEMETRY',
@@ -122,6 +123,23 @@ describe('stored config', () => {
     process.env.FLUXMAIL_DATA_DIR = tempDataDir();
     process.env.FLUXMAIL_OAUTH_HOST = '0.0.0.0';
     expect(loadConfig().oauthHost).toBe('0.0.0.0');
+  });
+
+  it('uses and validates the attachment size limit', () => {
+    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
+    expect(loadConfig().maxAttachmentBytes).toBe(10 * 1024 * 1024);
+
+    process.env.FLUXMAIL_MAX_ATTACHMENT_MB = '1';
+    expect(loadConfig().maxAttachmentBytes).toBe(1024 * 1024);
+
+    process.env.FLUXMAIL_MAX_ATTACHMENT_MB = '25';
+    expect(loadConfig().maxAttachmentBytes).toBe(25 * 1024 * 1024);
+
+    process.env.FLUXMAIL_MAX_ATTACHMENT_MB = '26';
+    expect(() => loadConfig()).toThrow(/FLUXMAIL_MAX_ATTACHMENT_MB/);
+
+    process.env.FLUXMAIL_MAX_ATTACHMENT_MB = '1.5';
+    expect(() => loadConfig()).toThrow(/FLUXMAIL_MAX_ATTACHMENT_MB/);
   });
 
   it('rejects encryption keys with trailing non-hex characters', () => {

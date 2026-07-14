@@ -9,6 +9,8 @@ import { createGmailConnectionGrant } from '../src/storage/gmailConnectionGrants
 import { addMember } from '../src/storage/members.js';
 import { exchangeCode } from '../src/accounts/googleAuth.js';
 import { VERSION } from '../src/version.js';
+import { permissionPolicyForProfile } from '../src/permissions.js';
+import { EmailService } from '../src/service/emailService.js';
 
 vi.mock('../src/accounts/googleAuth.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/accounts/googleAuth.js')>()),
@@ -26,15 +28,17 @@ function appDeps(authMode: FluxmailConfig['authMode']): AppDeps {
     oauthPort: 8976,
     oauthHost: '127.0.0.1',
     authMode,
+    maxAttachmentBytes: 10 * 1024 * 1024,
     licenseServerUrl: 'https://license.invalid',
     google: { clientId: 'client-id', clientSecret: 'client-secret' },
   };
   const db = openDb(':memory:');
+  const registry = new AccountRegistry(db, config);
   return {
     config,
     db,
-    registry: new AccountRegistry(db, config),
-    service: {} as AppDeps['service'],
+    registry,
+    service: new EmailService(registry, db),
   };
 }
 
@@ -82,7 +86,7 @@ describe('HTTP app', () => {
     const deps = appDeps('apikey');
     const member = addMember(deps.db, { name: 'Alice' });
     const { key: memberKey } = createApiKey(deps.db, 'alice-key', member.id);
-    const { key: adminKey } = createApiKey(deps.db, 'admin-key');
+    const { key: adminKey } = createApiKey(deps.db, 'admin-key', undefined, permissionPolicyForProfile('read-only'));
     const app = createApp(deps);
 
     const denied = await app.request(`/auth/google?key=${encodeURIComponent(memberKey)}`);

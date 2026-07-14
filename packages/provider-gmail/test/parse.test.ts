@@ -58,7 +58,7 @@ describe('walkParts', () => {
     expect(walked.body.html).toBe('<p>html body</p>');
     expect(walked.attachments).toEqual([
       {
-        id: 'att1',
+        id: 'part:0.1',
         filename: 'report.pdf',
         mimeType: 'application/pdf',
         sizeBytes: 12345,
@@ -67,6 +67,7 @@ describe('walkParts', () => {
       },
       { id: 'inline:3', filename: 'notes.txt', mimeType: 'text/plain', sizeBytes: 17 },
     ]);
+    expect(findAttachment(multipartMessage.payload, 'part:0.1')?.providerAttachmentId).toBe('att1');
   });
 
   it('keeps inline attachment data out of the message body and makes it retrievable', () => {
@@ -170,7 +171,7 @@ describe('walkParts', () => {
 
     expect(walked.attachments).toEqual([
       {
-        id: 'att-no-name',
+        id: 'part:3',
         filename: 'attachment-3',
         mimeType: 'application/octet-stream',
         sizeBytes: 42,
@@ -180,7 +181,7 @@ describe('walkParts', () => {
   });
 
   it.each([
-    [{ attachmentId: 'unnamed-file', size: 42 }, 'unnamed-file'],
+    [{ attachmentId: 'unnamed-file', size: 42 }, 'part:5'],
     [{ data: b64url('binary data'), size: 11 }, 'inline:5'],
   ])('keeps filename-less non-text payloads without a disposition', (body, id) => {
     const walked = walkParts({

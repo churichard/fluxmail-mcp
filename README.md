@@ -35,7 +35,7 @@ See the [quickstart](https://fluxmail.ai/docs/quickstart) for how to connect to 
 | `cancel_scheduled_email`                         | Cancel a scheduled send before delivery                                      |
 | `forward_email`                                  | Forward with quoted body and original attachments                            |
 | `modify_emails`                                  | Batch: read/unread, star, archive, trash, move, labels, delete               |
-| `download_attachment`                            | Inline base64 (up to 2 MB) or save to disk                                   |
+| `download_attachment`                            | Attachment data as an embedded MCP resource                                  |
 
 `fluxmail-mcp` computes reply recipients on the server (Reply-To or From, plus the original To/Cc minus your own address for reply-all), so an agent can reply-all without assembling the recipient list itself.
 
@@ -59,6 +59,7 @@ For a personal setup, `fluxmail config set` is the simplest: set `GOOGLE_CLIENT_
 | `FLUXMAIL_AUTH`                             | `apikey`                          | `none` disables MCP auth (trusted networks only)                   |
 | `FLUXMAIL_OAUTH_PORT`                       | `8976`                            | Loopback port for the CLI OAuth flow                               |
 | `FLUXMAIL_OAUTH_HOST`                       | `127.0.0.1`                       | OAuth listener bind address (`0.0.0.0` in Docker)                  |
+| `FLUXMAIL_MAX_ATTACHMENT_MB`                | `10`                              | Largest attachment returned through MCP, in MB; maximum `25`       |
 | `FLUXMAIL_LICENSE_KEY`                      | (none)                            | Paid-plan license key; usually set via `fluxmail license activate` |
 | `FLUXMAIL_TELEMETRY`                        | `1`                               | Set to `0` to turn off anonymous usage telemetry                   |
 
@@ -84,7 +85,7 @@ Using Docker? Prefix these commands with `docker compose exec fluxmail`, for exa
 
 ```
 fluxmail serve                      # HTTP server (MCP at /mcp)
-fluxmail stdio                      # stdio MCP server
+fluxmail stdio [--profile <profile>] # stdio MCP server; profile defaults to full
 fluxmail accounts add gmail         # OAuth consent flow; add --member <id-or-email> to set an owner
 fluxmail accounts add gmail --reauthorize <account-id>
 fluxmail accounts add imap --email <address> --imap-host <host> --smtp-host <host>
@@ -93,8 +94,9 @@ fluxmail accounts list | remove <id>
 fluxmail accounts assign <id> --member <id-or-email>   # or --shared
 fluxmail members add --name <name> [--email <email>]   # people using this instance
 fluxmail members list | remove <id>
-fluxmail apikey create --name <name>  # key for the HTTP endpoint (shown once); name it after the client using it
+fluxmail apikey create --name <name>  # HTTP key, shown once; defaults to the full tool profile
 fluxmail apikey create --name <name> --member <id-or-email>
+fluxmail apikey permissions <id> --profile <read-only|read-write|full>
 fluxmail apikey list | revoke <id>
 fluxmail config set <KEY> <value>   # persist settings in the data dir
 fluxmail config list | unset <KEY>
@@ -103,20 +105,6 @@ fluxmail license activate <key>     # unlock paid-plan limits
 fluxmail license status | deactivate
 fluxmail status
 ```
-
-## Telemetry
-
-Fluxmail sends anonymous usage events to Fluxmail's PostHog project. These events show which CLI commands, MCP transports, and MCP tools are in use. They include the Fluxmail and Node.js versions, operating system, architecture, outcomes, and timing.
-
-Fluxmail does not send command arguments, email addresses, account or message IDs, search queries, subjects, message bodies, attachment names, file paths, API keys, license keys, or error messages. PostHog person profiles and GeoIP lookup are disabled. Each installation is counted with a random ID stored in the Fluxmail data directory.
-
-To turn telemetry off, run:
-
-```bash
-fluxmail telemetry disable
-```
-
-Use `fluxmail telemetry status` to check the setting and `fluxmail telemetry enable` to turn it back on. Fluxmail also respects `FLUXMAIL_TELEMETRY=0` and `DO_NOT_TRACK=1`. See [docs/telemetry.md](docs/telemetry.md) for the event list and the PostHog reports these events support.
 
 ## Architecture
 

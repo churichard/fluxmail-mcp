@@ -4,6 +4,10 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { DEFAULT_LICENSE_SERVER_URL } from './licensing/client.js';
 
+export const DEFAULT_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const HARD_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const BYTES_PER_MEGABYTE = 1024 * 1024;
+
 export interface FluxmailConfig {
   dataDir: string;
   dbPath: string;
@@ -20,6 +24,8 @@ export interface FluxmailConfig {
   oauthHost: string;
   /** 'apikey' (default) requires a bearer token on /mcp; 'none' is for trusted networks only. */
   authMode: 'apikey' | 'none';
+  /** Largest attachment Fluxmail will return through MCP. */
+  maxAttachmentBytes: number;
   /** Paid-tier license key (fluxmail_lic_…); absent means free tier. */
   licenseKey?: string;
   /** Base URL of the hosted license server. */
@@ -178,6 +184,17 @@ function readPort(name: 'FLUXMAIL_PORT' | 'FLUXMAIL_OAUTH_PORT', fallback: numbe
   return value;
 }
 
+function readMaxAttachmentBytes(): number {
+  const raw = process.env.FLUXMAIL_MAX_ATTACHMENT_MB;
+  if (raw === undefined) return DEFAULT_MAX_ATTACHMENT_BYTES;
+  const value = Number(raw);
+  const hardMaxMegabytes = HARD_MAX_ATTACHMENT_BYTES / BYTES_PER_MEGABYTE;
+  if (!Number.isInteger(value) || value < 1 || value > hardMaxMegabytes) {
+    throw new Error(`FLUXMAIL_MAX_ATTACHMENT_MB must be an integer between 1 and ${hardMaxMegabytes}, got "${raw}"`);
+  }
+  return value * BYTES_PER_MEGABYTE;
+}
+
 function readPublicUrl(port: number): string {
   const value = (process.env.FLUXMAIL_PUBLIC_URL ?? `http://localhost:${port}`).replace(/\/+$/, '');
   let parsed: URL;
@@ -239,6 +256,7 @@ export function loadConfig(): FluxmailConfig {
     oauthPort,
     oauthHost: process.env.FLUXMAIL_OAUTH_HOST ?? '127.0.0.1',
     authMode: authModeEnv,
+    maxAttachmentBytes: readMaxAttachmentBytes(),
     licenseServerUrl: (process.env.FLUXMAIL_LICENSE_SERVER_URL ?? DEFAULT_LICENSE_SERVER_URL).replace(/\/+$/, ''),
   };
 

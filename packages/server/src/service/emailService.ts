@@ -483,8 +483,9 @@ export class EmailService {
     accountId: string | undefined,
     messageId: string,
     attachmentId: string,
+    maxBytes?: number,
   ): Promise<{ meta: AttachmentMeta; content: Buffer }> {
-    return this.withProvider(accountId, (p) => p.getAttachment(messageId, attachmentId));
+    return this.withProvider(accountId, (p) => p.getAttachment(messageId, attachmentId, { maxBytes }));
   }
 }
 

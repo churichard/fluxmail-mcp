@@ -11,6 +11,7 @@ import {
   type EmailQuery,
   type Folder,
   type FolderRole,
+  type GetAttachmentOpts,
   type GetMessageOpts,
   type Message,
   type ModifyAction,
@@ -59,7 +60,16 @@ const MAX_PAGE_SIZE = 100;
 const NON_IDEMPOTENT_MAX_RETRIES = 3;
 const BATCH_MODIFY_MAX_IDS = 1_000;
 const GOOGLE_USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
-const IMMUTABLE_SYSTEM_LABELS = new Set(['sent', 'draft', 'drafts']);
+const IMMUTABLE_SYSTEM_LABELS = new Set(['sent', 'draft', 'drafts', 'trash']);
+
+function assertAttachmentSize(sizeBytes: number, maxBytes: number | undefined): void {
+  if (maxBytes !== undefined && sizeBytes > maxBytes) {
+    throw new EmailError('invalid_request', 'Attachment is too large to return through MCP.', {
+      sizeBytes,
+      maxBytes,
+    });
+  }
+}
 
 export interface GmailProviderOptions {
   accountId: string;
@@ -183,15 +193,25 @@ export class GmailProvider implements EmailProvider {
     } while (unresolved.size && pageToken);
   }
 
-  private async resolveLabelId(folder: string, createIfMissing = false): Promise<string> {
+  private async resolveLabelId(folder: string, createIfMissing = false, systemLabelsAllowed = true): Promise<string> {
     const role = folder.toLowerCase();
     if (IMMUTABLE_SYSTEM_LABELS.has(role)) {
       throw new EmailError('invalid_request', `Gmail does not allow changing the "${role}" system label`);
     }
-    if (ROLE_TO_LABEL[role]) return ROLE_TO_LABEL[role];
+    if (ROLE_TO_LABEL[role]) {
+      if (!systemLabelsAllowed) {
+        throw new EmailError('invalid_request', `Use the dedicated message action instead of changing ${role}`);
+      }
+      return ROLE_TO_LABEL[role];
+    }
     const labels = await this.labels();
     const match = labels.find((l) => l.id === folder || l.name?.toLowerCase() === folder.toLowerCase());
-    if (match?.id) return match.id;
+    if (match?.id) {
+      if (!systemLabelsAllowed && match.type === 'system') {
+        throw new EmailError('invalid_request', `Use the dedicated message action instead of changing ${match.name}`);
+      }
+      return match.id;
+    }
     if (!createIfMissing) {
       throw new EmailError('not_found', `No Gmail label or folder named "${folder}"`);
     }
@@ -498,24 +518,25 @@ export class GmailProvider implements EmailProvider {
       }
       if (role === 'archive') {
         // Gmail has no archive label: archiving is just leaving the inbox.
-        removeLabelIds = ['INBOX'];
+        removeLabelIds = ['INBOX', 'SPAM'];
       } else {
         const target = await this.resolveLabelId(action.move, true);
         addLabelIds = [target];
         if (target !== 'INBOX') removeLabelIds = ['INBOX'];
+        if (target !== 'SPAM') removeLabelIds.push('SPAM');
       }
     } else if ('addLabels' in action) {
       const labels = [...new Set(action.addLabels)];
       if (labels.length > 100) {
         throw new EmailError('invalid_request', 'Gmail allows at most 100 labels in one modification');
       }
-      addLabelIds = await Promise.all(labels.map((label) => this.resolveLabelId(label, true)));
+      addLabelIds = await Promise.all(labels.map((label) => this.resolveLabelId(label, true, false)));
     } else if ('removeLabels' in action) {
       const labels = [...new Set(action.removeLabels)];
       if (labels.length > 100) {
         throw new EmailError('invalid_request', 'Gmail allows at most 100 labels in one modification');
       }
-      removeLabelIds = await Promise.all(labels.map((label) => this.resolveLabelId(label)));
+      removeLabelIds = await Promise.all(labels.map((label) => this.resolveLabelId(label, false, false)));
     }
 
     for (let offset = 0; offset < ids.length; offset += BATCH_MODIFY_MAX_IDS) {
@@ -533,17 +554,32 @@ export class GmailProvider implements EmailProvider {
     }
   }
 
-  async getAttachment(messageId: string, attachmentId: string): Promise<{ meta: AttachmentMeta; content: Buffer }> {
+  async getAttachment(
+    messageId: string,
+    attachmentId: string,
+    opts: GetAttachmentOpts = {},
+  ): Promise<{ meta: AttachmentMeta; content: Buffer }> {
     const msg = await withRetry(() => this.gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' }));
     const attachment = findAttachment(msg.data.payload, attachmentId);
     if (!attachment) throw new EmailError('not_found', `Attachment ${attachmentId} not found on message ${messageId}`);
+    assertAttachmentSize(attachment.meta.sizeBytes, opts.maxBytes);
     if (attachment.content !== undefined) {
+      assertAttachmentSize(attachment.content.length, opts.maxBytes);
       return { meta: attachment.meta, content: attachment.content };
     }
+    if (!attachment.providerAttachmentId) {
+      throw new EmailError('provider_unavailable', 'Gmail returned attachment metadata without a content id');
+    }
     const res = await withRetry(() =>
-      this.gmail.users.messages.attachments.get({ userId: 'me', messageId, id: attachmentId }),
+      this.gmail.users.messages.attachments.get({
+        userId: 'me',
+        messageId,
+        id: attachment.providerAttachmentId,
+      }),
     );
     if (res.data.data == null) throw new EmailError('provider_unavailable', 'Gmail returned no attachment data');
-    return { meta: attachment.meta, content: decodeBase64Url(res.data.data) };
+    const content = decodeBase64Url(res.data.data);
+    assertAttachmentSize(content.length, opts.maxBytes);
+    return { meta: attachment.meta, content };
   }
 }

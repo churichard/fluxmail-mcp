@@ -216,21 +216,30 @@ describe('GmailProvider modify', () => {
     return { provider, batchModify };
   }
 
-  it('moving to the inbox does not also remove INBOX', async () => {
+  it('moving to the inbox removes Spam without also removing Inbox', async () => {
     const { provider, batchModify } = providerWithBatchModify();
     await provider.modify(['m1'], { move: 'inbox' });
     expect(batchModify).toHaveBeenCalledWith({
       userId: 'me',
-      requestBody: { ids: ['m1'], addLabelIds: ['INBOX'] },
+      requestBody: { ids: ['m1'], addLabelIds: ['INBOX'], removeLabelIds: ['SPAM'] },
     });
   });
 
-  it('moving to archive removes INBOX instead of creating an "archive" label', async () => {
+  it('moving to archive removes Inbox and Spam instead of creating an "archive" label', async () => {
     const { provider, batchModify } = providerWithBatchModify();
     await provider.modify(['m1'], { move: 'archive' });
     expect(batchModify).toHaveBeenCalledWith({
       userId: 'me',
-      requestBody: { ids: ['m1'], removeLabelIds: ['INBOX'] },
+      requestBody: { ids: ['m1'], removeLabelIds: ['INBOX', 'SPAM'] },
+    });
+  });
+
+  it('moving to Spam adds Spam and removes Inbox', async () => {
+    const { provider, batchModify } = providerWithBatchModify();
+    await provider.modify(['m1'], { move: 'spam' });
+    expect(batchModify).toHaveBeenCalledWith({
+      userId: 'me',
+      requestBody: { ids: ['m1'], addLabelIds: ['SPAM'], removeLabelIds: ['INBOX'] },
     });
   });
 
@@ -242,7 +251,7 @@ describe('GmailProvider modify', () => {
     expect(batchModify).not.toHaveBeenCalled();
   });
 
-  it.each(['sent', 'drafts', 'starred'])('rejects moving to the non-destination system role "%s"', async (role) => {
+  it.each(['sent', 'drafts', 'starred', 'trash'])('rejects moving to the reserved system role "%s"', async (role) => {
     const { provider, batchModify } = providerWithBatchModify();
     await expect(provider.modify(['m1'], { move: role })).rejects.toMatchObject({
       code: 'invalid_request',
@@ -250,13 +259,16 @@ describe('GmailProvider modify', () => {
     expect(batchModify).not.toHaveBeenCalled();
   });
 
-  it.each(['sent', 'draft', 'drafts'])('rejects manually changing the immutable "%s" label', async (label) => {
-    const { provider, batchModify } = providerWithBatchModify();
-    await expect(provider.modify(['m1'], { addLabels: [label] })).rejects.toMatchObject({
-      code: 'invalid_request',
-    });
-    expect(batchModify).not.toHaveBeenCalled();
-  });
+  it.each(['inbox', 'sent', 'draft', 'drafts', 'trash', 'spam', 'starred'])(
+    'rejects manually changing the system "%s" label',
+    async (label) => {
+      const { provider, batchModify } = providerWithBatchModify();
+      await expect(provider.modify(['m1'], { addLabels: [label] })).rejects.toMatchObject({
+        code: 'invalid_request',
+      });
+      expect(batchModify).not.toHaveBeenCalled();
+    },
+  );
 
   it("chunks label modifications at Gmail's 1000-message limit", async () => {
     const { provider, batchModify } = providerWithBatchModify();
@@ -491,6 +503,106 @@ describe('GmailProvider external body data', () => {
       userId: 'me',
       messageId: 'msg_1',
       id: 'body-attachment-1',
+    });
+  });
+});
+
+describe('GmailProvider attachment limits', () => {
+  it('rejects oversized attachment metadata before downloading content', async () => {
+    const provider = new GmailProvider({
+      accountId: 'acct_1',
+      email: 'me@example.com',
+      auth: new OAuth2Client(),
+    });
+    const download = vi.fn();
+    const internals = provider as unknown as {
+      gmail: {
+        users: {
+          messages: {
+            get: ReturnType<typeof vi.fn>;
+            attachments: { get: typeof download };
+          };
+        };
+      };
+    };
+    internals.gmail = {
+      users: {
+        messages: {
+          get: vi.fn().mockResolvedValue({
+            data: {
+              payload: {
+                parts: [
+                  {
+                    partId: '1',
+                    filename: 'large.bin',
+                    mimeType: 'application/octet-stream',
+                    body: { attachmentId: 'a1', size: 11 },
+                  },
+                ],
+              },
+            },
+          }),
+          attachments: { get: download },
+        },
+      },
+    };
+
+    await expect(provider.getAttachment('m1', 'part:1', { maxBytes: 10 })).rejects.toMatchObject({
+      code: 'invalid_request',
+      data: { sizeBytes: 11, maxBytes: 10 },
+    });
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it('resolves a stable MIME part id to Gmail current opaque attachment id', async () => {
+    const provider = new GmailProvider({
+      accountId: 'acct_1',
+      email: 'me@example.com',
+      auth: new OAuth2Client(),
+    });
+    const download = vi.fn().mockResolvedValue({
+      data: { data: Buffer.from('current attachment').toString('base64url') },
+    });
+    const internals = provider as unknown as {
+      gmail: {
+        users: {
+          messages: {
+            get: ReturnType<typeof vi.fn>;
+            attachments: { get: typeof download };
+          };
+        };
+      };
+    };
+    internals.gmail = {
+      users: {
+        messages: {
+          get: vi.fn().mockResolvedValue({
+            data: {
+              payload: {
+                parts: [
+                  {
+                    partId: '2',
+                    filename: 'report.pdf',
+                    mimeType: 'application/pdf',
+                    body: { attachmentId: 'fresh-opaque-id', size: 18 },
+                  },
+                ],
+              },
+            },
+          }),
+          attachments: { get: download },
+        },
+      },
+    };
+
+    await expect(provider.getAttachment('m1', 'part:2')).resolves.toMatchObject({
+      meta: { id: 'part:2', filename: 'report.pdf' },
+      content: Buffer.from('current attachment'),
+    });
+    expect(download).toHaveBeenCalledWith({
+      userId: 'me',
+      messageId: 'm1',
+      id: 'fresh-opaque-id',
     });
   });
 });

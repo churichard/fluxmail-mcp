@@ -82,6 +82,10 @@ export const apiKeys = sqliteTable('api_keys', {
   lastUsedAt: integer('last_used_at'),
   /** Member the key was issued to; NULL means an unscoped admin key. */
   memberId: text('member_id').references(() => members.id, { onDelete: 'set null' }),
+  /** Named MCP permission profile, or "custom" when customCapabilities is populated. */
+  permissionProfile: text('permission_profile').notNull().default('full'),
+  /** JSON array of explicit MCP capabilities for custom policies. */
+  customCapabilities: text('custom_capabilities'),
 });
 
 export const gmailConnectionGrants = sqliteTable('gmail_connection_grants', {
@@ -188,7 +192,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
   key_hash TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
   last_used_at INTEGER,
-  member_id TEXT REFERENCES members(id) ON DELETE SET NULL
+  member_id TEXT REFERENCES members(id) ON DELETE SET NULL,
+  permission_profile TEXT NOT NULL DEFAULT 'full',
+  custom_capabilities TEXT
 );
 CREATE TABLE IF NOT EXISTS gmail_connection_grants (
   token_hash TEXT PRIMARY KEY,
@@ -256,6 +262,13 @@ export function openDb(dbPath: string): FluxmailDb {
   }
   if (!tableColumns(sqlite, 'api_keys').has('member_id')) {
     sqlite.exec('ALTER TABLE api_keys ADD COLUMN member_id TEXT REFERENCES members(id) ON DELETE SET NULL');
+  }
+  const apiKeyCols = tableColumns(sqlite, 'api_keys');
+  if (!apiKeyCols.has('permission_profile')) {
+    sqlite.exec("ALTER TABLE api_keys ADD COLUMN permission_profile TEXT NOT NULL DEFAULT 'full'");
+  }
+  if (!apiKeyCols.has('custom_capabilities')) {
+    sqlite.exec('ALTER TABLE api_keys ADD COLUMN custom_capabilities TEXT');
   }
   return drizzle(sqlite);
 }

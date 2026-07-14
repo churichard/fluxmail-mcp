@@ -59,10 +59,6 @@ Fluxmail also supports Streamable HTTP for Docker and remote deployments.
 
 See the [setup guide](https://fluxmail.ai/docs/quickstart) for Google OAuth configuration, Docker deployment, supported MCP clients, environment variables, and the complete tool list.
 
-## Telemetry
-
-Fluxmail reports anonymous CLI and MCP feature usage to PostHog. It does not send command arguments, mailbox data, message content, account or message IDs, file paths, secrets, or error messages. Run `fluxmail telemetry disable` to turn it off. Use `fluxmail telemetry status` to check the setting or `fluxmail telemetry enable` to turn it back on. `FLUXMAIL_TELEMETRY=0` and `DO_NOT_TRACK=1` also disable telemetry. The [telemetry reference](https://github.com/churichard/fluxmail-mcp/blob/main/docs/telemetry.md) lists every event and property.
-
 ## License
 
 See the [repository](https://github.com/churichard/fluxmail-mcp) for license terms.
