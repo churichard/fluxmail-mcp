@@ -1,4 +1,4 @@
 interface:
   display_name: 'Publish Fluxmail Packages'
-  short_description: 'Release Fluxmail to npm, GHCR, and MCP Registry'
-  default_prompt: 'Use $publish-packages to prepare, validate, and publish a Fluxmail release.'
+  short_description: 'Release Fluxmail packages and GitHub notes'
+  default_prompt: 'Use $publish-packages to prepare, approve, publish, and verify a Fluxmail release.'

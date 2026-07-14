@@ -11,3 +11,4 @@ data/
 *.db-shm
 encryption.key
 .DS_Store
+.context/
