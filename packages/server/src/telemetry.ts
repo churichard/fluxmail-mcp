@@ -18,16 +18,18 @@ export type TelemetryProperties = Record<string, boolean | number | string | und
 
 export interface Telemetry {
   capture(event: string, properties?: TelemetryProperties): void;
+  /** Keep shutdown open until an in-flight operation records its final event. */
+  beginActivity?(): () => void;
   shutdown(): Promise<void>;
 }
 
 interface PostHogClient {
-  captureImmediate(options: {
+  capture(options: {
     distinctId: string;
     event: string;
     properties: Record<string, boolean | number | string>;
     disableGeoip?: boolean;
-  }): Promise<void>;
+  }): void;
   shutdown(timeoutMs?: number): Promise<void>;
 }
 
@@ -50,6 +52,21 @@ interface PostHogTransport {
   destroy(): void;
 }
 
+function acceptedTelemetryResponse(text = ''): PostHogFetchResponse {
+  return {
+    status: 200,
+    text: async () => text,
+    json: async () => {
+      try {
+        return text ? (JSON.parse(text) as unknown) : {};
+      } catch {
+        return {};
+      }
+    },
+    headers: { get: () => null },
+  };
+}
+
 /** Keep pooled analytics sockets under our control so shutdown can close them. */
 function createPostHogTransport(): PostHogTransport {
   const httpAgent = new HttpAgent({ keepAlive: true });
@@ -57,51 +74,60 @@ function createPostHogTransport(): PostHogTransport {
 
   return {
     async fetch(url, options) {
-      const target = new URL(url);
-      const send = target.protocol === 'https:' ? httpsRequest : target.protocol === 'http:' ? httpRequest : undefined;
-      if (!send) throw new Error(`Unsupported telemetry URL protocol: ${target.protocol}`);
+      try {
+        const target = new URL(url);
+        const send =
+          target.protocol === 'https:' ? httpsRequest : target.protocol === 'http:' ? httpRequest : undefined;
+        if (!send) return acceptedTelemetryResponse();
 
-      const body =
-        options.body instanceof Blob
-          ? Buffer.from(await options.body.arrayBuffer())
-          : options.body === undefined
-            ? undefined
-            : Buffer.from(options.body);
+        const body =
+          options.body instanceof Blob
+            ? Buffer.from(await options.body.arrayBuffer())
+            : options.body === undefined
+              ? undefined
+              : Buffer.from(options.body);
 
-      return new Promise((resolve, reject) => {
-        const request = send(
-          target,
-          {
-            method: options.method,
-            headers: options.headers,
-            signal: options.signal,
-            agent: target.protocol === 'https:' ? httpsAgent : httpAgent,
-          },
-          (response) => {
-            const chunks: Buffer[] = [];
-            response.on('data', (chunk: Buffer | string) => {
-              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-            });
-            response.once('error', reject);
-            response.once('end', () => {
-              const text = Buffer.concat(chunks).toString('utf8');
-              resolve({
-                status: response.statusCode ?? 0,
-                text: async () => text,
-                json: async () => JSON.parse(text) as unknown,
-                headers: {
-                  get(name) {
-                    const value = response.headers[name.toLowerCase()];
-                    return Array.isArray(value) ? value.join(', ') : (value ?? null);
-                  },
-                },
+        return await new Promise((resolve, reject) => {
+          const request = send(
+            target,
+            {
+              method: options.method,
+              headers: options.headers,
+              signal: options.signal,
+              agent: target.protocol === 'https:' ? httpsAgent : httpAgent,
+            },
+            (response) => {
+              const chunks: Buffer[] = [];
+              response.on('data', (chunk: Buffer | string) => {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
               });
-            });
-          },
-        );
-        request.once('error', reject);
-        request.end(body);
-      });
+              response.once('error', reject);
+              response.once('end', () => {
+                const text = Buffer.concat(chunks).toString('utf8');
+                const status = response.statusCode ?? 0;
+                if (status < 200 || status >= 400) return resolve(acceptedTelemetryResponse(text));
+                resolve({
+                  status,
+                  text: async () => text,
+                  json: async () => JSON.parse(text) as unknown,
+                  headers: {
+                    get(name) {
+                      const value = response.headers[name.toLowerCase()];
+                      return Array.isArray(value) ? value.join(', ') : (value ?? null);
+                    },
+                  },
+                });
+              });
+            },
+          );
+          request.once('error', reject);
+          request.end(body);
+        });
+      } catch {
+        // The SDK logs batch delivery failures to stderr. Telemetry is best
+        // effort, so absorb transport failures before they reach the SDK.
+        return acceptedTelemetryResponse();
+      }
     },
     destroy() {
       httpAgent.destroy();
@@ -191,7 +217,29 @@ export function createTelemetry(options: {
   const env = options.env ?? withStoredTelemetrySetting(options.dataDir);
   let initialized: { client: PostHogClient; distinctId: string; transport?: PostHogTransport } | undefined;
   let initializationFailed = false;
+  let activeActivities = 0;
+  let shutdownPromise: Promise<void> | undefined;
+  const idleWaiters = new Set<() => void>();
   let closed = false;
+
+  function beginActivity(): () => void {
+    if (closed || shutdownPromise) return () => {};
+    activeActivities += 1;
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      activeActivities -= 1;
+      if (activeActivities !== 0) return;
+      for (const resolve of idleWaiters) resolve();
+      idleWaiters.clear();
+    };
+  }
+
+  function waitForIdle(): Promise<void> {
+    if (activeActivities === 0) return Promise.resolve();
+    return new Promise((resolve) => idleWaiters.add(resolve));
+  }
 
   function initialize(): typeof initialized {
     if (closed || initializationFailed || !isTelemetryEnabled(options.dataDir, env)) return undefined;
@@ -220,31 +268,9 @@ export function createTelemetry(options: {
     }
   }
 
-  return {
-    capture(event, properties = {}) {
-      const telemetry = initialize();
-      if (!telemetry) return;
-      try {
-        void telemetry.client
-          .captureImmediate({
-            distinctId: telemetry.distinctId,
-            event,
-            disableGeoip: true,
-            properties: {
-              ...Object.fromEntries(Object.entries(properties).filter((entry) => entry[1] !== undefined)),
-              $process_person_profile: false,
-              fluxmail_version: VERSION,
-              node_version: process.versions.node,
-              platform: process.platform,
-              arch: process.arch,
-            } as Record<string, boolean | number | string>,
-          })
-          .catch(() => {});
-      } catch {
-        // Telemetry must never affect Fluxmail behavior.
-      }
-    },
-    async shutdown() {
+  const shutdown = (): Promise<void> => {
+    shutdownPromise ??= (async () => {
+      await waitForIdle();
       closed = true;
       if (!initialized) return;
       try {
@@ -254,11 +280,54 @@ export function createTelemetry(options: {
       } finally {
         initialized.transport?.destroy();
       }
+    })();
+    return shutdownPromise;
+  };
+
+  return {
+    beginActivity,
+    capture(event, properties = {}) {
+      const telemetry = initialize();
+      if (!telemetry) return;
+      try {
+        telemetry.client.capture({
+          distinctId: telemetry.distinctId,
+          event,
+          disableGeoip: true,
+          properties: {
+            ...Object.fromEntries(Object.entries(properties).filter((entry) => entry[1] !== undefined)),
+            $process_person_profile: false,
+            fluxmail_version: VERSION,
+            node_version: process.versions.node,
+            platform: process.platform,
+            arch: process.arch,
+          } as Record<string, boolean | number | string>,
+        });
+      } catch {
+        // Telemetry must never affect Fluxmail behavior.
+      }
     },
+    shutdown,
   };
 }
 
 let sharedTelemetry: Telemetry | undefined;
+
+interface EndEventSource {
+  once(event: 'end', listener: () => void): unknown;
+}
+
+/** Flush queued telemetry when a long-running input stream reaches EOF. */
+export function installTelemetryStreamEndHandler(
+  stream: EndEventSource,
+  shutdown: () => Promise<void> = shutdownTelemetry,
+): void {
+  stream.once('end', () => {
+    // The MCP SDK starts request handlers in microtasks after consuming input.
+    // Wait one turn so the final request can register as active before shutdown.
+    setImmediate(() => void shutdown().catch(() => {}));
+  });
+}
 
 export function getTelemetry(dataDir: string): Telemetry {
   sharedTelemetry ??= createTelemetry({ dataDir });
@@ -267,6 +336,6 @@ export function getTelemetry(dataDir: string): Telemetry {
 
 export async function shutdownTelemetry(): Promise<void> {
   const telemetry = sharedTelemetry;
-  sharedTelemetry = undefined;
   await telemetry?.shutdown();
+  if (sharedTelemetry === telemetry) sharedTelemetry = undefined;
 }

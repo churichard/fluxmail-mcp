@@ -38,7 +38,13 @@ import { VERSION } from './version.js';
 import { countPending } from './storage/scheduledSends.js';
 import type { FluxmailDb } from './storage/db.js';
 import type { ImapCredentials, ImapSecurity } from '@fluxmail/provider-imap';
-import { getTelemetry, isTelemetryEnabled, setTelemetryEnabled, shutdownTelemetry } from './telemetry.js';
+import {
+  getTelemetry,
+  installTelemetryStreamEndHandler,
+  isTelemetryEnabled,
+  setTelemetryEnabled,
+  shutdownTelemetry,
+} from './telemetry.js';
 
 interface AddAccountOptions {
   reauthorize?: string;
@@ -148,6 +154,39 @@ function commandPath(command: Command): string {
   return names.join(' ');
 }
 
+let telemetrySignalHandlersInstalled = false;
+const TELEMETRY_SIGNAL_SHUTDOWN_TIMEOUT_MS = 1_000;
+
+/** Flush queued telemetry before restoring Node's default signal behavior. */
+function installTelemetrySignalHandlers(): void {
+  if (telemetrySignalHandlersInstalled) return;
+  telemetrySignalHandlersInstalled = true;
+
+  const shutdownAndResignal = (signal: NodeJS.Signals): void => {
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+    process.off('SIGHUP', onSighup);
+    let resignaled = false;
+    const resignal = (): void => {
+      if (resignaled) return;
+      resignaled = true;
+      process.kill(process.pid, signal);
+    };
+    const timeout = setTimeout(resignal, TELEMETRY_SIGNAL_SHUTDOWN_TIMEOUT_MS);
+    void shutdownTelemetry().finally(() => {
+      clearTimeout(timeout);
+      resignal();
+    });
+  };
+  const onSigint = (): void => shutdownAndResignal('SIGINT');
+  const onSigterm = (): void => shutdownAndResignal('SIGTERM');
+  const onSighup = (): void => shutdownAndResignal('SIGHUP');
+
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+  process.once('SIGHUP', onSighup);
+}
+
 program.hook('preAction', (_command, actionCommand) => {
   const command = commandPath(actionCommand);
   // Respect the opt-out before creating a telemetry client or recording this command.
@@ -167,6 +206,7 @@ program
   .command('serve')
   .description('Run the HTTP server (Streamable HTTP MCP at /mcp)')
   .action(() => {
+    installTelemetrySignalHandlers();
     const ctx = createContext();
     const app = createApp(ctx);
     ctx.scheduler.start();
@@ -199,6 +239,8 @@ program
   .command('stdio')
   .description('Run as a stdio MCP server (for Claude Desktop / Claude Code local config)')
   .action(async () => {
+    installTelemetrySignalHandlers();
+    installTelemetryStreamEndHandler(process.stdin);
     const ctx = createContext();
     const server = buildMcpServer(ctx.service, { telemetry: ctx.telemetry, transport: 'stdio' });
     ctx.scheduler.start();

@@ -2,9 +2,11 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createTelemetry,
+  installTelemetryStreamEndHandler,
   isTelemetryEnabled,
   publishTelemetryId,
   setTelemetryEnabled,
@@ -29,12 +31,12 @@ describe('telemetry', () => {
 
   it('uses a stable anonymous installation id and common package properties', async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
-    const capture = vi.fn().mockResolvedValue(undefined);
+    const capture = vi.fn();
     const shutdown = vi.fn().mockResolvedValue(undefined);
     const telemetry = createTelemetry({
       dataDir,
       env: {},
-      client: { captureImmediate: capture, shutdown },
+      client: { capture, shutdown },
     });
 
     telemetry.capture('mcp tool called', {
@@ -75,12 +77,12 @@ describe('telemetry', () => {
 
   it('does not initialize a client after opt-out', async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
-    const capture = vi.fn().mockResolvedValue(undefined);
+    const capture = vi.fn();
     const shutdown = vi.fn().mockResolvedValue(undefined);
     const telemetry = createTelemetry({
       dataDir,
       env: { FLUXMAIL_TELEMETRY: '0' },
-      client: { captureImmediate: capture, shutdown },
+      client: { capture, shutdown },
     });
 
     telemetry.capture('cli command used', { command: 'status' });
@@ -92,12 +94,12 @@ describe('telemetry', () => {
 
   it('starts an existing telemetry instance after the installation is re-enabled', async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
-    const capture = vi.fn().mockResolvedValue(undefined);
+    const capture = vi.fn();
     const shutdown = vi.fn().mockResolvedValue(undefined);
     const telemetry = createTelemetry({
       dataDir,
       env: {},
-      client: { captureImmediate: capture, shutdown },
+      client: { capture, shutdown },
     });
 
     setTelemetryEnabled(dataDir, false);
@@ -112,11 +114,102 @@ describe('telemetry', () => {
     expect(shutdown).toHaveBeenCalledWith(1_000);
   });
 
+  it('batches events until shutdown', async () => {
+    let requests = 0;
+    const endpoint = createServer((request, response) => {
+      request.resume();
+      request.once('end', () => {
+        requests += 1;
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{}');
+      });
+    });
+    await new Promise<void>((resolve) => endpoint.listen(0, '127.0.0.1', resolve));
+    const address = endpoint.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a TCP test server');
+
+    try {
+      const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
+      const telemetry = createTelemetry({
+        dataDir,
+        env: { FLUXMAIL_POSTHOG_HOST: `http://127.0.0.1:${address.port}` },
+      });
+
+      telemetry.capture('mcp tool called', { tool: 'search_emails' });
+      telemetry.capture('mcp tool called', { tool: 'get_email' });
+      expect(requests).toBe(0);
+
+      await telemetry.shutdown();
+      expect(requests).toBe(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        endpoint.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
+
+  it('flushes queued events when a stdio stream ends', async () => {
+    let requests = 0;
+    const endpoint = createServer((request, response) => {
+      request.resume();
+      request.once('end', () => {
+        requests += 1;
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{}');
+      });
+    });
+    await new Promise<void>((resolve) => endpoint.listen(0, '127.0.0.1', resolve));
+    const address = endpoint.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a TCP test server');
+
+    try {
+      const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
+      const telemetry = createTelemetry({
+        dataDir,
+        env: { FLUXMAIL_POSTHOG_HOST: `http://127.0.0.1:${address.port}` },
+      });
+      const stdin = new PassThrough();
+      installTelemetryStreamEndHandler(stdin, () => telemetry.shutdown());
+
+      telemetry.capture('mcp tool called', { tool: 'search_emails' });
+      stdin.resume();
+      stdin.end();
+
+      await vi.waitFor(() => expect(requests).toBe(1));
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        endpoint.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
+
+  it('waits for an active MCP call before flushing on stdio EOF', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
+    const capture = vi.fn();
+    const shutdown = vi.fn().mockResolvedValue(undefined);
+    const telemetry = createTelemetry({ dataDir, env: {}, client: { capture, shutdown } });
+    const stdin = new PassThrough();
+    installTelemetryStreamEndHandler(stdin, () => telemetry.shutdown());
+
+    const finishActivity = telemetry.beginActivity!();
+    stdin.resume();
+    stdin.end();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(shutdown).not.toHaveBeenCalled();
+    telemetry.capture('mcp tool called', { tool: 'get_email' });
+    finishActivity();
+
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+    expect(capture).toHaveBeenCalledOnce();
+  });
+
   it('bounds shutdown when the analytics endpoint does not respond', async () => {
     const endpoint = createServer();
     await new Promise<void>((resolve) => endpoint.listen(0, '127.0.0.1', resolve));
     const address = endpoint.address();
     if (!address || typeof address === 'string') throw new Error('Expected a TCP test server');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
       const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
@@ -130,7 +223,9 @@ describe('telemetry', () => {
       await telemetry.shutdown();
 
       expect(performance.now() - startedAt).toBeLessThan(2_000);
+      expect(consoleError).not.toHaveBeenCalled();
     } finally {
+      consoleError.mockRestore();
       endpoint.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
         endpoint.close((err) => (err ? reject(err) : resolve()));
@@ -140,12 +235,12 @@ describe('telemetry', () => {
 
   it('stops an existing client when the installation opts out', async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
-    const capture = vi.fn().mockResolvedValue(undefined);
+    const capture = vi.fn();
     const shutdown = vi.fn().mockResolvedValue(undefined);
     const telemetry = createTelemetry({
       dataDir,
       env: {},
-      client: { captureImmediate: capture, shutdown },
+      client: { capture, shutdown },
     });
 
     telemetry.capture('mcp tool called');
@@ -158,7 +253,7 @@ describe('telemetry', () => {
 
   it('stores a CLI opt-out that takes precedence over environment settings', async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
-    const capture = vi.fn().mockResolvedValue(undefined);
+    const capture = vi.fn();
     const shutdown = vi.fn().mockResolvedValue(undefined);
 
     setTelemetryEnabled(dataDir, false);
@@ -167,7 +262,7 @@ describe('telemetry', () => {
     const disabled = createTelemetry({
       dataDir,
       env: { FLUXMAIL_TELEMETRY: '1' },
-      client: { captureImmediate: capture, shutdown },
+      client: { capture, shutdown },
     });
     disabled.capture('cli command used');
     await disabled.shutdown();

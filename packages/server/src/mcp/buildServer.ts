@@ -220,6 +220,7 @@ function handle<A extends unknown[]>(
   options: BuildMcpServerOptions = {},
 ): (...args: A) => Promise<CallToolResult> {
   return async (...args: A) => {
+    const finishActivity = options.telemetry?.beginActivity?.();
     const startedAt = performance.now();
     try {
       // The gate throws when a lapsed license leaves the instance over quota,
@@ -244,6 +245,8 @@ function handle<A extends unknown[]>(
         ...toolFeatureProperties(tool, args[0]),
       });
       return toolError(err);
+    } finally {
+      finishActivity?.();
     }
   };
 }

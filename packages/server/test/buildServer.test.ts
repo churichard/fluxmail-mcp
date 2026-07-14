@@ -17,11 +17,20 @@ async function connectMcp(service: Partial<EmailService>) {
   return client;
 }
 
-function telemetrySpy(): { telemetry: Telemetry; capture: ReturnType<typeof vi.fn> } {
+function telemetrySpy(): {
+  telemetry: Telemetry;
+  capture: ReturnType<typeof vi.fn>;
+  beginActivity: ReturnType<typeof vi.fn>;
+  finishActivity: ReturnType<typeof vi.fn>;
+} {
   const capture = vi.fn();
+  const finishActivity = vi.fn();
+  const beginActivity = vi.fn(() => finishActivity);
   return {
     capture,
-    telemetry: { capture, shutdown: vi.fn().mockResolvedValue(undefined) },
+    beginActivity,
+    finishActivity,
+    telemetry: { capture, beginActivity, shutdown: vi.fn().mockResolvedValue(undefined) },
   };
 }
 
@@ -159,7 +168,7 @@ describe('scheduled send tools', () => {
 
 describe('tool telemetry', () => {
   it('captures the tool, transport, outcome, and allowlisted feature properties', async () => {
-    const { telemetry, capture } = telemetrySpy();
+    const { telemetry, capture, beginActivity, finishActivity } = telemetrySpy();
     const service = {
       enforceQuota: () => undefined,
       scheduleSend: vi.fn().mockResolvedValue({ scheduleId: 'sch_1', status: 'pending' }),
@@ -192,6 +201,8 @@ describe('tool telemetry', () => {
     expect(JSON.stringify(capture.mock.calls)).not.toContain('private@example.com');
     expect(JSON.stringify(capture.mock.calls)).not.toContain('private subject');
     expect(JSON.stringify(capture.mock.calls)).not.toContain('private body');
+    expect(beginActivity).toHaveBeenCalledOnce();
+    expect(finishActivity).toHaveBeenCalledOnce();
   });
 
   it('captures a safe error code without the error message', async () => {
