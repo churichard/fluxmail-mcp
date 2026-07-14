@@ -21,7 +21,7 @@ Determine whether the user wants preparation, a dry run, or a live release.
 
 1. Inspect `git status`, the current branch, and the latest `origin/main`.
 2. Preserve unrelated work. Start version changes only from a clean tree.
-3. Confirm the intended version, npm tag, and Git tag. Use `latest` for stable releases and `next` for prereleases unless the user specifies another npm tag. Use `v<version>` for the Git tag.
+3. Confirm the intended version, npm tag, and Git tag. Use `latest` for stable releases and `next` for prereleases unless the user specifies another npm tag. Use `v<version>` for the Git tag and the GitHub Release title.
 4. Keep these versions identical:
    - The private root `package.json`
    - Every `packages/*/package.json`
@@ -220,7 +220,7 @@ fi
 
 gh api "${generate_args[@]}" > "$release_json"
 jq -r '.body' "$release_json" > "$notes_file"
-title="$(jq -r '.name' "$release_json")"
+title="$tag"
 jq -n \
   --arg version "$version" \
   --arg npm_tag "$npm_tag" \
@@ -260,6 +260,8 @@ For the first GitHub Release, leave `previous_tag` empty so GitHub generates not
 
 Curate the generated notes for end users. Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and use only the sections that apply: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, and `Security`. Omit empty sections and use the ISO 8601 release date in `YYYY-MM-DD` format. Keep the full changelog link that GitHub generates.
 
+Keep the GitHub Release title identical to the Git tag in `v<version>` format. Do not replace it with a product name or another title.
+
 Include a change only when it affects how people install, configure, use, secure, or upgrade Fluxmail, or when it changes observable behavior, compatibility, performance, or reliability. Describe the effect in terms users can understand. Combine related commits when one entry explains the user impact better than separate implementation details. Call out breaking changes and required migration steps before the categorized entries.
 
 Exclude changes that have no end-user impact, including refactors, code cleanup, tests, CI, build or release tooling, publishing mechanics, agent skills or prompts, repository administration, and dependency or toolchain updates with no observable effect. Include documentation changes only when they alter a required user action or correct instructions that would otherwise cause a user problem. Do not include a commit only to make the notes look complete. If the release has no user-facing changes, write `No user-facing changes.` instead of listing internal work.
@@ -286,7 +288,7 @@ After auditing and editing the notes, save the final title and notes digest in t
 set -e
 state_file=".context/releases/v<version>/state.json"
 notes_file="$(jq -r '.notes_file' "$state_file")"
-title="<final-release-title>"
+title="$(jq -er '.tag' "$state_file")"
 notes_sha256="$(shasum -a 256 "$notes_file" | awk '{print $1}')"
 state_tmp="${state_file}.tmp"
 jq \
@@ -324,14 +326,15 @@ version="$(jq -er '.version' "$state_file")"
 npm_tag="$(jq -er '.npm_tag' "$state_file")"
 tag="$(jq -er '.tag' "$state_file")"
 release_sha="$(jq -er '.release_sha' "$state_file")"
+title="$(jq -er '.title' "$state_file")"
 approved_notes_sha256="$(jq -er '.notes_sha256' "$state_file")"
 saved_release_sha256="$(jq -er '.approval_sha256' "$state_file")"
 current_notes_sha256="$(shasum -a 256 "$notes_file" | awk '{print $1}')"
 approved_tree="$(git rev-parse "${release_sha}^{tree}")"
 current_tree="$(git rev-parse 'HEAD^{tree}')"
 working_tree_status="$(git status --porcelain)"
-if [[ -z "$npm_tag" || "$tag" != "v${version}" ]]; then
-  printf 'The approved version, npm tag, or Git tag is invalid.\n' >&2
+if [[ -z "$npm_tag" || "$tag" != "v${version}" || "$title" != "$tag" ]]; then
+  printf 'The approved version, npm tag, Git tag, or release title is invalid.\n' >&2
   false
 fi
 for manifest in \
@@ -474,8 +477,8 @@ publish_github_release() {
     printf 'Unexpected saved GitHub Release state: %s.\n' "$github_release_state" >&2
     return 1
   fi
-  if [[ -z "$npm_tag" || "$tag" != "v${version}" ]]; then
-    printf 'The approved version, npm tag, or Git tag is invalid.\n' >&2
+  if [[ -z "$npm_tag" || "$tag" != "v${version}" || "$title" != "$tag" ]]; then
+    printf 'The approved version, npm tag, Git tag, or release title is invalid.\n' >&2
     return 1
   fi
   for manifest in \
@@ -655,6 +658,7 @@ release_json="$(
     --json tagName,name,body,isDraft,isPrerelease,assets,url
 )"
 test "$(jq -r '.tagName' <<< "$release_json")" = "$release_tag"
+test "$(jq -r '.name' <<< "$release_json")" = "$release_tag"
 test "$(jq -r '.isDraft' <<< "$release_json")" = "false"
 test "$(jq -r '.assets | length' <<< "$release_json")" = "0"
 tag_refs="$(git ls-remote --tags origin "refs/tags/${release_tag}" "refs/tags/${release_tag}^{}")"
