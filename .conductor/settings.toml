@@ -1,0 +1,11 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+setup = "pnpm install"
+run_mode = "nonconcurrent"
+
+[scripts.run.docs]
+available_in = ["local"]
+command = "pnpm docs:preview --port $CONDUCTOR_PORT"
+default = true
+icon = "globe"

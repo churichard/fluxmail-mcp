@@ -121,7 +121,8 @@ const FolderPatchSchema = z
     spam: folderPath.nullable().optional(),
   })
   .strict()
-  .refine((value) => Object.keys(value).length > 0, 'At least one folder override is required.');
+  .refine((value) => Object.keys(value).length > 0, 'At least one folder override is required.')
+  .openapi({ example: { sent: 'Sent' } });
 const ServerSettingsSchema = z
   .object({ host, port: z.number().int().min(1).max(65_535), security, user: username, password })
   .strict();
@@ -134,18 +135,39 @@ const ImapSettingsSchema = z
     saveSent: z.boolean().optional(),
     folderOverrides: FolderOverridesSchema.optional(),
   })
-  .strict();
+  .strict()
+  .openapi({
+    example: {
+      email: 'you@example.com',
+      imap: {
+        host: 'imap.example.com',
+        port: 993,
+        security: 'tls',
+        user: 'you@example.com',
+        password: 'app-password',
+      },
+      smtp: {
+        host: 'smtp.example.com',
+        port: 465,
+        security: 'tls',
+        user: 'you@example.com',
+        password: 'app-password',
+      },
+    },
+  });
 const SharingSchema = {
   owner: identifier.optional(),
   reauthorizeAccountId: identifier.optional(),
   sharingMode: sharingMode.optional(),
   shareWith: z.array(identifier).max(100).optional(),
 };
-const ConnectionSchema = z.discriminatedUnion('provider', [
-  z.object({ provider: z.literal('gmail'), ...SharingSchema }).strict(),
-  z.object({ provider: z.literal('outlook'), ...SharingSchema }).strict(),
-  z.object({ provider: z.literal('imap'), ...SharingSchema, ...ImapSettingsSchema.shape }).strict(),
-]);
+const ConnectionSchema = z
+  .discriminatedUnion('provider', [
+    z.object({ provider: z.literal('gmail'), ...SharingSchema }).strict(),
+    z.object({ provider: z.literal('outlook'), ...SharingSchema }).strict(),
+    z.object({ provider: z.literal('imap'), ...SharingSchema, ...ImapSettingsSchema.shape }).strict(),
+  ])
+  .openapi({ example: { provider: 'gmail', owner: 'you@example.com' } });
 
 const CapabilitySchema = z.enum([...MCP_CAPABILITIES, ...ADMIN_CAPABILITIES]);
 const AdminCapabilitySchema = z.enum(ADMIN_CAPABILITIES);
@@ -173,7 +195,8 @@ const ApiKeyCreateSchema = z
     if (!value.customCapabilities && !value.permissionProfile) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Choose permissionProfile or customCapabilities.' });
     }
-  });
+  })
+  .openapi({ example: { name: 'reporting', member: 'you@example.com', permissionProfile: 'read-only' } });
 const ApiKeyPatchSchema = z
   .object({
     permissionProfile: z.enum(NAMED_PERMISSION_PROFILES).optional(),
@@ -194,7 +217,8 @@ const ApiKeyPatchSchema = z
         message: 'customCapabilities cannot be combined with a named profile.',
       });
     }
-  });
+  })
+  .openapi({ example: { permissionProfile: 'read-only' } });
 const LicenseActivationSchema = z.object({ licenseKey: z.string().max(200) }).strict();
 
 const ErrorSchema = z
@@ -339,6 +363,8 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     method: 'post',
     path: '/api/v1/admin/connections',
     operationId: 'createAdministrativeConnection',
+    summary: 'Create or reauthorize a connection',
+    description: 'Create or reauthorize a Gmail, Outlook, or IMAP connection. Requires admin.accounts.',
     ...protectedRoute,
     request: { body: { required: true, content: { 'application/json': { schema: ConnectionSchema } } } },
     responses: {
@@ -415,6 +441,8 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     method: 'post',
     path: '/api/v1/admin/imap/tests',
     operationId: 'testAdministrativeImapConnection',
+    summary: 'Test an IMAP connection',
+    description: 'Test IMAP and SMTP settings without saving an account. Requires admin.accounts.',
     ...protectedRoute,
     request: { body: { required: true, content: { 'application/json': { schema: ImapSettingsSchema } } } },
     responses: {
@@ -445,6 +473,8 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     method: 'patch',
     path: '/api/v1/admin/accounts/{accountId}/imap/folders',
     operationId: 'updateAdministrativeImapFolders',
+    summary: 'Update IMAP folders',
+    description: 'Update the folder overrides for an IMAP account. Requires admin.accounts.',
     ...protectedRoute,
     request: {
       params: z.object({ accountId: identifier }).strict(),
@@ -489,6 +519,8 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     method: 'get',
     path: '/api/v1/admin/api-keys',
     operationId: 'listAdministrativeApiKeys',
+    summary: 'List API keys',
+    description: 'List API key metadata without returning plaintext secrets. Requires admin.api_keys.',
     ...protectedRoute,
     responses: {
       200: {
@@ -509,6 +541,8 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     method: 'post',
     path: '/api/v1/admin/api-keys',
     operationId: 'createAdministrativeApiKey',
+    summary: 'Create an API key',
+    description: 'Create an API key and return its plaintext secret once. Requires admin.api_keys.',
     ...protectedRoute,
     request: { body: { required: true, content: { 'application/json': { schema: ApiKeyCreateSchema } } } },
     responses: {
@@ -539,6 +573,8 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     method: 'patch',
     path: '/api/v1/admin/api-keys/{keyId}',
     operationId: 'updateAdministrativeApiKey',
+    summary: 'Update an API key',
+    description: 'Update the permissions or mailbox scope of an API key. Requires admin.api_keys.',
     ...protectedRoute,
     request: {
       params: z.object({ keyId: identifier }).strict(),
@@ -589,6 +625,8 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     method: 'delete',
     path: '/api/v1/admin/api-keys/{keyId}',
     operationId: 'revokeAdministrativeApiKey',
+    summary: 'Revoke an API key',
+    description: 'Revoke an API key. Requires admin.api_keys.',
     ...protectedRoute,
     request: { params: z.object({ keyId: identifier }).strict() },
     responses: {
@@ -612,6 +650,8 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     method: 'get',
     path: '/api/v1/admin/license',
     operationId: 'getAdministrativeLicense',
+    summary: 'Get license status',
+    description: 'Get license status and usage without returning the configured license key. Requires admin.license.',
     ...protectedRoute,
     responses: {
       200: {
@@ -644,6 +684,8 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     method: 'post',
     path: '/api/v1/admin/license/activate',
     operationId: 'activateAdministrativeLicense',
+    summary: 'Activate a license',
+    description: 'Validate and activate a Fluxmail license key. Requires admin.license.',
     ...protectedRoute,
     request: { body: { required: true, content: { 'application/json': { schema: LicenseActivationSchema } } } },
     responses: {

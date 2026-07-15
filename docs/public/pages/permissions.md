@@ -1,5 +1,5 @@
 ---
-title: 'Limit what a connection can do'
+title: 'Permissions'
 description: 'Give each MCP or REST connection only the Fluxmail email permissions it needs.'
 updated: '2026-07-15'
 ---

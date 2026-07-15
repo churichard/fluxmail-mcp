@@ -1,0 +1,32 @@
+{
+  "title": "REST API",
+  "pagesIndex": "index",
+  "defaultOpen": false,
+  "pages": [
+    "create-administrative-connection",
+    "test-administrative-imap-connection",
+    "update-administrative-imap-folders",
+    "list-administrative-api-keys",
+    "create-administrative-api-key",
+    "update-administrative-api-key",
+    "revoke-administrative-api-key",
+    "get-administrative-license",
+    "activate-administrative-license",
+    "get-api-info",
+    "get-status",
+    "list-accounts",
+    "list-folders",
+    "list-messages",
+    "get-message",
+    "get-thread",
+    "create-draft",
+    "update-draft",
+    "delete-draft",
+    "send-message",
+    "list-scheduled-sends",
+    "cancel-scheduled-send",
+    "forward-message",
+    "modify-messages",
+    "download-attachment"
+  ]
+}

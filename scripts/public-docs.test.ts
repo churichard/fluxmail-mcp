@@ -1,9 +1,13 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   compatibilityManifest,
   parseFrontmatter,
   parseManifest,
   parseMeta,
+  publicDocPages,
   replaceGeneratedSection,
 } from './public-docs.js';
 
@@ -13,6 +17,9 @@ const meta = { title: 'Fluxmail MCP', pages: ['quickstart'] };
 describe('public docs bundle validation', () => {
   it('parses Fumadocs metadata without changing page order', () => {
     expect(parseMeta(meta).pages).toEqual(['quickstart']);
+    expect(parseMeta({ title: 'REST API', pagesIndex: 'index', defaultOpen: false, pages: ['list-accounts'] })).toEqual(
+      { title: 'REST API', pagesIndex: 'index', defaultOpen: false, pages: ['list-accounts'] },
+    );
   });
 
   it('derives the compatibility manifest from Fumadocs metadata', () => {
@@ -26,11 +33,16 @@ describe('public docs bundle validation', () => {
 
   it('parses a valid manifest without changing its order', () => {
     expect(parseManifest(manifest).pages).toEqual(['quickstart']);
+    expect(parseManifest({ ...manifest, pages: ['rest-api', 'rest-api/list-accounts'] }).pages).toEqual([
+      'rest-api',
+      'rest-api/list-accounts',
+    ]);
   });
 
   it('rejects unsafe paths and duplicate slugs', () => {
     expect(() => parseMeta({ ...meta, pages: ['../secret'] })).toThrow(/unsafe|invalid/);
     expect(() => parseMeta({ ...meta, pages: ['quickstart', 'quickstart'] })).toThrow(/duplicate/);
+    expect(() => parseMeta({ ...meta, pagesIndex: 'quickstart' })).toThrow(/must not also appear/);
     expect(() => parseManifest({ ...manifest, pages: ['../secret'] })).toThrow(/unsafe|invalid/);
     expect(() => parseManifest({ ...manifest, pages: ['quickstart', 'quickstart'] })).toThrow(/duplicate/);
   });
@@ -56,5 +68,34 @@ describe('public docs bundle validation', () => {
         'new',
       ),
     ).toBe('before\n<!-- BEGIN GENERATED:test -->\nnew\n<!-- END GENERATED:test -->\nafter');
+  });
+
+  it('resolves folder indexes and nested pages in navigation order', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'fluxmail-public-docs-'));
+    try {
+      const pages = path.join(root, 'pages');
+      const restApi = path.join(pages, 'rest-api');
+      mkdirSync(restApi, { recursive: true });
+      writeFileSync(path.join(pages, 'overview.md'), 'overview');
+      writeFileSync(path.join(restApi, 'index.md'), 'index');
+      writeFileSync(path.join(restApi, 'list-accounts.md'), 'accounts');
+      writeFileSync(
+        path.join(restApi, 'meta.json'),
+        JSON.stringify({
+          title: 'REST API',
+          pagesIndex: 'index',
+          defaultOpen: false,
+          pages: ['list-accounts'],
+        }),
+      );
+
+      expect(publicDocPages({ title: 'Fluxmail MCP', pages: ['overview', 'rest-api'] }, root)).toEqual([
+        { slug: 'overview', filename: 'overview.md' },
+        { slug: 'rest-api', filename: 'rest-api/index.md' },
+        { slug: 'rest-api/list-accounts', filename: 'rest-api/list-accounts.md' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

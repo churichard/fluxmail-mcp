@@ -34,7 +34,13 @@ export interface RestApiDeps {
   licenseController?: LicenseController;
 }
 
-const id = z.string().trim().min(1).openapi({ example: 'msg_123' });
+const id = z.string().trim().min(1);
+const accountId = id.openapi({ example: 'acct_123' });
+const messageId = id.openapi({ example: 'msg_123' });
+const threadId = id.openapi({ example: 'thread_123' });
+const draftId = id.openapi({ example: 'draft_123' });
+const scheduleId = id.openapi({ example: 'schedule_123' });
+const attachmentId = id.openapi({ example: 'attachment_123' });
 const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected an ISO date in YYYY-MM-DD format')
@@ -47,12 +53,12 @@ const base64Content = z
   .string()
   .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/, 'Expected base64 content')
   .openapi({ format: 'byte' });
-const accountParams = z.object({ accountId: id }).strict();
-const messageParams = z.object({ accountId: id, messageId: id }).strict();
-const threadParams = z.object({ accountId: id, threadId: id }).strict();
-const draftParams = z.object({ accountId: id, draftId: id }).strict();
-const scheduleParams = z.object({ accountId: id, scheduleId: id }).strict();
-const attachmentParams = z.object({ accountId: id, messageId: id, attachmentId: id }).strict();
+const accountParams = z.object({ accountId }).strict();
+const messageParams = z.object({ accountId, messageId }).strict();
+const threadParams = z.object({ accountId, threadId }).strict();
+const draftParams = z.object({ accountId, draftId }).strict();
+const scheduleParams = z.object({ accountId, scheduleId }).strict();
+const attachmentParams = z.object({ accountId, messageId, attachmentId }).strict();
 
 const EmailAddressSchema = z
   .object({ email: z.string().email(), name: z.string().min(1).optional() })
@@ -203,7 +209,8 @@ const idempotencyHeaders = z.object({
     .string()
     .min(1)
     .max(255)
-    .regex(/^[\x21-\x7e]+$/, 'Idempotency-Key must contain printable ASCII without spaces'),
+    .regex(/^[\x21-\x7e]+$/, 'Idempotency-Key must contain printable ASCII without spaces')
+    .describe('A unique key for one intended delivery. Reuse it when retrying the same request.'),
 });
 
 const draftShape = {
@@ -212,8 +219,8 @@ const draftShape = {
   bcc: z.array(EmailAddressSchema).optional(),
   subject: z.string().optional(),
   body: MessageBodySchema,
-  replyToMessageId: id.optional(),
-  replyAll: z.boolean().optional(),
+  replyToMessageId: messageId.optional(),
+  replyAll: z.boolean().optional().describe('Requires replyToMessageId when true.'),
   attachments: z.array(AttachmentInputSchema).optional(),
 };
 
@@ -228,14 +235,17 @@ const SendContentSchema = z
   .object({ ...draftShape, sendAt: z.string().datetime({ offset: true }).optional() })
   .strict()
   .superRefine(requireReplyTarget);
-const SendDraftSchema = z.object({ draftId: id, sendAt: z.string().datetime({ offset: true }).optional() }).strict();
+const SendDraftSchema = z.object({ draftId, sendAt: z.string().datetime({ offset: true }).optional() }).strict();
 const SendRequestSchema = z.union([SendDraftSchema, SendContentSchema]).openapi('SendRequest');
 const ForwardRequestSchema = z
   .object({
     to: z.array(EmailAddressSchema).min(1),
     cc: z.array(EmailAddressSchema).optional(),
     comment: z.string().optional(),
-    includeAttachments: z.boolean().optional(),
+    includeAttachments: z
+      .boolean()
+      .optional()
+      .openapi({ description: 'Include attachments from the original message. Defaults to true.', default: true }),
   })
   .strict()
   .openapi('ForwardRequest');
@@ -256,10 +266,18 @@ const modifyActionNames = [
 type ModifyActionName = (typeof modifyActionNames)[number];
 const ModifyRequestSchema = z
   .object({
-    messageIds: z.array(id).min(1),
+    messageIds: z.array(messageId).min(1),
     action: z.enum(modifyActionNames),
-    folder: z.string().min(1).optional(),
-    labels: z.array(z.string().min(1)).max(100).optional(),
+    folder: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Required when action is move. Use archive or trash instead of moving to those folders.'),
+    labels: z
+      .array(z.string().min(1))
+      .max(100)
+      .optional()
+      .describe('Required when action is addLabels or removeLabels. Change system labels with dedicated actions.'),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -807,6 +825,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'get',
     path: '/api/v1',
     operationId: 'getApiInfo',
+    summary: 'Get API information',
+    description: 'Return the Fluxmail version and the URL of the OpenAPI document.',
     responses: {
       200: {
         content: {
@@ -828,6 +848,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'get',
     path: '/api/v1/status',
     operationId: 'getStatus',
+    summary: 'Get server status',
+    description: 'Return provider and mailbox status for the accounts available to the API key.',
     ...protectedRoute,
     responses: {
       200: { content: { 'application/json': { schema: dataEnvelope(z.record(z.unknown())) } }, description: 'Status' },
@@ -844,6 +866,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'get',
     path: '/api/v1/accounts',
     operationId: 'listAccounts',
+    summary: 'List accounts',
+    description: 'List the email accounts available to the API key.',
     ...protectedRoute,
     responses: {
       200: {
@@ -863,6 +887,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'get',
     path: '/api/v1/accounts/{accountId}/folders',
     operationId: 'listFolders',
+    summary: 'List folders',
+    description: 'List folders in an email account.',
     request: { params: accountParams },
     ...protectedRoute,
     responses: {
@@ -881,6 +907,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'get',
     path: '/api/v1/accounts/{accountId}/messages',
     operationId: 'listMessages',
+    summary: 'List messages',
+    description: 'List and filter messages in an email account.',
     request: { params: accountParams, query: messageQuerySchema },
     ...protectedRoute,
     responses: {
@@ -901,6 +929,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'get',
     path: '/api/v1/accounts/{accountId}/messages/{messageId}',
     operationId: 'getMessage',
+    summary: 'Get a message',
+    description: 'Get one message by its provider ID.',
     request: { params: messageParams },
     ...protectedRoute,
     responses: {
@@ -919,6 +949,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'get',
     path: '/api/v1/accounts/{accountId}/threads/{threadId}',
     operationId: 'getThread',
+    summary: 'Get a thread',
+    description: 'Get a complete email thread by its provider ID.',
     request: { params: threadParams },
     ...protectedRoute,
     responses: {
@@ -937,6 +969,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'post',
     path: '/api/v1/accounts/{accountId}/drafts',
     operationId: 'createDraft',
+    summary: 'Create a draft',
+    description: 'Create a new draft or a reply draft in an email account.',
     request: {
       params: accountParams,
       body: { required: true, content: { 'application/json': { schema: DraftRequestSchema } } },
@@ -960,6 +994,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'put',
     path: '/api/v1/accounts/{accountId}/drafts/{draftId}',
     operationId: 'updateDraft',
+    summary: 'Replace a draft',
+    description: 'Replace the full content of an existing draft.',
     request: {
       params: draftParams,
       body: { required: true, content: { 'application/json': { schema: DraftRequestSchema } } },
@@ -983,6 +1019,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'delete',
     path: '/api/v1/accounts/{accountId}/drafts/{draftId}',
     operationId: 'deleteDraft',
+    summary: 'Delete a draft',
+    description: 'Delete an existing draft from an email account.',
     request: { params: draftParams },
     ...protectedRoute,
     responses: {
@@ -1005,6 +1043,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'post',
     path: '/api/v1/accounts/{accountId}/send',
     operationId: 'sendMessage',
+    summary: 'Send or schedule a message',
+    description: 'Send a message now or schedule it for a specified time.',
     request: {
       params: accountParams,
       headers: idempotencyHeaders,
@@ -1058,6 +1098,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'get',
     path: '/api/v1/accounts/{accountId}/scheduled-sends',
     operationId: 'listScheduledSends',
+    summary: 'List scheduled sends',
+    description: 'List scheduled messages in an email account.',
     request: { params: accountParams },
     ...protectedRoute,
     responses: {
@@ -1079,6 +1121,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'delete',
     path: '/api/v1/accounts/{accountId}/scheduled-sends/{scheduleId}',
     operationId: 'cancelScheduledSend',
+    summary: 'Cancel a scheduled send',
+    description: 'Cancel a pending scheduled send and keep its provider draft.',
     request: { params: scheduleParams },
     ...protectedRoute,
     responses: {
@@ -1111,6 +1155,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'post',
     path: '/api/v1/accounts/{accountId}/messages/{messageId}/forward',
     operationId: 'forwardMessage',
+    summary: 'Forward a message',
+    description: 'Forward a message to one or more recipients.',
     request: {
       params: messageParams,
       headers: idempotencyHeaders,
@@ -1146,6 +1192,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'post',
     path: '/api/v1/accounts/{accountId}/messages/actions',
     operationId: 'modifyMessages',
+    summary: 'Modify messages',
+    description: 'Apply one mailbox action to a batch of messages.',
     request: {
       params: accountParams,
       body: { required: true, content: { 'application/json': { schema: ModifyRequestSchema } } },
@@ -1186,6 +1234,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     method: 'get',
     path: '/api/v1/accounts/{accountId}/messages/{messageId}/attachments/{attachmentId}',
     operationId: 'downloadAttachment',
+    summary: 'Download an attachment',
+    description: 'Download one attachment as raw bytes.',
     request: { params: attachmentParams },
     ...protectedRoute,
     responses: {

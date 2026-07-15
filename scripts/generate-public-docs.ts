@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -6,6 +6,7 @@ import type { Command } from 'commander';
 import { createCliProgram } from '../packages/server/src/cli.js';
 import { CONFIG_REFERENCE } from '../packages/server/src/config.js';
 import { buildMcpServer } from '../packages/server/src/mcp/buildServer.js';
+import { createRestApi } from '../packages/server/src/http/rest.js';
 import {
   MCP_CAPABILITIES,
   MCP_CAPABILITY_DESCRIPTIONS,
@@ -14,7 +15,15 @@ import {
   customPermissionPolicy,
   permissionPolicyForProfile,
 } from '../packages/server/src/permissions.js';
-import { PUBLIC_DOCS_ROOT, compatibilityManifest, readPublicDocsMeta, replaceGeneratedSection } from './public-docs.js';
+import { generateRestApiReference } from './openapi-docs.js';
+import {
+  PUBLIC_DOCS_ROOT,
+  compatibilityManifest,
+  parseFrontmatter,
+  publicDocPages,
+  readPublicDocsMeta,
+  replaceGeneratedSection,
+} from './public-docs.js';
 
 interface ToolReference {
   name: string;
@@ -163,9 +172,48 @@ function permissionCapabilitiesSection(): string {
 
 async function main(): Promise<void> {
   const check = process.argv.includes('--check');
+  const stale: string[] = [];
+  const restDirectory = path.join(PUBLIC_DOCS_ROOT, 'pages', 'rest-api');
+  const restIndex = path.join(restDirectory, 'index.md');
+  const restIndexSource = readFileSync(restIndex, 'utf8');
+  const updated = parseFrontmatter(restIndexSource, 'rest-api/index.md').updated;
+  const restApp = createRestApi({} as never);
+  const openApiResponse = await restApp.request('/api/v1/openapi.json');
+  if (!openApiResponse.ok) throw new Error(`Could not generate the OpenAPI document: HTTP ${openApiResponse.status}.`);
+  const restReference = generateRestApiReference((await openApiResponse.json()) as never, updated);
+
+  const nextRestIndex = replaceGeneratedSection(restIndexSource, 'rest-api-endpoints', restReference.indexSection);
+  if (nextRestIndex !== restIndexSource) {
+    if (check) stale.push('rest-api/index.md');
+    else writeFileSync(restIndex, nextRestIndex);
+  }
+
+  if (!check) mkdirSync(restDirectory, { recursive: true });
+  const expectedRestFiles = new Map<string, string>([['meta.json', restReference.meta], ...restReference.pages]);
+  for (const [filename, content] of expectedRestFiles) {
+    const file = path.join(restDirectory, filename);
+    const current = readFileIfPresent(file);
+    if (current === content) continue;
+    if (check) stale.push(`rest-api/${filename}`);
+    else writeFileSync(file, content);
+  }
+  for (const filename of readdirSync(restDirectory)) {
+    if (filename === 'index.md' || expectedRestFiles.has(filename) || !filename.endsWith('.md')) continue;
+    if (check) stale.push(`rest-api/${filename}`);
+    else unlinkSync(path.join(restDirectory, filename));
+  }
+
   const manifestFile = path.join(PUBLIC_DOCS_ROOT, 'manifest.json');
   const currentManifest = readFileSync(manifestFile, 'utf8');
-  const nextManifest = `${JSON.stringify(compatibilityManifest(readPublicDocsMeta()), null, 2)}\n`;
+  const meta = readPublicDocsMeta();
+  const nextManifest = `${JSON.stringify(
+    compatibilityManifest(
+      meta,
+      publicDocPages(meta).map((page) => page.slug),
+    ),
+    null,
+    2,
+  )}\n`;
   const generated = new Map<string, Map<string, string>>([
     ['tools.md', new Map([['tools', await toolsSection()]])],
     ['cli.md', new Map([['cli', cliSection()]])],
@@ -178,7 +226,6 @@ async function main(): Promise<void> {
       ]),
     ],
   ]);
-  const stale: string[] = [];
   if (nextManifest !== currentManifest) {
     if (check) stale.push('manifest.json');
     else writeFileSync(manifestFile, nextManifest);
@@ -193,6 +240,15 @@ async function main(): Promise<void> {
     else writeFileSync(file, next);
   }
   if (stale.length) throw new Error(`Generated documentation is stale: ${stale.join(', ')}. Run pnpm docs:generate.`);
+}
+
+function readFileIfPresent(file: string): string | undefined {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
 }
 
 await main();

@@ -21,7 +21,7 @@ Then follow the [quickstart](docs/public/pages/quickstart.md) to connect a mailb
 
 - [Overview](docs/public/pages/overview.md)
 - [Tools](docs/public/pages/tools.md)
-- [REST API](docs/public/pages/rest-api.md)
+- [REST API](docs/public/pages/rest-api/index.md)
 - [Permissions](docs/public/pages/permissions.md)
 - [Configuration](docs/public/pages/configuration.md)
 - [CLI reference](docs/public/pages/cli.md)
@@ -31,7 +31,9 @@ Then follow the [quickstart](docs/public/pages/quickstart.md) to connect a mailb
 - [Architecture](docs/public/pages/architecture.md)
 - [Teams and plans](docs/public/pages/teams-and-plans.md)
 
-The source for Fluxmail's public documentation lives in [`docs/public`](docs/public). Add and order pages in [`docs/public/pages/meta.json`](docs/public/pages/meta.json); `manifest.json` is generated for compatibility with the existing site integration. Generated reference sections come from the server implementation. Run `pnpm docs:generate` after changing tools, commands, configuration, or permissions, and run `pnpm docs:check` before committing.
+The source for Fluxmail's public documentation lives in [`docs/public`](docs/public). Add and order pages in [`docs/public/pages/meta.json`](docs/public/pages/meta.json); `manifest.json` is generated for compatibility with the existing site integration. The REST endpoint pages and other generated reference sections come from the server implementation. Run `pnpm docs:generate` after changing tools, REST routes, commands, configuration, or permissions, and run `pnpm docs:check` before committing.
+
+Run `pnpm docs:preview` to generate the public references and open them in the Fluxmail documentation site. The script finds a sibling Fluxmail checkout automatically. Set `FLUXMAIL_WEB_ROOT` if the site lives somewhere else. The preview uses this worktree as its source and does not change the site's pinned submodule.
 
 ## Repository layout
 

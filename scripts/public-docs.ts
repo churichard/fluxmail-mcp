@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 export interface PublicDocsManifest {
@@ -11,6 +11,8 @@ export interface PublicDocsManifest {
 export interface PublicDocsMeta {
   title: string;
   pages: string[];
+  pagesIndex?: string;
+  defaultOpen?: boolean;
 }
 
 export interface PublicDocsFrontmatter {
@@ -20,6 +22,11 @@ export interface PublicDocsFrontmatter {
   draft?: boolean;
 }
 
+export interface PublicDocPage {
+  slug: string;
+  filename: string;
+}
+
 export const PUBLIC_DOCS_ROOT = path.resolve('docs/public');
 export const GENERATED_MARKERS = [
   'tools',
@@ -27,9 +34,11 @@ export const GENERATED_MARKERS = [
   'configuration',
   'permission-profiles',
   'permission-capabilities',
+  'rest-api-endpoints',
 ] as const;
 
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const PAGE_PATH_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 function isValidDate(value: string): boolean {
@@ -41,21 +50,31 @@ function isValidDate(value: string): boolean {
 export function parseMeta(value: unknown): PublicDocsMeta {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Meta must be a JSON object.');
   const meta = value as Record<string, unknown>;
-  const keys = Object.keys(meta).sort();
-  const expected = ['pages', 'title'];
-  if (JSON.stringify(keys) !== JSON.stringify(expected))
-    throw new Error(`Meta fields must be: ${expected.join(', ')}.`);
+  const allowed = new Set(['defaultOpen', 'pages', 'pagesIndex', 'title']);
+  const unexpected = Object.keys(meta).filter((key) => !allowed.has(key));
+  if (unexpected.length) throw new Error(`Meta has unsupported fields: ${unexpected.join(', ')}.`);
   if (typeof meta.title !== 'string' || !meta.title.trim()) throw new Error('Meta title is required.');
   validatePageSlugs(meta.pages, 'Meta');
+  if (meta.pagesIndex !== undefined) {
+    if (typeof meta.pagesIndex !== 'string' || !SLUG_PATTERN.test(meta.pagesIndex)) {
+      throw new Error('Meta pagesIndex contains an unsafe or invalid slug.');
+    }
+    if ((meta.pages as string[]).includes(meta.pagesIndex)) {
+      throw new Error('Meta pagesIndex must not also appear in pages.');
+    }
+  }
+  if (meta.defaultOpen !== undefined && typeof meta.defaultOpen !== 'boolean') {
+    throw new Error('Meta defaultOpen must be true or false.');
+  }
   return meta as unknown as PublicDocsMeta;
 }
 
-export function compatibilityManifest(meta: PublicDocsMeta): PublicDocsManifest {
+export function compatibilityManifest(meta: PublicDocsMeta, pages = meta.pages): PublicDocsManifest {
   return {
     schemaVersion: 1,
     id: 'fluxmail-mcp',
     category: meta.title,
-    pages: meta.pages,
+    pages,
   };
 }
 
@@ -70,7 +89,7 @@ export function parseManifest(value: unknown): PublicDocsManifest {
   if (manifest.id !== 'fluxmail-mcp') throw new Error('Manifest id must be fluxmail-mcp.');
   if (typeof manifest.category !== 'string' || !manifest.category.trim())
     throw new Error('Manifest category is required.');
-  validatePageSlugs(manifest.pages, 'Manifest');
+  validatePagePaths(manifest.pages, 'Manifest');
   return manifest as unknown as PublicDocsManifest;
 }
 
@@ -121,9 +140,44 @@ export function readPublicDocsMeta(root = PUBLIC_DOCS_ROOT): PublicDocsMeta {
 }
 
 export function pageFiles(root = PUBLIC_DOCS_ROOT): string[] {
-  return readdirSync(path.join(root, 'pages'))
-    .filter((file) => file.endsWith('.md'))
-    .sort();
+  const pagesRoot = path.join(root, 'pages');
+  const files: string[] = [];
+  function visit(directory: string): void {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else if (entry.isFile() && entry.name.endsWith('.md')) files.push(path.relative(pagesRoot, absolute));
+    }
+  }
+  visit(pagesRoot);
+  return files.sort();
+}
+
+export function publicDocPages(meta: PublicDocsMeta, root = PUBLIC_DOCS_ROOT): PublicDocPage[] {
+  const pagesRoot = path.join(root, 'pages');
+
+  function visit(entries: string[], directory: string, prefix: string): PublicDocPage[] {
+    return entries.flatMap((entry) => {
+      const markdown = path.join(directory, `${entry}.md`);
+      const folder = path.join(directory, entry);
+      const hasMarkdown = existsSync(markdown);
+      const hasFolder = existsSync(folder);
+      if (hasMarkdown && hasFolder) throw new Error(`Documentation entry ${entry} is both a page and a folder.`);
+      if (hasMarkdown) {
+        const slug = entry === 'index' ? prefix : [prefix, entry].filter(Boolean).join('/');
+        if (!slug) throw new Error('The root documentation index must have a named route.');
+        return [{ slug, filename: path.relative(pagesRoot, markdown) }];
+      }
+      if (!hasFolder) throw new Error(`Documentation entry ${entry} has no Markdown page or folder.`);
+      const nestedMetaFile = path.join(folder, 'meta.json');
+      if (!existsSync(nestedMetaFile)) throw new Error(`Documentation folder ${entry} has no meta.json.`);
+      const nestedMeta = parseMeta(JSON.parse(readFileSync(nestedMetaFile, 'utf8')) as unknown);
+      const nestedPages = nestedMeta.pagesIndex ? [nestedMeta.pagesIndex, ...nestedMeta.pages] : nestedMeta.pages;
+      return visit(nestedPages, folder, [prefix, entry].filter(Boolean).join('/'));
+    });
+  }
+
+  return visit(meta.pages, pagesRoot, '');
 }
 
 function escapeRegExp(value: string): string {
@@ -136,4 +190,12 @@ function validatePageSlugs(value: unknown, owner: string): asserts value is stri
     throw new Error(`${owner} pages contain an unsafe or invalid slug.`);
   }
   if (new Set(value).size !== value.length) throw new Error(`${owner} pages contain duplicate slugs.`);
+}
+
+function validatePagePaths(value: unknown, owner: string): asserts value is string[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error(`${owner} pages must be a non-empty array.`);
+  if (!value.every((slug) => typeof slug === 'string' && PAGE_PATH_PATTERN.test(slug))) {
+    throw new Error(`${owner} pages contain an unsafe or invalid path.`);
+  }
+  if (new Set(value).size !== value.length) throw new Error(`${owner} pages contain duplicate paths.`);
 }

@@ -86,4 +86,4 @@ Without a password environment variable, Fluxmail prompts for the password in an
 
 The named profiles are `read-only`, `read-write`, and `full`. Use repeated `--allow` options for a custom policy. `--profile` and `--allow` cannot be used together on the same command.
 
-Permissions passed to `fluxmail stdio` apply to that local process. HTTP permissions are stored with the API key and can be changed later with `fluxmail apikey permissions`. See [Limit what a connection can do](/docs/permissions) for the capability list and workflow requirements.
+Permissions passed to `fluxmail stdio` apply to that local process. HTTP permissions are stored with the API key and can be changed later with `fluxmail apikey permissions`. See [Permissions](/docs/permissions) for the capability list and workflow requirements.

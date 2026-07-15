@@ -6,13 +6,18 @@ import {
   compatibilityManifest,
   pageFiles,
   parseFrontmatter,
+  publicDocPages,
   readPublicDocsMeta,
   readPublicDocsManifest,
 } from './public-docs.js';
 
 const meta = readPublicDocsMeta();
+const pages = publicDocPages(meta);
 const manifest = readPublicDocsManifest();
-const expectedManifest = compatibilityManifest(meta);
+const expectedManifest = compatibilityManifest(
+  meta,
+  pages.map((page) => page.slug),
+);
 if (JSON.stringify(manifest) !== JSON.stringify(expectedManifest)) {
   throw new Error('Compatibility manifest differs from pages/meta.json. Run pnpm docs:generate.');
 }
@@ -41,7 +46,7 @@ for (const slug of meta.pages) {
   }
 }
 
-const expectedFiles = meta.pages.map((slug) => `${slug}.md`).sort();
+const expectedFiles = pages.map((page) => page.filename).sort();
 const actualFiles = pageFiles();
 if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
   throw new Error(
@@ -50,8 +55,8 @@ if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
 }
 
 const sources = new Map<string, string>();
-for (const slug of meta.pages) {
-  const filename = path.join(PUBLIC_DOCS_ROOT, 'pages', `${slug}.md`);
+for (const { slug, filename: relativeFilename } of pages) {
+  const filename = path.join(PUBLIC_DOCS_ROOT, 'pages', relativeFilename);
   const source = readFileSync(filename, 'utf8');
   parseFrontmatter(source, `${slug}.md`);
   if (/[—–]/u.test(source)) throw new Error(`${slug}.md contains an em dash or en dash. Rewrite it in plain language.`);
@@ -62,9 +67,9 @@ for (const [slug, source] of sources) {
   if (/\]\(\/docs\/mcp(?:\/|[)#?])/.test(source)) {
     throw new Error(`${slug}.md contains a nested /docs/mcp link. Use /docs/.`);
   }
-  for (const match of source.matchAll(/\]\(\/docs\/([a-z0-9-]+)(?:[)#?])/g)) {
+  for (const match of source.matchAll(/\]\(\/docs\/([a-z0-9-]+(?:\/[a-z0-9-]+)*)(?:[)#?])/g)) {
     const target = match[1];
-    if (target && !meta.pages.includes(target) && !RESERVED_MAIL_SLUGS.has(target)) {
+    if (target && !pages.some((page) => page.slug === target) && !RESERVED_MAIL_SLUGS.has(target)) {
       throw new Error(`${slug}.md links to unknown documentation page /docs/${target}.`);
     }
   }
@@ -75,6 +80,7 @@ const generatedPages = new Map<string, string[]>([
   ['cli.md', [GENERATED_MARKERS[1]]],
   ['configuration.md', [GENERATED_MARKERS[2]]],
   ['permissions.md', [GENERATED_MARKERS[3], GENERATED_MARKERS[4]]],
+  ['rest-api/index.md', [GENERATED_MARKERS[5]]],
 ]);
 for (const [filename, markers] of generatedPages) {
   const source = readFileSync(path.join(PUBLIC_DOCS_ROOT, 'pages', filename), 'utf8');
@@ -107,4 +113,4 @@ for (const [readme, docLink] of readmeDocLinks) {
   }
 }
 
-console.log(`Validated ${meta.pages.length} public documentation pages in Fumadocs order.`);
+console.log(`Validated ${pages.length} public documentation pages in Fumadocs order.`);

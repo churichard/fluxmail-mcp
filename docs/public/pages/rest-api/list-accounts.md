@@ -1,0 +1,155 @@
+---
+title: 'List accounts'
+description: 'List the email accounts available to the API key.'
+updated: '2026-07-15'
+---
+
+<!-- This page is generated from the OpenAPI schema. Run pnpm docs:generate to update it. -->
+
+`GET /api/v1/accounts`
+
+List the email accounts available to the API key.
+
+## Authentication
+
+Pass a Fluxmail API key as a bearer token. The key determines the member, mailbox scope, and permissions for the request.
+
+## Request
+
+```bash
+curl 'http://localhost:8977/api/v1/accounts' \
+  -H "Authorization: Bearer $FLUXMAIL_API_KEY"
+```
+
+This endpoint has no parameters or request body.
+
+## Responses
+
+| Status | Description | Content type |
+| --- | --- | --- |
+| `200` | Accounts | `application/json` |
+| `400` | Invalid request | `application/json` |
+| `401` | Authentication required | `application/json` |
+| `403` | Permission or plan denied | `application/json` |
+| `404` | Resource not found | `application/json` |
+| `409` | Request conflict | `application/json` |
+| `422` | Unsupported capability | `application/json` |
+| `429` | Provider rate limit | `application/json` |
+| `500` | Internal error | `application/json` |
+| `503` | Provider unavailable | `application/json` |
+
+### 200 response
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "gmail",
+              "outlook",
+              "imap"
+            ]
+          },
+          "email": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "auth_error",
+              "disabled"
+            ]
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "labels": {
+                "type": "boolean"
+              },
+              "serverThreads": {
+                "type": "boolean"
+              },
+              "serverSearch": {
+                "type": "string",
+                "enum": [
+                  "rich",
+                  "basic"
+                ]
+              },
+              "snippets": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "labels",
+              "serverThreads",
+              "serverSearch",
+              "snippets"
+            ],
+            "additionalProperties": false
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "sharingMode": {
+            "type": "string",
+            "enum": [
+              "private",
+              "all",
+              "selected"
+            ]
+          },
+          "sharedMemberIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "memberId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "email",
+          "status",
+          "capabilities",
+          "sharingMode",
+          "sharedMemberIds"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "data"
+  ],
+  "additionalProperties": false
+}
+```
+
+</details>

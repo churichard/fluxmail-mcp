@@ -118,6 +118,33 @@ describe('REST API discovery and authentication', () => {
     const document = (await response.json()) as Record<string, any>;
     expect(document.openapi).toBe('3.1.0');
     expect(document.components.securitySchemes.bearerAuth).toMatchObject({ type: 'http', scheme: 'bearer' });
+    expect(document.components.schemas.ForwardRequest.properties.includeAttachments).toMatchObject({
+      type: 'boolean',
+      default: true,
+      description: 'Include attachments from the original message. Defaults to true.',
+    });
+    expect(document.components.schemas.ModifyMessagesRequest.properties.folder.description).toMatch(
+      /Required when action is move/,
+    );
+    expect(document.components.schemas.ModifyMessagesRequest.properties.labels.description).toMatch(
+      /Required when action is addLabels or removeLabels/,
+    );
+    expect(
+      document.paths['/api/v1/admin/connections'].post.requestBody.content['application/json'].schema.example,
+    ).toEqual({ provider: 'gmail', owner: 'you@example.com' });
+    expect(
+      document.paths['/api/v1/admin/imap/tests'].post.requestBody.content['application/json'].schema.example,
+    ).toMatchObject({ imap: { port: 993 }, smtp: { port: 465 } });
+    expect(
+      document.paths['/api/v1/admin/api-keys'].post.requestBody.content['application/json'].schema.example,
+    ).toEqual({ name: 'reporting', member: 'you@example.com', permissionProfile: 'read-only' });
+    expect(
+      document.paths['/api/v1/admin/api-keys/{keyId}'].patch.requestBody.content['application/json'].schema.example,
+    ).toEqual({ permissionProfile: 'read-only' });
+    expect(
+      document.paths['/api/v1/admin/accounts/{accountId}/imap/folders'].patch.requestBody.content['application/json']
+        .schema.example,
+    ).toEqual({ sent: 'Sent' });
     expect(document.paths['/api/v1/accounts/{accountId}/send'].post.operationId).toBe('sendMessage');
     expect(document.paths['/api/v1/accounts/{accountId}/send'].post.requestBody.required).toBe(true);
     expect(Object.keys(document.paths)).toEqual(

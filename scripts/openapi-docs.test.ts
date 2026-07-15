@@ -1,0 +1,127 @@
+import { describe, expect, it } from 'vitest';
+import { generateRestApiReference } from './openapi-docs.js';
+
+describe('OpenAPI documentation generation', () => {
+  it('uses explicit examples and respects numeric minimums', () => {
+    const reference = generateRestApiReference(
+      {
+        paths: {
+          '/api/v1/explicit': {
+            post: {
+              operationId: 'createExplicitItem',
+              requestBody: {
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      properties: {
+                        name: { type: 'string' },
+                        permissionProfile: { type: 'string' },
+                      },
+                      required: ['name'],
+                      example: { name: 'reporting', permissionProfile: 'read-only' },
+                    },
+                  },
+                },
+              },
+              responses: { 200: { description: 'Created' } },
+            },
+          },
+          '/api/v1/bounded': {
+            post: {
+              operationId: 'createBoundedItem',
+              requestBody: {
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      properties: { port: { type: 'integer', minimum: 1 } },
+                      required: ['port'],
+                    },
+                  },
+                },
+              },
+              responses: { 200: { description: 'Created' } },
+            },
+          },
+        },
+      },
+      '2026-07-15',
+    );
+
+    expect(reference.pages.get('create-explicit-item.md')).toContain(
+      '"name": "reporting",\n  "permissionProfile": "read-only"',
+    );
+    expect(reference.pages.get('create-bounded-item.md')).toContain('"port": 1');
+  });
+
+  it('keeps parameter patterns inside their Markdown table cell', () => {
+    const reference = generateRestApiReference(
+      {
+        paths: {
+          '/api/v1/items': {
+            get: {
+              operationId: 'listItems',
+              parameters: [
+                {
+                  name: 'pageSize',
+                  in: 'query',
+                  schema: { type: 'string', pattern: '^(?:[1-9]|[1-9][0-9]|100)$' },
+                },
+              ],
+              responses: { 200: { description: 'Items' } },
+            },
+          },
+        },
+      },
+      '2026-07-15',
+    );
+
+    const page = reference.pages.get('list-items.md');
+    expect(page).toContain('Pattern: `^(?:[1-9]\\|[1-9][0-9]\\|100)$`.');
+    expect(page).not.toContain('[1-9]\\\\|[1-9][0-9]');
+  });
+
+  it('documents safe retries and every successful response schema', () => {
+    const reference = generateRestApiReference(
+      {
+        paths: {
+          '/api/v1/items': {
+            post: {
+              operationId: 'createItem',
+              parameters: [
+                {
+                  name: 'Idempotency-Key',
+                  in: 'header',
+                  required: true,
+                  description: 'Reuse this key for the same request.',
+                  schema: { type: 'string', description: 'Reuse this key for the same request.' },
+                },
+              ],
+              responses: {
+                200: {
+                  description: 'Created now',
+                  content: { 'application/json': { schema: { type: 'object', title: 'CreatedItem' } } },
+                },
+                202: {
+                  description: 'Scheduled',
+                  content: { 'application/json': { schema: { type: 'object', title: 'ScheduledItem' } } },
+                },
+              },
+            },
+          },
+        },
+      },
+      '2026-07-15',
+    );
+
+    const page = reference.pages.get('create-item.md');
+    expect(page?.match(/Reuse this key for the same request\./g)).toHaveLength(1);
+    expect(page).toContain('## Safe retries');
+    expect(page).toContain('do not create a new key');
+    expect(page).toContain('### 200 response');
+    expect(page).toContain('"title": "CreatedItem"');
+    expect(page).toContain('### 202 response');
+    expect(page).toContain('"title": "ScheduledItem"');
+  });
+});
