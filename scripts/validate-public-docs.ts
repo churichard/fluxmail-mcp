@@ -76,11 +76,11 @@ for (const [slug, source] of sources) {
 }
 
 const generatedPages = new Map<string, string[]>([
-  ['tools.md', [GENERATED_MARKERS[0]]],
-  ['cli.md', [GENERATED_MARKERS[1]]],
-  ['configuration.md', [GENERATED_MARKERS[2]]],
-  ['permissions.md', [GENERATED_MARKERS[3], GENERATED_MARKERS[4]]],
-  ['rest-api/index.md', [GENERATED_MARKERS[5]]],
+  ['configuration.md', [GENERATED_MARKERS[0]]],
+  ['permissions.md', [GENERATED_MARKERS[1], GENERATED_MARKERS[2]]],
+  ['rest-api/index.md', [GENERATED_MARKERS[3]]],
+  ['tools/index.md', [GENERATED_MARKERS[4]]],
+  ['cli/index.md', [GENERATED_MARKERS[5]]],
 ]);
 for (const [filename, markers] of generatedPages) {
   const source = readFileSync(path.join(PUBLIC_DOCS_ROOT, 'pages', filename), 'utf8');

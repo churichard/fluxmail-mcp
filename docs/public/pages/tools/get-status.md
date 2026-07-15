@@ -1,0 +1,32 @@
+---
+title: 'Get status'
+description: 'Account connection and scheduled-send status. Administrators also see plan details. Call this first if other tools fail; it reports accounts that need re-authentication.'
+updated: '2026-07-15'
+---
+
+<!-- This page is generated from the MCP tool definitions. Run pnpm docs:generate to update it. -->
+
+`get_status`
+
+Account connection and scheduled-send status. Administrators also see plan details. Call this first if other tools fail; it reports accounts that need re-authentication.
+
+## Permissions
+
+Required capabilities: `mail.read`.
+
+## Inputs
+
+This tool has no inputs.
+
+<details>
+<summary>JSON input schema</summary>
+
+```json
+{
+  "type": "object",
+  "properties": {},
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
+```
+
+</details>

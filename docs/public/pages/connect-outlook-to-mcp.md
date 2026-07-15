@@ -1,5 +1,5 @@
 ---
-title: 'Connect Outlook to the MCP server'
+title: 'Connect Outlook / Exchange'
 description: 'Register a Microsoft Entra application and connect Microsoft 365 or Outlook.com to Fluxmail.'
 updated: '2026-07-15'
 ---

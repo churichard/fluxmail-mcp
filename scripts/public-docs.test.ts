@@ -17,13 +17,17 @@ const meta = { title: 'Fluxmail MCP', pages: ['quickstart'] };
 describe('public docs bundle validation', () => {
   it('parses Fumadocs metadata without changing page order', () => {
     expect(parseMeta(meta).pages).toEqual(['quickstart']);
+    expect(parseMeta({ ...meta, pages: ['---Getting started---', 'quickstart'] }).pages).toEqual([
+      '---Getting started---',
+      'quickstart',
+    ]);
     expect(parseMeta({ title: 'REST API', pagesIndex: 'index', defaultOpen: false, pages: ['list-accounts'] })).toEqual(
       { title: 'REST API', pagesIndex: 'index', defaultOpen: false, pages: ['list-accounts'] },
     );
   });
 
   it('derives the compatibility manifest from Fumadocs metadata', () => {
-    expect(compatibilityManifest(parseMeta(meta))).toEqual({
+    expect(compatibilityManifest(parseMeta({ ...meta, pages: ['---Getting started---', 'quickstart'] }))).toEqual({
       schemaVersion: 1,
       id: 'fluxmail-mcp',
       category: 'Fluxmail MCP',
@@ -41,6 +45,7 @@ describe('public docs bundle validation', () => {
 
   it('rejects unsafe paths and duplicate slugs', () => {
     expect(() => parseMeta({ ...meta, pages: ['../secret'] })).toThrow(/unsafe|invalid/);
+    expect(() => parseMeta({ ...meta, pages: ['---   ---'] })).toThrow(/unsafe|invalid/);
     expect(() => parseMeta({ ...meta, pages: ['quickstart', 'quickstart'] })).toThrow(/duplicate/);
     expect(() => parseMeta({ ...meta, pagesIndex: 'quickstart' })).toThrow(/must not also appear/);
     expect(() => parseManifest({ ...manifest, pages: ['../secret'] })).toThrow(/unsafe|invalid/);
@@ -89,7 +94,12 @@ describe('public docs bundle validation', () => {
         }),
       );
 
-      expect(publicDocPages({ title: 'Fluxmail MCP', pages: ['overview', 'rest-api'] }, root)).toEqual([
+      expect(
+        publicDocPages(
+          { title: 'Fluxmail MCP', pages: ['---Getting started---', 'overview', '---Reference---', 'rest-api'] },
+          root,
+        ),
+      ).toEqual([
         { slug: 'overview', filename: 'overview.md' },
         { slug: 'rest-api', filename: 'rest-api/index.md' },
         { slug: 'rest-api/list-accounts', filename: 'rest-api/list-accounts.md' },

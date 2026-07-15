@@ -1,5 +1,5 @@
 ---
-title: 'Connect Gmail to the MCP server'
+title: 'Connect Gmail / Google Workspace'
 description: 'Create a Google OAuth app, connect Gmail or Google Workspace, and reconnect an expired token.'
 updated: '2026-07-15'
 ---

@@ -1,0 +1,23 @@
+{
+  "title": "MCP tools",
+  "pagesIndex": "index",
+  "defaultOpen": false,
+  "pages": [
+    "cancel-scheduled-email",
+    "create-draft",
+    "delete-draft",
+    "download-attachment",
+    "forward-email",
+    "get-email",
+    "get-status",
+    "get-thread",
+    "list-accounts",
+    "list-emails",
+    "list-folders",
+    "list-scheduled-emails",
+    "modify-emails",
+    "search-emails",
+    "send-email",
+    "update-draft"
+  ]
+}

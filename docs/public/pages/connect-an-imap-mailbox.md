@@ -1,5 +1,5 @@
 ---
-title: 'Connect an IMAP mailbox'
+title: 'Connect IMAP/SMTP'
 description: 'Connect any mailbox with IMAP and SMTP access, set its security options, and correct special-folder mappings.'
 updated: '2026-07-15'
 ---

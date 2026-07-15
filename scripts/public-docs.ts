@@ -29,12 +29,12 @@ export interface PublicDocPage {
 
 export const PUBLIC_DOCS_ROOT = path.resolve('docs/public');
 export const GENERATED_MARKERS = [
-  'tools',
-  'cli',
   'configuration',
   'permission-profiles',
   'permission-capabilities',
   'rest-api-endpoints',
+  'mcp-tool-reference',
+  'cli-command-reference',
 ] as const;
 
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -74,8 +74,18 @@ export function compatibilityManifest(meta: PublicDocsMeta, pages = meta.pages):
     schemaVersion: 1,
     id: 'fluxmail-mcp',
     category: meta.title,
-    pages,
+    pages: pages.filter((page) => !isPageSeparator(page)),
   };
+}
+
+export function isPageSeparator(value: string): boolean {
+  return (
+    value.startsWith('---') &&
+    value.endsWith('---') &&
+    value.length > 6 &&
+    value.slice(3, -3).trim().length > 0 &&
+    !/[\r\n]/.test(value)
+  );
 }
 
 export function parseManifest(value: unknown): PublicDocsManifest {
@@ -158,6 +168,7 @@ export function publicDocPages(meta: PublicDocsMeta, root = PUBLIC_DOCS_ROOT): P
 
   function visit(entries: string[], directory: string, prefix: string): PublicDocPage[] {
     return entries.flatMap((entry) => {
+      if (isPageSeparator(entry)) return [];
       const markdown = path.join(directory, `${entry}.md`);
       const folder = path.join(directory, entry);
       const hasMarkdown = existsSync(markdown);
@@ -186,7 +197,7 @@ function escapeRegExp(value: string): string {
 
 function validatePageSlugs(value: unknown, owner: string): asserts value is string[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error(`${owner} pages must be a non-empty array.`);
-  if (!value.every((slug) => typeof slug === 'string' && SLUG_PATTERN.test(slug))) {
+  if (!value.every((slug) => typeof slug === 'string' && (SLUG_PATTERN.test(slug) || isPageSeparator(slug)))) {
     throw new Error(`${owner} pages contain an unsafe or invalid slug.`);
   }
   if (new Set(value).size !== value.length) throw new Error(`${owner} pages contain duplicate slugs.`);

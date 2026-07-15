@@ -57,7 +57,7 @@ Choose one provider:
 
 #### Option A: Gmail or Google Workspace
 
-Gmail requires a Google Cloud OAuth app that you own. Before continuing, complete the **Create a Google Cloud project** and **Create OAuth credentials** sections of [Connect Gmail to the MCP server](/docs/connect-gmail-to-mcp).
+Gmail requires a Google Cloud OAuth app that you own. Before continuing, complete the **Create a Google Cloud project** and **Create OAuth credentials** sections of [Connect Gmail / Google Workspace](/docs/connect-gmail-to-mcp).
 
 Store the Google credentials once, then start the browser consent flow:
 
@@ -69,7 +69,7 @@ fluxmail accounts add gmail --owner you@example.com
 
 #### Option B: Microsoft 365 or Outlook.com
 
-Microsoft mail requires an Entra app registration. Before continuing, complete the **Register the application** and **Configure the local callback** sections of [Connect Outlook to the MCP server](/docs/connect-outlook-to-mcp).
+Microsoft mail requires an Entra app registration. Before continuing, complete the **Register the application** and **Configure the local callback** sections of [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp).
 
 Store the application client ID, then start the browser consent flow:
 
@@ -239,7 +239,7 @@ Choose one provider:
 
 #### Option A: Gmail or Google Workspace
 
-Gmail requires a Google Cloud OAuth app that you own. Complete the **Create a Google Cloud project** and **Create OAuth credentials** sections of [Connect Gmail to the MCP server](/docs/connect-gmail-to-mcp), then add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to `.env`.
+Gmail requires a Google Cloud OAuth app that you own. Complete the **Create a Google Cloud project** and **Create OAuth credentials** sections of [Connect Gmail / Google Workspace](/docs/connect-gmail-to-mcp), then add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to `.env`.
 
 ```bash
 docker compose up -d
@@ -253,7 +253,7 @@ On local Docker, the command prints a Google consent URL and waits for the callb
 
 #### Option B: Microsoft 365 or Outlook.com
 
-Complete the hosted setup in [Connect Outlook to the MCP server](/docs/connect-outlook-to-mcp). Add the Entra application client ID and secret to `.env`, along with `FLUXMAIL_PUBLIC_URL`:
+Complete the hosted setup in [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp). Add the Entra application client ID and secret to `.env`, along with `FLUXMAIL_PUBLIC_URL`:
 
 ```dotenv
 MICROSOFT_CLIENT_ID=<application-client-id>
@@ -463,9 +463,9 @@ If it returns the messages, the connection is working.
 
 - See [Tools](/docs/tools) for the full tool set your agent can call.
 - See [Limit what an MCP client can do](/docs/permissions) to restrict local connections and API keys.
-- See [Connect Gmail to the MCP server](/docs/connect-gmail-to-mcp) for Google OAuth setup and reconnection help.
-- See [Connect Outlook to the MCP server](/docs/connect-outlook-to-mcp) for Microsoft Entra setup and reconnection help.
-- See [Connect an IMAP mailbox](/docs/connect-an-imap-mailbox) for IMAP/SMTP setup and folder mapping.
+- See [Connect Gmail / Google Workspace](/docs/connect-gmail-to-mcp) for Google OAuth setup and reconnection help.
+- See [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp) for Microsoft Entra setup and reconnection help.
+- See [Connect IMAP/SMTP](/docs/connect-an-imap-mailbox) for IMAP/SMTP setup and folder mapping.
 - See [Configuration](/docs/configuration) for environment variables.
 - See [CLI reference](/docs/cli) for every `fluxmail` command.
 - See [Teams & plans](/docs/teams-and-plans) for members, shared mailboxes, and paid-plan licensing.

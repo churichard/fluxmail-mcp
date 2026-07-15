@@ -37,7 +37,7 @@ You can connect several mailboxes to one Fluxmail instance. Members and account 
 | Local process | One person using an agent on the same computer | stdio |
 | Docker server | Remote access, shared instances, or several MCP clients | Streamable HTTP |
 
-The [Quickstart](/docs/quickstart) walks through both setups. For provider-specific steps, see [Connect Gmail to the MCP server](/docs/connect-gmail-to-mcp), [Connect Outlook to the MCP server](/docs/connect-outlook-to-mcp), or [Connect an IMAP mailbox](/docs/connect-an-imap-mailbox).
+The [Quickstart](/docs/quickstart) walks through both setups. For provider-specific steps, see [Connect Gmail / Google Workspace](/docs/connect-gmail-to-mcp), [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp), or [Connect IMAP/SMTP](/docs/connect-an-imap-mailbox).
 
 ## Read next
 

@@ -2,7 +2,6 @@ import { mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { Command } from 'commander';
 import { createCliProgram } from '../packages/server/src/cli.js';
 import { CONFIG_REFERENCE } from '../packages/server/src/config.js';
 import { buildMcpServer } from '../packages/server/src/mcp/buildServer.js';
@@ -17,6 +16,12 @@ import {
 } from '../packages/server/src/permissions.js';
 import { generateRestApiReference } from './openapi-docs.js';
 import {
+  generateCliReference,
+  generateMcpReference,
+  type GeneratedReference,
+  type ToolReference,
+} from './reference-docs.js';
+import {
   PUBLIC_DOCS_ROOT,
   compatibilityManifest,
   parseFrontmatter,
@@ -24,12 +29,6 @@ import {
   readPublicDocsMeta,
   replaceGeneratedSection,
 } from './public-docs.js';
-
-interface ToolReference {
-  name: string;
-  description?: string;
-  inputSchema: { properties?: Record<string, unknown>; required?: string[] };
-}
 
 async function listTools(permissions?: ReturnType<typeof customPermissionPolicy>): Promise<ToolReference[]> {
   const server = buildMcpServer({ enforceQuota: () => undefined } as never, permissions ? { permissions } : undefined);
@@ -48,17 +47,7 @@ function markdownCell(value: string): string {
   return value.replaceAll('|', '\\|').replaceAll('\n', ' ');
 }
 
-function inputSummary(tool: ToolReference): string {
-  const required = new Set(tool.inputSchema.required ?? []);
-  const names = Object.keys(tool.inputSchema.properties ?? {});
-  if (!names.length) return 'None';
-  return names
-    .map((name) => `\`${name}\`${required.has(name) ? '' : '?'} `)
-    .join('')
-    .trim();
-}
-
-async function toolsSection(): Promise<string> {
+async function toolRequirements(): Promise<{ tools: ToolReference[]; requirements: Map<string, string[][]> }> {
   const tools = (await listTools()).sort((a, b) => a.name.localeCompare(b.name));
   const requirements = new Map<string, string[][]>();
   for (let size = 1; size <= MCP_CAPABILITIES.length; size += 1) {
@@ -71,33 +60,7 @@ async function toolsSection(): Promise<string> {
       }
     }
   }
-  const rows = tools.map((tool) => {
-    const visibility = (requirements.get(tool.name) ?? [])
-      .map((requirement) => requirement.map((item) => `\`${item}\``).join(' + '))
-      .join(' or ');
-    return `| \`${tool.name}\` | ${markdownCell(tool.description ?? '')} | ${inputSummary(tool)} | ${visibility} |`;
-  });
-  const schemas = tools.flatMap((tool) => [
-    `<details><summary><code>${tool.name}</code> input schema</summary>`,
-    '',
-    '```json',
-    JSON.stringify(tool.inputSchema, null, 2),
-    '```',
-    '',
-    '</details>',
-    '',
-  ]);
-  return [
-    `Fluxmail exposes ${tools.length} tools. Optional inputs have a \`?\` suffix. A plus sign means the connection needs both capabilities.`,
-    '',
-    '| Tool | Description | Inputs | Capabilities |',
-    '| --- | --- | --- | --- |',
-    ...rows,
-    '',
-    '### Input schemas',
-    '',
-    ...schemas,
-  ].join('\n');
+  return { tools, requirements };
 }
 
 function capabilityCombinations(size: number): string[][] {
@@ -114,33 +77,6 @@ function capabilityCombinations(size: number): string[][] {
   }
   visit(0, []);
   return combinations;
-}
-
-function commandPath(command: Command): string {
-  const parts: string[] = [];
-  let current: Command | null = command;
-  while (current) {
-    if (current.name()) parts.unshift(current.name());
-    current = current.parent;
-  }
-  const args = command.registeredArguments.map((argument) => {
-    const suffix = argument.variadic ? '...' : '';
-    return argument.required ? `<${argument.name()}${suffix}>` : `[${argument.name()}${suffix}]`;
-  });
-  return [...parts, ...args].join(' ');
-}
-
-function allCommands(root: Command): Command[] {
-  return root.commands.flatMap((command) => [command, ...allCommands(command)]);
-}
-
-function cliSection(): string {
-  const commands = allCommands(createCliProgram());
-  const rows = commands.map((command) => {
-    const options = command.options.map((option) => `\`${option.flags}\``).join(', ') || 'None';
-    return `| \`${commandPath(command)}\` | ${markdownCell(command.description())} | ${options} |`;
-  });
-  return ['| Command | Description | Options |', '| --- | --- | --- |', ...rows].join('\n');
 }
 
 function configurationSection(): string {
@@ -173,6 +109,8 @@ function permissionCapabilitiesSection(): string {
 async function main(): Promise<void> {
   const check = process.argv.includes('--check');
   const stale: string[] = [];
+  const references: Array<{ directory: string; marker: string; reference: GeneratedReference }> = [];
+
   const restDirectory = path.join(PUBLIC_DOCS_ROOT, 'pages', 'rest-api');
   const restIndex = path.join(restDirectory, 'index.md');
   const restIndexSource = readFileSync(restIndex, 'utf8');
@@ -181,26 +119,51 @@ async function main(): Promise<void> {
   const openApiResponse = await restApp.request('/api/v1/openapi.json');
   if (!openApiResponse.ok) throw new Error(`Could not generate the OpenAPI document: HTTP ${openApiResponse.status}.`);
   const restReference = generateRestApiReference((await openApiResponse.json()) as never, updated);
+  references.push({ directory: 'rest-api', marker: 'rest-api-endpoints', reference: restReference });
 
-  const nextRestIndex = replaceGeneratedSection(restIndexSource, 'rest-api-endpoints', restReference.indexSection);
-  if (nextRestIndex !== restIndexSource) {
-    if (check) stale.push('rest-api/index.md');
-    else writeFileSync(restIndex, nextRestIndex);
-  }
+  const toolsIndex = path.join(PUBLIC_DOCS_ROOT, 'pages', 'tools', 'index.md');
+  const toolsIndexSource = readFileSync(toolsIndex, 'utf8');
+  const toolsUpdated = parseFrontmatter(toolsIndexSource, 'tools/index.md').updated;
+  const { tools, requirements } = await toolRequirements();
+  references.push({
+    directory: 'tools',
+    marker: 'mcp-tool-reference',
+    reference: generateMcpReference(tools, requirements, toolsUpdated),
+  });
 
-  if (!check) mkdirSync(restDirectory, { recursive: true });
-  const expectedRestFiles = new Map<string, string>([['meta.json', restReference.meta], ...restReference.pages]);
-  for (const [filename, content] of expectedRestFiles) {
-    const file = path.join(restDirectory, filename);
-    const current = readFileIfPresent(file);
-    if (current === content) continue;
-    if (check) stale.push(`rest-api/${filename}`);
-    else writeFileSync(file, content);
-  }
-  for (const filename of readdirSync(restDirectory)) {
-    if (filename === 'index.md' || expectedRestFiles.has(filename) || !filename.endsWith('.md')) continue;
-    if (check) stale.push(`rest-api/${filename}`);
-    else unlinkSync(path.join(restDirectory, filename));
+  const cliIndex = path.join(PUBLIC_DOCS_ROOT, 'pages', 'cli', 'index.md');
+  const cliIndexSource = readFileSync(cliIndex, 'utf8');
+  const cliUpdated = parseFrontmatter(cliIndexSource, 'cli/index.md').updated;
+  references.push({
+    directory: 'cli',
+    marker: 'cli-command-reference',
+    reference: generateCliReference(createCliProgram(), cliUpdated),
+  });
+
+  for (const { directory, marker, reference } of references) {
+    const referenceDirectory = path.join(PUBLIC_DOCS_ROOT, 'pages', directory);
+    const indexFile = path.join(referenceDirectory, 'index.md');
+    const indexSource = readFileSync(indexFile, 'utf8');
+    const nextIndex = replaceGeneratedSection(indexSource, marker, reference.indexSection);
+    if (nextIndex !== indexSource) {
+      if (check) stale.push(`${directory}/index.md`);
+      else writeFileSync(indexFile, nextIndex);
+    }
+
+    if (!check) mkdirSync(referenceDirectory, { recursive: true });
+    const expectedFiles = new Map<string, string>([['meta.json', reference.meta], ...reference.pages]);
+    for (const [filename, content] of expectedFiles) {
+      const file = path.join(referenceDirectory, filename);
+      const current = readFileIfPresent(file);
+      if (current === content) continue;
+      if (check) stale.push(`${directory}/${filename}`);
+      else writeFileSync(file, content);
+    }
+    for (const filename of readdirSync(referenceDirectory)) {
+      if (filename === 'index.md' || expectedFiles.has(filename) || !filename.endsWith('.md')) continue;
+      if (check) stale.push(`${directory}/${filename}`);
+      else unlinkSync(path.join(referenceDirectory, filename));
+    }
   }
 
   const manifestFile = path.join(PUBLIC_DOCS_ROOT, 'manifest.json');
@@ -215,8 +178,6 @@ async function main(): Promise<void> {
     2,
   )}\n`;
   const generated = new Map<string, Map<string, string>>([
-    ['tools.md', new Map([['tools', await toolsSection()]])],
-    ['cli.md', new Map([['cli', cliSection()]])],
     ['configuration.md', new Map([['configuration', configurationSection()]])],
     [
       'permissions.md',
