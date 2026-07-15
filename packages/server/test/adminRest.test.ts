@@ -63,9 +63,7 @@ describe('administrative REST API', () => {
     expect(administrationUsesHttps(request, { remoteAddress: '127.0.0.1' })).toBe(true);
     expect(administrationUsesHttps(request, { remoteAddress: '::ffff:127.0.0.1' })).toBe(true);
     expect(administrationUsesHttps(request, { remoteAddress: '203.0.113.10' })).toBe(false);
-    expect(
-      administrationUsesHttps(request, { remoteAddress: '203.0.113.10', encrypted: true }),
-    ).toBe(true);
+    expect(administrationUsesHttps(request, { remoteAddress: '203.0.113.10', encrypted: true })).toBe(true);
     expect(administrationUsesHttps(new Request('https://mail.example.com/api/v1/admin/api-keys'))).toBe(true);
   });
 
@@ -159,11 +157,9 @@ describe('administrative REST API', () => {
     expect(response.headers.get('referrer-policy')).toBe('no-referrer');
     expect(response.headers.get('access-control-allow-origin')).toBeNull();
 
-    const insecure = await app.request(
-      '/api/v1/admin/api-keys',
-      { headers: auth },
-      { incoming: { socket: { remoteAddress: '203.0.113.10' } } } as unknown as HttpBindings,
-    );
+    const insecure = await app.request('/api/v1/admin/api-keys', { headers: auth }, {
+      incoming: { socket: { remoteAddress: '203.0.113.10' } },
+    } as unknown as HttpBindings);
     expect(insecure.status).toBe(400);
     await expect(insecure.json()).resolves.toMatchObject({ error: { code: 'https_required' } });
   });

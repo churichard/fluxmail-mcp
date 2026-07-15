@@ -417,9 +417,7 @@ export class AccountRegistry {
               reject(
                 new EmailError(
                   'provider_unavailable',
-                  verifySmtp
-                    ? 'The IMAP and SMTP connection test timed out.'
-                    : 'The IMAP folder validation timed out.',
+                  verifySmtp ? 'The IMAP and SMTP connection test timed out.' : 'The IMAP folder validation timed out.',
                 ),
               ),
             timeoutMs,

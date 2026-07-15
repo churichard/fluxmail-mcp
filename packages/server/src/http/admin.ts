@@ -49,10 +49,7 @@ function isLoopbackHostname(value: string): boolean {
   return value.toLowerCase() === 'localhost' || isLoopbackAddress(value);
 }
 
-export function administrationUsesHttps(
-  request: Request,
-  connection?: AdminConnectionSecurity,
-): boolean {
+export function administrationUsesHttps(request: Request, connection?: AdminConnectionSecurity): boolean {
   if (connection?.encrypted) return true;
   if (connection?.remoteAddress !== undefined) return isLoopbackAddress(connection.remoteAddress);
 
