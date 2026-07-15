@@ -1,0 +1,15 @@
+{
+  "title": "Fluxmail MCP",
+  "pages": [
+    "overview",
+    "quickstart",
+    "connect-gmail-to-mcp",
+    "connect-an-imap-mailbox",
+    "tools",
+    "permissions",
+    "configuration",
+    "cli",
+    "teams-and-plans",
+    "architecture"
+  ]
+}

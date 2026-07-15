@@ -8,6 +8,11 @@ export interface PublicDocsManifest {
   pages: string[];
 }
 
+export interface PublicDocsMeta {
+  title: string;
+  pages: string[];
+}
+
 export interface PublicDocsFrontmatter {
   title: string;
   description: string;
@@ -33,6 +38,27 @@ function isValidDate(value: string): boolean {
   return !Number.isNaN(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
 }
 
+export function parseMeta(value: unknown): PublicDocsMeta {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Meta must be a JSON object.');
+  const meta = value as Record<string, unknown>;
+  const keys = Object.keys(meta).sort();
+  const expected = ['pages', 'title'];
+  if (JSON.stringify(keys) !== JSON.stringify(expected))
+    throw new Error(`Meta fields must be: ${expected.join(', ')}.`);
+  if (typeof meta.title !== 'string' || !meta.title.trim()) throw new Error('Meta title is required.');
+  validatePageSlugs(meta.pages, 'Meta');
+  return meta as unknown as PublicDocsMeta;
+}
+
+export function compatibilityManifest(meta: PublicDocsMeta): PublicDocsManifest {
+  return {
+    schemaVersion: 1,
+    id: 'fluxmail-mcp',
+    category: meta.title,
+    pages: meta.pages,
+  };
+}
+
 export function parseManifest(value: unknown): PublicDocsManifest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Manifest must be a JSON object.');
   const manifest = value as Record<string, unknown>;
@@ -41,16 +67,10 @@ export function parseManifest(value: unknown): PublicDocsManifest {
   if (JSON.stringify(keys) !== JSON.stringify(expected))
     throw new Error(`Manifest fields must be: ${expected.join(', ')}.`);
   if (manifest.schemaVersion !== 1) throw new Error('Manifest schemaVersion must be 1.');
-  if (typeof manifest.id !== 'string' || !SLUG_PATTERN.test(manifest.id)) throw new Error('Manifest id is invalid.');
+  if (manifest.id !== 'fluxmail-mcp') throw new Error('Manifest id must be fluxmail-mcp.');
   if (typeof manifest.category !== 'string' || !manifest.category.trim())
     throw new Error('Manifest category is required.');
-  if (!Array.isArray(manifest.pages) || manifest.pages.length === 0)
-    throw new Error('Manifest pages must be a non-empty array.');
-  if (!manifest.pages.every((slug) => typeof slug === 'string' && SLUG_PATTERN.test(slug))) {
-    throw new Error('Manifest pages contain an unsafe or invalid slug.');
-  }
-  if (new Set(manifest.pages).size !== manifest.pages.length)
-    throw new Error('Manifest pages contain duplicate slugs.');
+  validatePageSlugs(manifest.pages, 'Manifest');
   return manifest as unknown as PublicDocsManifest;
 }
 
@@ -96,6 +116,10 @@ export function readPublicDocsManifest(root = PUBLIC_DOCS_ROOT): PublicDocsManif
   return parseManifest(JSON.parse(readFileSync(path.join(root, 'manifest.json'), 'utf8')) as unknown);
 }
 
+export function readPublicDocsMeta(root = PUBLIC_DOCS_ROOT): PublicDocsMeta {
+  return parseMeta(JSON.parse(readFileSync(path.join(root, 'pages', 'meta.json'), 'utf8')) as unknown);
+}
+
 export function pageFiles(root = PUBLIC_DOCS_ROOT): string[] {
   return readdirSync(path.join(root, 'pages'))
     .filter((file) => file.endsWith('.md'))
@@ -104,4 +128,12 @@ export function pageFiles(root = PUBLIC_DOCS_ROOT): string[] {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function validatePageSlugs(value: unknown, owner: string): asserts value is string[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error(`${owner} pages must be a non-empty array.`);
+  if (!value.every((slug) => typeof slug === 'string' && SLUG_PATTERN.test(slug))) {
+    throw new Error(`${owner} pages contain an unsafe or invalid slug.`);
+  }
+  if (new Set(value).size !== value.length) throw new Error(`${owner} pages contain duplicate slugs.`);
 }
