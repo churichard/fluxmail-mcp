@@ -378,6 +378,25 @@ export class AccountRegistry {
     displayName?: string,
     timeoutMs = 30_000,
   ): Promise<FolderWarning[]> {
+    return this.testImapSetup(email, credentials, displayName, timeoutMs, true);
+  }
+
+  async testImapFolderOverrides(
+    email: string,
+    credentials: ImapCredentials,
+    displayName?: string,
+    timeoutMs = 30_000,
+  ): Promise<FolderWarning[]> {
+    return this.testImapSetup(email, credentials, displayName, timeoutMs, false);
+  }
+
+  private async testImapSetup(
+    email: string,
+    credentials: ImapCredentials,
+    displayName: string | undefined,
+    timeoutMs: number,
+    verifySmtp: boolean,
+  ): Promise<FolderWarning[]> {
     const provider = new ImapProvider({
       accountId: 'imap_setup',
       email,
@@ -389,12 +408,20 @@ export class AccountRegistry {
     try {
       return await Promise.race([
         (async () => {
-          await provider.testConnection();
+          if (verifySmtp) await provider.testConnection();
           return provider.getFolderWarnings();
         })(),
         new Promise<FolderWarning[]>((_resolve, reject) => {
           timer = setTimeout(
-            () => reject(new EmailError('provider_unavailable', 'The IMAP and SMTP connection test timed out.')),
+            () =>
+              reject(
+                new EmailError(
+                  'provider_unavailable',
+                  verifySmtp
+                    ? 'The IMAP and SMTP connection test timed out.'
+                    : 'The IMAP folder validation timed out.',
+                ),
+              ),
             timeoutMs,
           );
           timer.unref();

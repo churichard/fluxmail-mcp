@@ -746,7 +746,12 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
       c.header('cache-control', 'no-store');
       c.header('x-content-type-options', 'nosniff');
       c.header('referrer-policy', 'no-referrer');
-      if (!administrationUsesHttps(deps.config, c.req.raw, c.env?.incoming?.socket.remoteAddress)) {
+      if (
+        !administrationUsesHttps(c.req.raw, {
+          remoteAddress: c.env?.incoming?.socket.remoteAddress,
+          encrypted: Boolean((c.env?.incoming?.socket as { encrypted?: boolean } | undefined)?.encrypted),
+        })
+      ) {
         return jsonResponse(
           { error: { code: 'https_required', message: 'Administrative routes require HTTPS outside loopback.' } },
           400,

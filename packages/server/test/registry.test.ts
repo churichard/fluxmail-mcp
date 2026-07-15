@@ -5,6 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EmailError } from '@fluxmail/core';
+import { ImapProvider } from '@fluxmail/provider-imap';
 import { AccountRegistry } from '../src/accounts/registry.js';
 import { accountCredentials, accounts, members, oauthTokens, openDb } from '../src/storage/db.js';
 import { addMember } from '../src/storage/members.js';
@@ -50,6 +51,7 @@ const imapCredentials = {
 describe('AccountRegistry', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('adds an account and stores tokens encrypted', () => {
@@ -184,6 +186,21 @@ describe('AccountRegistry', () => {
 
     expect(registry.loadImapCredentials(account.id)).toEqual(updated);
     expect(registry.getProvider(account.id)).not.toBe(firstProvider);
+  });
+
+  it('validates IMAP folder overrides without testing SMTP', async () => {
+    const registry = new AccountRegistry(openDb(':memory:'), testConfig());
+    const warnings = [
+      { role: 'sent' as const, reason: 'stale_override' as const, message: 'sent override does not exist' },
+    ];
+    const folderCheck = vi.spyOn(ImapProvider.prototype, 'getFolderWarnings').mockResolvedValue(warnings);
+    const fullCheck = vi.spyOn(ImapProvider.prototype, 'testConnection').mockRejectedValue(new Error('SMTP offline'));
+    const close = vi.spyOn(ImapProvider.prototype, 'close').mockResolvedValue();
+
+    await expect(registry.testImapFolderOverrides('me@example.com', imapCredentials)).resolves.toEqual(warnings);
+    expect(folderCheck).toHaveBeenCalledOnce();
+    expect(fullCheck).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it('reauthorizes an IMAP account without changing its id or owner', () => {

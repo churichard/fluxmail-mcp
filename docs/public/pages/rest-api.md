@@ -36,7 +36,7 @@ curl http://localhost:8977/api/v1/status \
 
 The same routes work in Docker and remote deployments. The HTTP server is not restricted to loopback, so use the host firewall and reverse proxy to control network access. Keep `FLUXMAIL_AUTH=apikey` unless the server is behind a trusted network boundary.
 
-Administrative routes always require an API key, including when `FLUXMAIL_AUTH=none` disables authentication for mail routes. Remote administration also requires HTTPS. Put Fluxmail behind an HTTPS reverse proxy and restrict the management paths to the networks that need them.
+Administrative routes always require an API key, including when `FLUXMAIL_AUTH=none` disables authentication for mail routes. Fluxmail accepts plaintext administrative traffic only from loopback. An HTTPS reverse proxy should reach the Fluxmail backend over loopback, and the plain backend port must not be exposed to remote clients.
 
 ## Create an administrative key
 

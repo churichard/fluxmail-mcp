@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { HttpBindings } from '@hono/node-server';
 import type { FluxmailConfig } from '../src/config.js';
 import { AccountRegistry } from '../src/accounts/registry.js';
 import { EmailService } from '../src/service/emailService.js';
@@ -58,14 +59,14 @@ describe('administrative REST API', () => {
   });
 
   it('allows plaintext administration only for an actual loopback peer', () => {
-    const { config } = fixture();
     const request = new Request('http://localhost:8977/api/v1/admin/api-keys');
-    expect(administrationUsesHttps(config, request, '127.0.0.1')).toBe(true);
-    expect(administrationUsesHttps(config, request, '::ffff:127.0.0.1')).toBe(true);
-    expect(administrationUsesHttps(config, request, '203.0.113.10')).toBe(false);
-
-    config.publicUrl = 'https://mail.example.com';
-    expect(administrationUsesHttps(config, request, '203.0.113.10')).toBe(true);
+    expect(administrationUsesHttps(request, { remoteAddress: '127.0.0.1' })).toBe(true);
+    expect(administrationUsesHttps(request, { remoteAddress: '::ffff:127.0.0.1' })).toBe(true);
+    expect(administrationUsesHttps(request, { remoteAddress: '203.0.113.10' })).toBe(false);
+    expect(
+      administrationUsesHttps(request, { remoteAddress: '203.0.113.10', encrypted: true }),
+    ).toBe(true);
+    expect(administrationUsesHttps(new Request('https://mail.example.com/api/v1/admin/api-keys'))).toBe(true);
   });
 
   it('registers admin routes in OpenAPI and requires a real key even when mail auth is disabled', async () => {
@@ -113,7 +114,7 @@ describe('administrative REST API', () => {
   });
 
   it('applies strict JSON, body limit, security headers, and no CORS', async () => {
-    const { app, auth, config, db } = fixture();
+    const { app, auth, db } = fixture();
     const wrongType = await app.request('/api/v1/admin/api-keys', {
       method: 'POST',
       headers: { ...auth, 'content-type': 'text/plain' },
@@ -158,8 +159,11 @@ describe('administrative REST API', () => {
     expect(response.headers.get('referrer-policy')).toBe('no-referrer');
     expect(response.headers.get('access-control-allow-origin')).toBeNull();
 
-    config.publicUrl = 'http://mail.example.com';
-    const insecure = await app.request('/api/v1/admin/api-keys', { headers: auth });
+    const insecure = await app.request(
+      '/api/v1/admin/api-keys',
+      { headers: auth },
+      { incoming: { socket: { remoteAddress: '203.0.113.10' } } } as unknown as HttpBindings,
+    );
     expect(insecure.status).toBe(400);
     await expect(insecure.json()).resolves.toMatchObject({ error: { code: 'https_required' } });
   });
@@ -314,15 +318,23 @@ describe('administrative REST API', () => {
       imap: { password: 'new-imap-secret' },
     });
 
-    test.mockResolvedValueOnce([
-      { role: 'drafts', reason: 'stale_override', message: 'drafts folder override does not exist' },
+    const folderTest = vi.spyOn(registry, 'testImapFolderOverrides').mockResolvedValueOnce([]);
+    const validPatch = await app.request(
+      `/api/v1/admin/accounts/${accountId}/imap/folders`,
+      jsonRequest('PATCH', { drafts: 'Drafts' }, auth),
+    );
+    expect(validPatch.status).toBe(200);
+    expect(test).toHaveBeenCalledTimes(2);
+
+    folderTest.mockResolvedValueOnce([
+      { role: 'trash', reason: 'stale_override', message: 'trash folder override does not exist' },
     ]);
     const invalidPatch = await app.request(
       `/api/v1/admin/accounts/${accountId}/imap/folders`,
-      jsonRequest('PATCH', { drafts: 'Missing Drafts' }, auth),
+      jsonRequest('PATCH', { trash: 'Missing Trash' }, auth),
     );
     expect(invalidPatch.status).toBe(400);
-    expect(registry.loadImapCredentials(accountId).folderOverrides).toEqual({ sent: 'Sent Items' });
+    expect(registry.loadImapCredentials(accountId).folderOverrides).toEqual({ sent: 'Sent Items', drafts: 'Drafts' });
   });
 
   it('retains only the newest 10,000 sanitized audit events', () => {

@@ -148,7 +148,10 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     hasCapability(auth.permissions, 'admin.accounts') && (auth.memberId === null || auth.role === 'admin');
 
   const administrationUsesHttps = (c: { req: { raw: Request }; env?: Partial<HttpBindings> }): boolean =>
-    administrationRequestUsesHttps(config, c.req.raw, c.env?.incoming?.socket.remoteAddress);
+    administrationRequestUsesHttps(c.req.raw, {
+      remoteAddress: c.env?.incoming?.socket.remoteAddress,
+      encrypted: Boolean((c.env?.incoming?.socket as { encrypted?: boolean } | undefined)?.encrypted),
+    });
 
   // Authenticate an MCP request. The service applies member grants and the key's
   // optional mailbox allowlist before any provider call.

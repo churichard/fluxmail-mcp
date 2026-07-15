@@ -32,6 +32,11 @@ import { findMember } from '../storage/members.js';
 export const ADMIN_BODY_LIMIT = 64 * 1024;
 export const ADMIN_CONNECTION_TIMEOUT_MS = 30_000;
 
+export interface AdminConnectionSecurity {
+  remoteAddress?: string;
+  encrypted?: boolean;
+}
+
 function isLoopbackAddress(value: string): boolean {
   const normalized = value
     .toLowerCase()
@@ -45,16 +50,17 @@ function isLoopbackHostname(value: string): boolean {
 }
 
 export function administrationUsesHttps(
-  config: Pick<FluxmailConfig, 'publicUrl'>,
   request: Request,
-  remoteAddress?: string,
+  connection?: AdminConnectionSecurity,
 ): boolean {
-  const publicUrl = new URL(config.publicUrl);
-  if (publicUrl.protocol === 'https:') return true;
-  if (remoteAddress !== undefined) return isLoopbackAddress(remoteAddress);
-  // Hono's in-memory app.request() helper has no socket. Keep that path useful
-  // for tests and non-Node adapters without trusting the Host header in Node.
-  return isLoopbackHostname(publicUrl.hostname) && isLoopbackHostname(new URL(request.url).hostname);
+  if (connection?.encrypted) return true;
+  if (connection?.remoteAddress !== undefined) return isLoopbackAddress(connection.remoteAddress);
+
+  const requestUrl = new URL(request.url);
+  // No socket is available in Hono's in-memory helper or in non-Node adapters.
+  // These paths use the request URL itself. Node requests must pass the peer
+  // and TLS state above so headers and configuration cannot bless plaintext.
+  return requestUrl.protocol === 'https:' || isLoopbackHostname(requestUrl.hostname);
 }
 
 export async function requestBodyExceedsLimit(request: Request, limit = ADMIN_BODY_LIMIT): Promise<boolean> {
@@ -467,7 +473,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
         else if (value !== undefined) nextOverrides[role] = value;
       }
       const proposed = { ...current, folderOverrides: nextOverrides };
-      const warnings = await registry(deps).testImapCredentials(
+      const warnings = await registry(deps).testImapFolderOverrides(
         account.email,
         proposed,
         account.displayName,
