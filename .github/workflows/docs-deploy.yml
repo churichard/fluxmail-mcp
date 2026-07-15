@@ -1,4 +1,4 @@
-name: Publish MCP documentation
+name: Request MCP documentation sync
 
 on:
   push:
@@ -12,12 +12,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: docs-publish-main
+  group: docs-sync-main
   cancel-in-progress: true
 
 jobs:
   dispatch:
-    name: Request site deployment
+    name: Request documentation pull request
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -48,7 +48,7 @@ jobs:
           SOURCE_REF: ${{ github.ref_name }}
         run: |
           if [[ "$SOURCE_REF" != "main" ]]; then
-            echo "Documentation publishing only accepts the main branch." >&2
+            echo "Documentation sync only accepts the main branch." >&2
             exit 1
           fi
           sha=$(git rev-parse HEAD)
@@ -58,7 +58,7 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Dispatch private site workflow
+      - name: Dispatch documentation sync workflow
         env:
           GH_TOKEN: ${{ secrets.FLUXMAIL_DOCS_DEPLOY_TOKEN }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
@@ -67,4 +67,4 @@ jobs:
             --arg ref main \
             --arg sourceSha "$SOURCE_SHA" \
             '{ref: $ref, inputs: {source_sha: $sourceSha, source_ref: "main"}}' |
-            gh api --method POST repos/churichard/fluxmail/actions/workflows/deploy-mcp-docs.yml/dispatches --input -
+            gh api --method POST repos/churichard/fluxmail/actions/workflows/sync-mcp-docs.yml/dispatches --input -
