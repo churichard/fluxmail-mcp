@@ -23,6 +23,9 @@ const ENV_KEYS = [
   'FLUXMAIL_MAX_ATTACHMENT_MB',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
+  'MICROSOFT_CLIENT_ID',
+  'MICROSOFT_CLIENT_SECRET',
+  'MICROSOFT_TENANT_ID',
   'FLUXMAIL_TELEMETRY',
   'FM_STORED_TEST',
 ];
@@ -103,6 +106,22 @@ describe('stored config', () => {
     process.env.GOOGLE_CLIENT_ID = 'shell-id';
     const config2 = loadConfig();
     expect(config2.google?.clientId).toBe('shell-id');
+  });
+
+  it('loads Microsoft OAuth settings and defaults to the common tenant', () => {
+    const dir = tempDataDir();
+    process.env.FLUXMAIL_DATA_DIR = dir;
+    process.env.MICROSOFT_CLIENT_ID = 'microsoft-client-id';
+
+    expect(loadConfig().microsoft).toEqual({ clientId: 'microsoft-client-id', tenantId: 'common' });
+
+    process.env.MICROSOFT_CLIENT_SECRET = 'microsoft-secret';
+    process.env.MICROSOFT_TENANT_ID = 'tenant-id';
+    expect(loadConfig().microsoft).toEqual({
+      clientId: 'microsoft-client-id',
+      clientSecret: 'microsoft-secret',
+      tenantId: 'tenant-id',
+    });
   });
 
   it('reads a stored telemetry opt-out without applying unrelated settings', () => {

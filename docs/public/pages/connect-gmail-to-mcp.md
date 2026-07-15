@@ -92,6 +92,19 @@ On local Docker, the command prints a Google consent URL and waits for the callb
 
 Fluxmail uses the hosted flow whenever `FLUXMAIL_PUBLIC_URL` is set. Without it, `fluxmail accounts add gmail --owner you@example.com` uses the local callback at `http://localhost:8976/oauth/callback`. For troubleshooting, pass `--hosted` or `--local` to choose a flow explicitly.
 
+### Create a hosted link through the API
+
+A product backend can create a hosted connection link without running the CLI. Send an admin API key to the management endpoint:
+
+```bash
+curl -X POST "$FLUXMAIL_PUBLIC_URL/auth/connections" \
+  -H "Authorization: Bearer $FLUXMAIL_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"gmail","owner":"you@example.com"}'
+```
+
+The response contains `connectionUrl` and `expiresAt`. Send `connectionUrl` to the user, but keep the admin API key on your backend. To reconnect an existing mailbox, send `reauthorizeAccountId` instead of `owner`. The endpoint also accepts `provider: "outlook"`.
+
 ## Optional: avoid seven-day token expiration
 
 For an External app with a Testing publishing status, [Google expires the authorization after seven days](https://developers.google.com/identity/protocols/oauth2#expiration). Move the app to **In production** in Google Auth Platform if you want a longer-lived connection.

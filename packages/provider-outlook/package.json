@@ -1,0 +1,33 @@
+{
+  "name": "@fluxmail/provider-outlook",
+  "version": "0.3.0",
+  "description": "Microsoft Graph adapter for the Fluxmail unified email API",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fluxmail/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0"
+  }
+}

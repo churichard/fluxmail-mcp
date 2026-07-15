@@ -4,7 +4,7 @@
 
 <p align="center"><a href="https://github.com/churichard/fluxmail-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/churichard/fluxmail-mcp/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;logo=github"></a> <a href="https://www.npmjs.com/package/fluxmail"><img alt="npm version" src="https://img.shields.io/npm/v/fluxmail?style=flat-square&amp;logo=npm&amp;color=1f4fcc"></a> <a href="https://github.com/churichard/fluxmail-mcp/pkgs/container/fluxmail-mcp"><img alt="Container image" src="https://img.shields.io/badge/GHCR-container-2496ED?style=flat-square&amp;logo=docker&amp;logoColor=white"></a></p>
 
-Fluxmail is a self-hosted MCP server that connects AI agents to Gmail and IMAP/SMTP mailboxes. It provides one API for reading, searching, drafting, sending, and organizing mail over stdio or Streamable HTTP.
+Fluxmail is a self-hosted MCP server that connects AI agents to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. It provides one API for reading, searching, drafting, sending, and organizing mail over stdio or Streamable HTTP.
 
 ## Get started
 
@@ -24,6 +24,9 @@ Then follow the [quickstart](docs/public/pages/quickstart.md) to connect a mailb
 - [Permissions](docs/public/pages/permissions.md)
 - [Configuration](docs/public/pages/configuration.md)
 - [CLI reference](docs/public/pages/cli.md)
+- [Gmail setup](docs/public/pages/connect-gmail-to-mcp.md)
+- [Outlook setup](docs/public/pages/connect-outlook-to-mcp.md)
+- [IMAP setup](docs/public/pages/connect-an-imap-mailbox.md)
 - [Architecture](docs/public/pages/architecture.md)
 - [Teams and plans](docs/public/pages/teams-and-plans.md)
 
@@ -36,6 +39,7 @@ packages/
   core/             unified types and provider interface
   provider-gmail/   Gmail adapter
   provider-imap/    IMAP and SMTP adapter
+  provider-outlook/ Microsoft Graph adapter
   server/           service, storage, MCP transports, and CLI
 ```
 

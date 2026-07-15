@@ -471,7 +471,7 @@ describe('EmailService.status', () => {
 
     await expect(service.status()).resolves.toMatchObject({
       accounts: [{ id: 'acct_1', status: 'active', warnings: ['no trash folder could be resolved'] }],
-      providersAvailable: ['gmail', 'imap'],
+      providersAvailable: ['gmail', 'outlook', 'imap'],
     });
   });
 });

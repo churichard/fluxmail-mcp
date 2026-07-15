@@ -4,6 +4,7 @@ import { OAuth2Client, type Credentials } from 'google-auth-library';
 import { EmailError, type Account, type AccountSharingMode, type EmailProvider, type Provider } from '@fluxmail/core';
 import { GmailProvider, GMAIL_CAPABILITIES } from '@fluxmail/provider-gmail';
 import { ImapProvider, IMAP_CAPABILITIES, type ImapCredentials } from '@fluxmail/provider-imap';
+import { OutlookProvider, OUTLOOK_CAPABILITIES } from '@fluxmail/provider-outlook';
 import type { FluxmailConfig } from '../config.js';
 import { accountCredentials, accountMemberShares, accounts, oauthTokens, type FluxmailDb } from '../storage/db.js';
 import { decryptString, encryptString } from '../storage/crypto.js';
@@ -11,6 +12,7 @@ import { assertAccountLimit, getEntitlements } from '../licensing/entitlements.j
 import { getMember } from '../storage/members.js';
 import { requireGoogleConfig } from './googleAuth.js';
 import { SqliteImapStateStore } from '../storage/imapState.js';
+import { refreshMicrosoftCredentials, requireMicrosoftConfig, type MicrosoftCredentials } from './microsoftAuth.js';
 
 export interface AccountAccessInput {
   sharingMode: AccountSharingMode;
@@ -48,7 +50,12 @@ export class AccountRegistry {
         email: row.email,
         ...(row.displayName ? { displayName: row.displayName } : {}),
         status: row.status as Account['status'],
-        capabilities: row.provider === 'imap' ? IMAP_CAPABILITIES : GMAIL_CAPABILITIES,
+        capabilities:
+          row.provider === 'imap'
+            ? IMAP_CAPABILITIES
+            : row.provider === 'outlook'
+              ? OUTLOOK_CAPABILITIES
+              : GMAIL_CAPABILITIES,
         sharingMode: row.sharingMode as AccountSharingMode,
         sharedMemberIds: shares.get(row.id) ?? [],
         ...(row.memberId ? { ownerId: row.memberId, memberId: row.memberId } : {}),
@@ -118,7 +125,7 @@ export class AccountRegistry {
     if (all.length === 0) {
       throw new EmailError(
         'invalid_request',
-        'No email accounts are connected yet. Run "fluxmail accounts add gmail --owner <member>" or "fluxmail accounts add imap --owner <member>".',
+        'No email accounts are connected yet. Run "fluxmail accounts add gmail --owner <member>", "fluxmail accounts add outlook --owner <member>", or the IMAP equivalent.',
       );
     }
     if (all.length > 1) {
@@ -142,15 +149,17 @@ export class AccountRegistry {
     const provider =
       account.provider === 'gmail'
         ? this.buildGmailProvider(accountId, account.email, stored as Credentials, account.displayName)
-        : account.provider === 'imap'
-          ? new ImapProvider({
-              accountId,
-              email: account.email,
-              ...(account.displayName ? { displayName: account.displayName } : {}),
-              credentials: stored as ImapCredentials,
-              store: new SqliteImapStateStore(this.db, accountId),
-            })
-          : undefined;
+        : account.provider === 'outlook'
+          ? this.buildOutlookProvider(accountId, stored as MicrosoftCredentials)
+          : account.provider === 'imap'
+            ? new ImapProvider({
+                accountId,
+                email: account.email,
+                ...(account.displayName ? { displayName: account.displayName } : {}),
+                credentials: stored as ImapCredentials,
+                store: new SqliteImapStateStore(this.db, accountId),
+              })
+            : undefined;
     if (!provider)
       throw new EmailError('unsupported_capability', `Provider "${account.provider}" is not supported yet`);
     this.providers.set(accountId, { provider, encryptedCredentials: credentialRow.encryptedCredentials });
@@ -184,7 +193,7 @@ export class AccountRegistry {
     return this.writeTokens(this.db, accountId, tokens);
   }
 
-  private writeTokens(db: Pick<FluxmailDb, 'insert'>, accountId: string, tokens: Credentials): string {
+  private writeTokens(db: Pick<FluxmailDb, 'insert'>, accountId: string, tokens: unknown): string {
     const encrypted = this.writeCredentials(db, accountId, tokens);
     const updatedAt = Date.now();
     db.insert(oauthTokens)
@@ -218,6 +227,34 @@ export class AccountRegistry {
       const encryptedCredentials = this.saveTokens(accountId, { ...this.loadTokens(accountId), ...fresh });
       const cached = this.providers.get(accountId);
       if (cached?.provider === provider) cached.encryptedCredentials = encryptedCredentials;
+    });
+    return provider;
+  }
+
+  private buildOutlookProvider(accountId: string, stored: MicrosoftCredentials): EmailProvider {
+    requireMicrosoftConfig(this.config);
+    let credentials = stored;
+    let refresh: Promise<string> | undefined;
+    const provider = new OutlookProvider({
+      accountId,
+      tokenProvider: {
+        getAccessToken: async (forceRefresh = false): Promise<string> => {
+          if (!forceRefresh && credentials.expiresAt > Date.now() + 60_000) return credentials.accessToken;
+          if (refresh) return refresh;
+          refresh = refreshMicrosoftCredentials(this.config, credentials)
+            .then((fresh) => {
+              credentials = fresh;
+              const encryptedCredentials = this.writeTokens(this.db, accountId, fresh);
+              const cached = this.providers.get(accountId);
+              if (cached?.provider === provider) cached.encryptedCredentials = encryptedCredentials;
+              return fresh.accessToken;
+            })
+            .finally(() => {
+              refresh = undefined;
+            });
+          return refresh;
+        },
+      },
     });
     return provider;
   }
@@ -273,6 +310,63 @@ export class AccountRegistry {
         })
         .run();
       this.writeTokens(tx, id, tokens);
+      this.writeAccess(tx, id, memberId, access);
+    });
+    return this.getAccount(id);
+  }
+
+  addOutlookAccount(
+    email: string,
+    credentials: MicrosoftCredentials,
+    displayName?: string,
+    memberId?: string,
+    reauthorizeId?: string,
+    access?: AccountAccessInput,
+  ): Account {
+    if (memberId) getMember(this.db, memberId);
+    const existingRows = this.db.select().from(accounts).all();
+    const duplicate = reauthorizeId
+      ? existingRows.find((row) => row.id === reauthorizeId)
+      : existingRows.find((row) => row.email.toLowerCase() === email.toLowerCase());
+    if (duplicate) {
+      if (duplicate.provider !== 'outlook' || duplicate.email.toLowerCase() !== email.toLowerCase()) {
+        if (duplicate.provider !== 'outlook' && duplicate.email.toLowerCase() === email.toLowerCase()) {
+          throw new EmailError(
+            'invalid_request',
+            `${duplicate.email} is already connected through ${duplicate.provider}. Remove it before connecting Outlook.`,
+          );
+        }
+        throw new EmailError('invalid_request', `Account ${duplicate.id} does not match Outlook mailbox ${email}.`);
+      }
+      this.db.transaction((tx) => {
+        this.writeTokens(tx, duplicate.id, credentials);
+        tx.update(accounts)
+          .set({ status: 'active', ...(displayName ? { displayName } : {}) })
+          .where(eq(accounts.id, duplicate.id))
+          .run();
+      });
+      this.evictProvider(duplicate.id);
+      return this.getAccount(duplicate.id);
+    }
+    if (reauthorizeId) throw new EmailError('not_found', `No account with id "${reauthorizeId}".`);
+    if (!memberId) throw new EmailError('invalid_request', 'An owner is required when connecting a mailbox.');
+
+    const id = `acct_${randomBytes(6).toString('hex')}`;
+    this.db.transaction((tx) => {
+      assertAccountLimit(tx.select().from(accounts).all().length, getEntitlements(tx));
+      tx.insert(accounts)
+        .values({
+          id,
+          provider: 'outlook',
+          email,
+          displayName: displayName ?? null,
+          status: 'active',
+          createdAt: Date.now(),
+          memberId,
+          sharingMode: this.normalizeAccess(memberId, access).sharingMode,
+        })
+        .run();
+      this.writeTokens(tx, id, credentials);
       this.writeAccess(tx, id, memberId, access);
     });
     return this.getAccount(id);

@@ -86,6 +86,16 @@ importers:
         specifier: ^8.0.1
         version: 8.0.1
 
+  packages/provider-outlook:
+    dependencies:
+      '@fluxmail/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.0
+        version: 22.20.1
+
   packages/server:
     dependencies:
       '@fluxmail/core':
@@ -97,6 +107,9 @@ importers:
       '@fluxmail/provider-imap':
         specifier: workspace:*
         version: link:../provider-imap
+      '@fluxmail/provider-outlook':
+        specifier: workspace:*
+        version: link:../provider-outlook
       '@hono/node-server':
         specifier: ^1.14.3
         version: 1.19.14(hono@4.12.28)

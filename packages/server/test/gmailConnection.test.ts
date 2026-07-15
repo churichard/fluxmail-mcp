@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { FluxmailConfig } from '../src/config.js';
 import {
   prepareHostedGmailConnection,
+  prepareHostedOutlookConnection,
   selectGmailConnectionMode,
   validateAccountConnectionFlags,
 } from '../src/accounts/gmailConnection.js';
@@ -22,6 +23,7 @@ function config(publicUrlConfigured: boolean, publicUrl?: string): FluxmailConfi
     maxAttachmentBytes: 10 * 1024 * 1024,
     licenseServerUrl: 'https://license.invalid',
     google: { clientId: 'client-id', clientSecret: 'client-secret' },
+    microsoft: { clientId: 'microsoft-client-id', clientSecret: 'microsoft-secret', tenantId: 'common' },
   };
 }
 
@@ -52,8 +54,13 @@ describe('Gmail connection mode', () => {
   });
 
   it('rejects Gmail connection flags for IMAP', () => {
-    expect(() => validateAccountConnectionFlags('imap', { hosted: true })).toThrow(/only available for Gmail/);
-    expect(() => validateAccountConnectionFlags('imap', { local: true })).toThrow(/only available for Gmail/);
+    expect(() => validateAccountConnectionFlags('imap', { hosted: true })).toThrow(/only available for OAuth/);
+    expect(() => validateAccountConnectionFlags('imap', { local: true })).toThrow(/only available for OAuth/);
+  });
+
+  it('allows local and hosted Outlook callbacks', () => {
+    expect(() => validateAccountConnectionFlags('outlook', { local: true })).not.toThrow();
+    expect(() => validateAccountConnectionFlags('outlook', { hosted: true })).not.toThrow();
   });
 
   it('creates a grant and returns a URL based on FLUXMAIL_PUBLIC_URL', () => {
@@ -65,5 +72,24 @@ describe('Gmail connection mode', () => {
     const rawToken = url.searchParams.get('token');
     expect(rawToken).toBeTruthy();
     expect(JSON.stringify(db.select().from(gmailConnectionGrants).get())).not.toContain(rawToken);
+  });
+
+  it('creates a hosted Outlook grant for a confidential Entra app', () => {
+    const db = openDb(':memory:');
+    const prepared = prepareHostedOutlookConnection(db, config(true), { memberId: 'member_1' });
+    const url = new URL(prepared.connectionUrl);
+
+    expect(`${url.origin}${url.pathname}`).toBe('https://mail.example.com/auth/microsoft/connect');
+    expect(url.searchParams.get('token')).toBeTruthy();
+  });
+
+  it('requires a client secret for hosted Outlook', () => {
+    const db = openDb(':memory:');
+    const publicClientConfig = config(true);
+    publicClientConfig.microsoft = { clientId: 'microsoft-client-id', tenantId: 'common' };
+
+    expect(() => prepareHostedOutlookConnection(db, publicClientConfig, { memberId: 'member_1' })).toThrow(
+      /MICROSOFT_CLIENT_SECRET/,
+    );
   });
 });

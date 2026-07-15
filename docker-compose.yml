@@ -4,9 +4,9 @@ services:
     image: ghcr.io/churichard/fluxmail-mcp:latest
     ports:
       - '8977:8977'
-      # Optional local OAuth callback. Remote setup uses FLUXMAIL_PUBLIC_URL instead.
+      # Local OAuth callback for Outlook and optional local Gmail setup.
       - '127.0.0.1:8976:8976'
-    # Settings (Google credentials, FLUXMAIL_PUBLIC_URL, license key, ...) live in
+    # Settings (provider credentials, FLUXMAIL_PUBLIC_URL, license key, ...) live in
     # a .env file next to this file; see .env.example in the repo.
     env_file:
       - path: .env

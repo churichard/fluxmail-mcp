@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EmailError } from '@fluxmail/core';
 import { AccountRegistry } from '../src/accounts/registry.js';
 import { accountCredentials, accounts, members, oauthTokens, openDb } from '../src/storage/db.js';
@@ -25,10 +25,16 @@ function testConfig(): FluxmailConfig {
     maxAttachmentBytes: 10 * 1024 * 1024,
     licenseServerUrl: 'https://license.invalid',
     google: { clientId: 'id', clientSecret: 'secret' },
+    microsoft: { clientId: 'microsoft-id', tenantId: 'common' },
   };
 }
 
 const tokens = { refresh_token: 'rt_secret', access_token: 'at', expiry_date: 123 };
+const microsoftCredentials = {
+  accessToken: 'ms_access_secret',
+  refreshToken: 'ms_refresh_secret',
+  expiresAt: Date.now() + 3_600_000,
+};
 const imapCredentials = {
   imap: { host: 'imap.example.com', port: 993, security: 'tls' as const, user: 'me', password: 'imap_secret' },
   smtp: {
@@ -42,6 +48,10 @@ const imapCredentials = {
 };
 
 describe('AccountRegistry', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('adds an account and stores tokens encrypted', () => {
     const config = testConfig();
     const db = openDb(':memory:');
@@ -88,6 +98,77 @@ describe('AccountRegistry', () => {
     const row = db.select().from(accountCredentials).get();
     expect(row?.encryptedCredentials).not.toContain('imap_secret');
     expect(JSON.parse(decryptString(config.encryptionKey, row!.encryptedCredentials))).toEqual(imapCredentials);
+  });
+
+  it('adds an Outlook account with encrypted Graph credentials and Outlook capabilities', () => {
+    const config = testConfig();
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, config);
+    const owner = addMember(db, { name: 'Owner' });
+
+    const account = registry.addOutlookAccount('me@example.com', microsoftCredentials, 'Example User', owner.id);
+
+    expect(account).toMatchObject({
+      provider: 'outlook',
+      displayName: 'Example User',
+      capabilities: { labels: false, serverThreads: true, serverSearch: 'rich', snippets: true },
+    });
+    const row = db.select().from(accountCredentials).get();
+    expect(row?.encryptedCredentials).not.toContain('ms_refresh_secret');
+    expect(JSON.parse(decryptString(config.encryptionKey, row!.encryptedCredentials))).toEqual(microsoftCredentials);
+    expect(db.select().from(oauthTokens).get()?.encryptedTokens).toBe(row?.encryptedCredentials);
+  });
+
+  it('reauthorizes an Outlook account without changing its id or owner', () => {
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const owner = addMember(db, { name: 'Owner' });
+    const first = registry.addOutlookAccount('me@example.com', microsoftCredentials, undefined, owner.id);
+
+    const second = registry.addOutlookAccount(
+      'ME@example.com',
+      { ...microsoftCredentials, refreshToken: 'rotated-refresh' },
+      'Updated Name',
+      undefined,
+      first.id,
+    );
+
+    expect(second).toMatchObject({ id: first.id, ownerId: owner.id, displayName: 'Updated Name' });
+    expect(registry.listAccounts()).toHaveLength(1);
+  });
+
+  it('refreshes and persists expired Outlook credentials', async () => {
+    const config = testConfig();
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, config);
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addOutlookAccount(
+      'me@example.com',
+      { ...microsoftCredentials, expiresAt: 0 },
+      undefined,
+      owner.id,
+    );
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('login.microsoftonline.com')) {
+        return new Response(
+          JSON.stringify({ access_token: 'fresh-access', refresh_token: 'fresh-refresh', expires_in: 3600 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ id: 'user-id' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await registry.getProvider(account.id).testConnection();
+
+    const stored = JSON.parse(
+      decryptString(config.encryptionKey, db.select().from(accountCredentials).get()!.encryptedCredentials),
+    );
+    expect(stored).toMatchObject({ accessToken: 'fresh-access', refreshToken: 'fresh-refresh' });
   });
 
   it('updates IMAP folder configuration and evicts the cached provider', () => {

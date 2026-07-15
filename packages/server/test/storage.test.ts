@@ -16,10 +16,13 @@ import {
 import { customPermissionPolicy, permissionPolicyForProfile } from '../src/permissions.js';
 import {
   claimGmailConnectionGrant,
+  claimOutlookConnectionGrant,
   createGmailConnectionGrant,
+  createOutlookConnectionGrant,
   gmailConnectionTokenHash,
   GMAIL_CONNECTION_GRANT_TTL_MS,
   inspectGmailConnectionGrant,
+  inspectOutlookConnectionGrant,
 } from '../src/storage/gmailConnectionGrants.js';
 import { addMember, removeMember } from '../src/storage/members.js';
 import {
@@ -221,6 +224,16 @@ describe('Gmail connection grants', () => {
 
     expect(claims.filter((claim) => claim.status === 'claimed')).toHaveLength(1);
     expect(claims.filter((claim) => claim.status === 'used')).toHaveLength(1);
+  });
+
+  it('does not accept a Gmail link on the Outlook flow or vice versa', () => {
+    const db = openDb(':memory:');
+    const gmail = createGmailConnectionGrant(db);
+    const outlook = createOutlookConnectionGrant(db);
+
+    expect(inspectOutlookConnectionGrant(db, gmail.token)).toBe('invalid');
+    expect(inspectGmailConnectionGrant(db, outlook.token)).toBe('invalid');
+    expect(claimOutlookConnectionGrant(db, outlook.token).status).toBe('claimed');
   });
 });
 

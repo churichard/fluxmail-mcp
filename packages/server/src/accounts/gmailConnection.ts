@@ -1,8 +1,13 @@
 import { EmailError } from '@fluxmail/core';
 import type { FluxmailConfig } from '../config.js';
 import type { FluxmailDb } from '../storage/db.js';
-import { createGmailConnectionGrant, type GmailConnectionIntent } from '../storage/gmailConnectionGrants.js';
+import {
+  createGmailConnectionGrant,
+  createOutlookConnectionGrant,
+  type GmailConnectionIntent,
+} from '../storage/gmailConnectionGrants.js';
 import { requireGoogleConfig } from './googleAuth.js';
+import { requireMicrosoftConfig } from './microsoftAuth.js';
 
 export type GmailConnectionMode = 'local' | 'hosted';
 
@@ -12,11 +17,11 @@ function isLoopbackPublicUrl(publicUrl: string): boolean {
 }
 
 export function validateAccountConnectionFlags(
-  provider: 'gmail' | 'imap',
+  provider: 'gmail' | 'outlook' | 'imap',
   options: { local?: boolean; hosted?: boolean },
 ): void {
   if (provider === 'imap' && (options.local || options.hosted)) {
-    throw new EmailError('invalid_request', '--local and --hosted are only available for Gmail accounts.');
+    throw new EmailError('invalid_request', '--local and --hosted are only available for OAuth accounts.');
   }
 }
 
@@ -44,6 +49,25 @@ export function prepareHostedGmailConnection(
   const { token, expiresAt } = createGmailConnectionGrant(db, intent);
   return {
     connectionUrl: `${config.publicUrl}/auth/google/connect?token=${encodeURIComponent(token)}`,
+    expiresAt,
+  };
+}
+
+export function prepareHostedOutlookConnection(
+  db: FluxmailDb,
+  config: FluxmailConfig,
+  intent: GmailConnectionIntent,
+): { connectionUrl: string; expiresAt: number } {
+  const microsoft = requireMicrosoftConfig(config);
+  if (!microsoft.clientSecret) {
+    throw new EmailError(
+      'invalid_request',
+      'MICROSOFT_CLIENT_SECRET is required for hosted Outlook connections. Add a Web redirect URI and client secret to the Entra app.',
+    );
+  }
+  const { token, expiresAt } = createOutlookConnectionGrant(db, intent);
+  return {
+    connectionUrl: `${config.publicUrl}/auth/microsoft/connect?token=${encodeURIComponent(token)}`,
     expiresAt,
   };
 }

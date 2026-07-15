@@ -30,6 +30,19 @@ export const CONFIG_REFERENCE = {
     description: 'Google OAuth client secret.',
     secret: true,
   },
+  MICROSOFT_CLIENT_ID: {
+    defaultValue: 'required for Outlook',
+    description: 'Microsoft Entra application client ID.',
+  },
+  MICROSOFT_CLIENT_SECRET: {
+    defaultValue: 'required for hosted Outlook connections',
+    description: 'Microsoft Entra application client secret.',
+    secret: true,
+  },
+  MICROSOFT_TENANT_ID: {
+    defaultValue: 'common',
+    description: 'Microsoft Entra tenant ID or verified domain.',
+  },
   FLUXMAIL_DATA_DIR: {
     defaultValue: '~/.fluxmail (/data in Docker)',
     description: 'Directory for the SQLite database, stored config, and generated encryption key.',
@@ -49,7 +62,7 @@ export const CONFIG_REFERENCE = {
   },
   FLUXMAIL_PUBLIC_URL: {
     defaultValue: 'http://localhost:<FLUXMAIL_PORT>',
-    description: 'Public base URL used for the MCP endpoint and hosted Gmail callback.',
+    description: 'Public base URL used for the MCP endpoint and hosted OAuth callbacks.',
   },
   FLUXMAIL_AUTH: {
     defaultValue: 'apikey',
@@ -57,11 +70,11 @@ export const CONFIG_REFERENCE = {
   },
   FLUXMAIL_OAUTH_PORT: {
     defaultValue: '8976',
-    description: 'Port for the local Gmail OAuth callback listener.',
+    description: 'Port for the local OAuth callback listener.',
   },
   FLUXMAIL_OAUTH_HOST: {
     defaultValue: '127.0.0.1',
-    description: 'Bind address for the local Gmail OAuth callback listener.',
+    description: 'Bind address for the local OAuth callback listener.',
   },
   FLUXMAIL_MAX_ATTACHMENT_MB: {
     defaultValue: '10',
@@ -118,6 +131,13 @@ export interface FluxmailConfig {
   google?: {
     clientId: string;
     clientSecret: string;
+  };
+  microsoft?: {
+    clientId: string;
+    /** Optional for public-client app registrations that use PKCE. */
+    clientSecret?: string;
+    /** common supports both personal Microsoft accounts and Entra work accounts. */
+    tenantId: string;
   };
 }
 
@@ -356,6 +376,15 @@ export function loadConfig(): FluxmailConfig {
   const clientSecret = readEnvironment('GOOGLE_CLIENT_SECRET');
   if (clientId && clientSecret) {
     config.google = { clientId, clientSecret };
+  }
+  const microsoftClientId = readEnvironment('MICROSOFT_CLIENT_ID')?.trim();
+  if (microsoftClientId) {
+    const microsoftClientSecret = readEnvironment('MICROSOFT_CLIENT_SECRET')?.trim();
+    config.microsoft = {
+      clientId: microsoftClientId,
+      tenantId: readEnvironment('MICROSOFT_TENANT_ID')?.trim() || 'common',
+      ...(microsoftClientSecret ? { clientSecret: microsoftClientSecret } : {}),
+    };
   }
   return config;
 }

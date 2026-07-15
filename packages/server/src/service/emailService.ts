@@ -298,7 +298,7 @@ export class EmailService {
             ...(license!.warning ? { licenseWarning: license!.warning } : {}),
           }
         : {}),
-      providersAvailable: ['gmail', 'imap'],
+      providersAvailable: ['gmail', 'outlook', 'imap'],
       scheduled: this.scheduledStatus(),
     };
   }

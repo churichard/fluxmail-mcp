@@ -6,6 +6,7 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY packages/core/package.json packages/core/
 COPY packages/provider-gmail/package.json packages/provider-gmail/
 COPY packages/provider-imap/package.json packages/provider-imap/
+COPY packages/provider-outlook/package.json packages/provider-outlook/
 COPY packages/server/package.json packages/server/
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.base.json ./

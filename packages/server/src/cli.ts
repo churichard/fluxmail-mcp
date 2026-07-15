@@ -19,8 +19,10 @@ import {
 import { createApp } from './http/app.js';
 import { buildMcpServer } from './mcp/buildServer.js';
 import { runLoopbackFlow } from './accounts/googleAuth.js';
+import { runMicrosoftLoopbackFlow } from './accounts/microsoftAuth.js';
 import {
   prepareHostedGmailConnection,
+  prepareHostedOutlookConnection,
   selectGmailConnectionMode,
   validateAccountConnectionFlags,
 } from './accounts/gmailConnection.js';
@@ -286,7 +288,7 @@ export function createCliProgram(): Command {
         console.log(
           accounts.length
             ? `  Accounts:       ${accounts.map((a) => `${a.email} (${a.status})`).join(', ')}`
-            : '  Accounts:       none (run "fluxmail accounts add gmail --owner <member>" or the IMAP equivalent)',
+            : '  Accounts:       none (run "fluxmail accounts add gmail --owner <member>", "fluxmail accounts add outlook --owner <member>", or the IMAP equivalent)',
         );
         console.log(`  Plan:           ${planLine(getEntitlements(ctx.db))}`);
         warnLicense(ctx.db, console.log);
@@ -340,14 +342,14 @@ export function createCliProgram(): Command {
 
   accounts
     .command('add')
-    .argument('<provider>', 'Email provider: gmail or imap')
+    .argument('<provider>', 'Email provider: gmail, outlook, or imap')
     .option('--reauthorize <account-id>', 'Reconnect an existing account')
     .option('--owner <member>', 'Member (id or email) who owns the new mailbox')
     .option('--member <member>', 'Deprecated alias for --owner')
     .option('--shared', 'Share the mailbox with every member')
     .option('--share-with <member>', 'Share with one member; repeat as needed', collectOption, [])
-    .option('--local', 'Use the local browser callback for Gmail')
-    .option('--hosted', 'Use FLUXMAIL_PUBLIC_URL for the Gmail callback')
+    .option('--local', 'Use the local browser callback for OAuth')
+    .option('--hosted', 'Use FLUXMAIL_PUBLIC_URL for the OAuth callback')
     .option('--email <address>', 'Mailbox address (required for IMAP)')
     .option('--display-name <name>', 'Sender name for IMAP messages')
     .option('--imap-host <host>', 'IMAP server hostname')
@@ -366,10 +368,11 @@ export function createCliProgram(): Command {
     .option('--archive-folder <path>', 'Archive mailbox path')
     .option('--spam-folder <path>', 'Spam mailbox path')
     .option('--no-save-sent', 'Do not append SMTP submissions to the Sent folder')
-    .description('Connect a Gmail or IMAP account')
-    .action(async (provider: string, opts: AddAccountOptions, command: Command) => {
-      if (provider !== 'gmail' && provider !== 'imap') {
-        console.error(`Provider "${provider}" is not supported. Available: gmail, imap`);
+    .description('Connect a Gmail, Outlook, or IMAP account')
+    .action(async (providerInput: string, opts: AddAccountOptions, command: Command) => {
+      const provider = providerInput === 'microsoft' ? 'outlook' : providerInput;
+      if (provider !== 'gmail' && provider !== 'outlook' && provider !== 'imap') {
+        console.error(`Provider "${providerInput}" is not supported. Available: gmail, outlook, imap`);
         process.exitCode = 1;
         return;
       }
@@ -465,6 +468,52 @@ export function createCliProgram(): Command {
           );
           console.log(`Connected ${account.email} (account id: ${account.id})`);
           for (const warning of warnings) console.log(`Warning: ${warning.message}.`);
+          return;
+        }
+
+        if (provider === 'outlook') {
+          const connectionMode = selectGmailConnectionMode(ctx.config, opts);
+          if (connectionMode === 'hosted') {
+            const { connectionUrl } = prepareHostedOutlookConnection(ctx.db, ctx.config, {
+              ...(owner ? { memberId: owner.id } : {}),
+              ...(existing ? { reauthorizeAccountId: existing.id } : {}),
+              ...(!existing ? { sharingMode: access.sharingMode, sharedMemberIds: access.sharedMemberIds } : {}),
+            });
+            console.log('\nOpen this URL in your browser to connect Outlook:\n');
+            console.log(`  ${connectionUrl}\n`);
+            console.log('This link expires in 10 minutes and can only be used once.');
+            return;
+          }
+
+          const account = await runMicrosoftLoopbackFlow(
+            ctx.config,
+            (url) => {
+              console.log('\nOpen this URL in your browser to authorize Microsoft mail access:\n');
+              console.log(`  ${url}\n`);
+              console.log('Waiting for Microsoft to redirect back...');
+            },
+            (result) => {
+              if (existing && result.email.toLowerCase() !== existing.email.toLowerCase()) {
+                throw new EmailError(
+                  'invalid_request',
+                  `Microsoft authorized ${result.email}, but account ${existing.id} belongs to ${existing.email}. ` +
+                    'Try again and choose the matching Microsoft account.',
+                );
+              }
+              return ctx.registry.addOutlookAccount(
+                result.email,
+                result.credentials,
+                result.displayName,
+                owner?.id,
+                existing?.id,
+                access,
+              );
+            },
+          );
+          console.log(
+            `\nConnected ${account.email} (account id: ${account.id})` +
+              (owner && account.ownerId === owner.id ? ` for member ${owner.name}` : ''),
+          );
           return;
         }
 
@@ -598,7 +647,7 @@ export function createCliProgram(): Command {
       const all = ctx.registry.listAccounts();
       if (!all.length) {
         console.log(
-          'No accounts connected. Run "fluxmail accounts add gmail --owner <member>" or the IMAP equivalent.',
+          'No accounts connected. Run "fluxmail accounts add gmail --owner <member>", "fluxmail accounts add outlook --owner <member>", or the IMAP equivalent.',
         );
         return;
       }

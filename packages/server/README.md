@@ -1,6 +1,6 @@
 # Fluxmail
 
-Fluxmail is a self-hosted MCP server for Gmail and IMAP/SMTP mailboxes. It gives MCP clients one API for reading, searching, drafting, sending, and organizing email.
+Fluxmail is a self-hosted MCP server for Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. It gives MCP clients one API for reading, searching, drafting, sending, and organizing email.
 
 ## Install
 
@@ -21,6 +21,7 @@ Then follow the [quickstart](https://fluxmail.ai/docs/quickstart) to connect a m
 - [Configuration](https://fluxmail.ai/docs/configuration)
 - [CLI reference](https://fluxmail.ai/docs/cli)
 - [Gmail setup](https://fluxmail.ai/docs/connect-gmail-to-mcp)
+- [Outlook setup](https://fluxmail.ai/docs/connect-outlook-to-mcp)
 - [IMAP setup](https://fluxmail.ai/docs/connect-an-imap-mailbox)
 
 Fluxmail supports stdio for local clients and Streamable HTTP for Docker and remote deployments. Use an exact package version instead of `@latest` when you need a reproducible installation.

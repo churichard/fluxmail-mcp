@@ -1,16 +1,16 @@
 ---
 title: 'Quickstart'
-description: 'Install the self-hosted Fluxmail MCP server, connect Gmail or an IMAP mailbox, and add it to your AI agent in about 10 minutes.'
+description: 'Install the self-hosted Fluxmail MCP server, connect Gmail, Outlook, or an IMAP mailbox, and add it to your AI agent.'
 updated: '2026-07-14'
 ---
 
-Fluxmail is a self-hosted MCP server that connects AI agents to Gmail and IMAP/SMTP mailboxes. It runs on your machine or a server you control and gives any MCP client the same tools to read, search, draft, send, and organize mail over stdio or Streamable HTTP.
+Fluxmail is a self-hosted MCP server that connects AI agents to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. It runs on your machine or a server you control and gives any MCP client the same tools to read, search, draft, send, and organize mail over stdio or Streamable HTTP.
 
-This guide takes you from installation to a working agent connection. Gmail uses a Google OAuth app that you own. Generic IMAP accounts use the mailbox credentials from your email provider and do not need Google OAuth.
+This guide takes you from installation to a working agent connection. Gmail uses a Google OAuth app that you own, while Microsoft mail uses your Microsoft Entra app registration. Generic IMAP accounts use credentials from your email provider.
 
 ## Choose how to run Fluxmail
 
-Both setups support Gmail and IMAP/SMTP. The difference is how your agent reaches Fluxmail.
+Both setups support Gmail, Microsoft mail, and IMAP/SMTP. The difference is how your agent reaches Fluxmail.
 
 | Setup                                          | Best for                                            | MCP transport   |
 | ---------------------------------------------- | --------------------------------------------------- | --------------- |
@@ -65,7 +65,18 @@ fluxmail config set GOOGLE_CLIENT_SECRET <your-client-secret>
 fluxmail accounts add gmail --owner you@example.com
 ```
 
-#### Option B: IMAP and SMTP
+#### Option B: Microsoft 365 or Outlook.com
+
+Microsoft mail requires an Entra app registration. Before continuing, complete the **Register the application** and **Configure the local callback** sections of [Connect Outlook to the MCP server](/docs/connect-outlook-to-mcp).
+
+Store the application client ID, then start the browser consent flow:
+
+```bash
+fluxmail config set MICROSOFT_CLIENT_ID <application-client-id>
+fluxmail accounts add outlook --owner you@example.com
+```
+
+#### Option C: IMAP and SMTP
 
 Find the IMAP and SMTP hostnames for your email provider, then run the command below. Fluxmail asks for the mailbox password without displaying it:
 
@@ -218,7 +229,7 @@ curl -fsSLO https://raw.githubusercontent.com/churichard/fluxmail-mcp/main/docke
 curl -fsSL https://raw.githubusercontent.com/churichard/fluxmail-mcp/main/.env.example -o .env
 ```
 
-Review the settings in `.env` before continuing. If Docker runs on the same computer as your browser, leave `FLUXMAIL_PUBLIC_URL` unset and Fluxmail will use the callback at `http://localhost:8976/oauth/callback`. For a remote deployment, expose Fluxmail through a public HTTPS address and set `FLUXMAIL_PUBLIC_URL` to that address, such as `https://mail.example.com`.
+Review the settings in `.env` before continuing. If Docker runs on the same computer as your browser, leave `FLUXMAIL_PUBLIC_URL` unset and Fluxmail will use its local OAuth listener on port 8976. For a remote deployment, expose Fluxmail through a public HTTPS address and set `FLUXMAIL_PUBLIC_URL` to that address, such as `https://mail.example.com`.
 
 ### 2. Connect an email account
 
@@ -238,7 +249,29 @@ docker compose exec fluxmail \
 
 On local Docker, the command prints a Google consent URL and waits for the callback on `localhost:8976`. On a remote deployment with `FLUXMAIL_PUBLIC_URL` set, it prints a one-time connection link instead. Open the link in your browser, choose the Google account, and approve access. Hosted links expire after 10 minutes and do not require an API key.
 
-#### Option B: IMAP and SMTP
+#### Option B: Microsoft 365 or Outlook.com
+
+Complete the hosted setup in [Connect Outlook to the MCP server](/docs/connect-outlook-to-mcp). Add the Entra application client ID and secret to `.env`, along with `FLUXMAIL_PUBLIC_URL`:
+
+```dotenv
+MICROSOFT_CLIENT_ID=<application-client-id>
+MICROSOFT_CLIENT_SECRET=<client-secret-value>
+FLUXMAIL_PUBLIC_URL=https://mail.example.com
+```
+
+Start Fluxmail, create the member, and connect the mailbox:
+
+```bash
+docker compose up -d
+docker compose exec fluxmail \
+  fluxmail members add --name "Your name" --email you@example.com
+docker compose exec fluxmail \
+  fluxmail accounts add outlook --owner you@example.com
+```
+
+Open the one-time link, then continue to Microsoft and approve access. The link expires after 10 minutes.
+
+#### Option C: IMAP and SMTP
 
 Find your provider's IMAP and SMTP hostnames. Start the container, then pass the mailbox password through an environment variable so it does not appear in the command line:
 
@@ -429,6 +462,7 @@ If it returns the messages, the connection is working.
 - See [Tools](/docs/tools) for the full tool set your agent can call.
 - See [Limit what an MCP client can do](/docs/permissions) to restrict local connections and API keys.
 - See [Connect Gmail to the MCP server](/docs/connect-gmail-to-mcp) for Google OAuth setup and reconnection help.
+- See [Connect Outlook to the MCP server](/docs/connect-outlook-to-mcp) for Microsoft Entra setup and reconnection help.
 - See [Connect an IMAP mailbox](/docs/connect-an-imap-mailbox) for IMAP/SMTP setup and folder mapping.
 - See [Configuration](/docs/configuration) for environment variables.
 - See [CLI reference](/docs/cli) for every `fluxmail` command.

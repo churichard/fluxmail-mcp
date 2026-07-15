@@ -741,15 +741,15 @@ Fluxmail exposes 16 tools. Optional inputs have a `?` suffix. A plus sign means 
 
 Fluxmail computes reply recipients on the server (Reply-To or From, plus the original To/Cc minus your own address for reply-all), so an agent can reply-all without assembling the recipient list itself.
 
-The tools use one API across Gmail and IMAP/SMTP accounts, so an agent can work with both without changing its tool calls. Outlook support is in progress.
+The tools use one API across Gmail, Outlook, and IMAP/SMTP accounts, so an agent can work across providers without changing its tool calls.
 
-Provider capabilities still apply. IMAP accounts use folders rather than Gmail labels, so label actions are unavailable. Fluxmail reconstructs IMAP threads from standard message headers and uses the mailbox server's search support.
+Provider capabilities still apply. Outlook and IMAP accounts use folders rather than Gmail labels, so label actions are unavailable. Outlook uses Microsoft Graph conversations and search. Fluxmail reconstructs IMAP threads from standard message headers and uses the mailbox server's search support.
 
 ## Attachments
 
 `download_attachment` returns the file as an embedded MCP resource with its filename, media type, and size. It does not accept a filesystem path or write directly to disk. Your MCP client decides how to display or save the returned resource.
 
-Fluxmail rejects attachments larger than 10 MB by default. Set `FLUXMAIL_MAX_ATTACHMENT_MB` to an integer from 1 through 25 to change that limit. Gmail and IMAP providers enforce the limit while fetching the file so an oversized attachment is not fully buffered when its size is known early.
+Fluxmail rejects attachments larger than 10 MB by default. Set `FLUXMAIL_MAX_ATTACHMENT_MB` to an integer from 1 through 25 to change that limit. Each provider checks the limit while fetching the file so an oversized attachment is not fully buffered when its size is known early.
 
 ## Message organization
 
@@ -767,4 +767,4 @@ The `addLabels` and `removeLabels` actions are for user-created Gmail labels. Bu
 
 Use `archive`, `trash`, and `untrash` instead of moving messages directly into or out of the protected Archive and Trash folders. Permanent deletion uses `delete` and requires the `mail.delete` capability, which is only included in the `full` profile.
 
-IMAP accounts use the same message actions for their matching flags and folders. They do not support Gmail labels, so `addLabels` and `removeLabels` are unavailable.
+Outlook and IMAP accounts use the same message actions for their matching flags and folders. They do not support Gmail labels, so `addLabels` and `removeLabels` are unavailable.

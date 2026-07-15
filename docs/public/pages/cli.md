@@ -20,7 +20,7 @@ To run a command without a global installation, replace `fluxmail` with `npx -y 
 | `fluxmail serve` | Run the HTTP server (Streamable HTTP MCP at /mcp) | None |
 | `fluxmail stdio` | Run as a stdio MCP server (for Claude Desktop / Claude Code local config) | `--member <member>`, `--account <account>`, `--profile <profile>`, `--allow <capability>` |
 | `fluxmail accounts` | Manage connected email accounts | None |
-| `fluxmail accounts add <provider>` | Connect a Gmail or IMAP account | `--reauthorize <account-id>`, `--owner <member>`, `--member <member>`, `--shared`, `--share-with <member>`, `--local`, `--hosted`, `--email <address>`, `--display-name <name>`, `--imap-host <host>`, `--imap-port <port>`, `--imap-security <mode>`, `--imap-user <user>`, `--imap-password-env <name>`, `--smtp-host <host>`, `--smtp-port <port>`, `--smtp-security <mode>`, `--smtp-user <user>`, `--smtp-password-env <name>`, `--sent-folder <path>`, `--drafts-folder <path>`, `--trash-folder <path>`, `--archive-folder <path>`, `--spam-folder <path>`, `--no-save-sent` |
+| `fluxmail accounts add <provider>` | Connect a Gmail, Outlook, or IMAP account | `--reauthorize <account-id>`, `--owner <member>`, `--member <member>`, `--shared`, `--share-with <member>`, `--local`, `--hosted`, `--email <address>`, `--display-name <name>`, `--imap-host <host>`, `--imap-port <port>`, `--imap-security <mode>`, `--imap-user <user>`, `--imap-password-env <name>`, `--smtp-host <host>`, `--smtp-port <port>`, `--smtp-security <mode>`, `--smtp-user <user>`, `--smtp-password-env <name>`, `--sent-folder <path>`, `--drafts-folder <path>`, `--trash-folder <path>`, `--archive-folder <path>`, `--spam-folder <path>`, `--no-save-sent` |
 | `fluxmail accounts configure <accountId>` | Set special folder paths for an IMAP account | `--sent-folder <path>`, `--drafts-folder <path>`, `--trash-folder <path>`, `--archive-folder <path>`, `--spam-folder <path>` |
 | `fluxmail accounts list` | List connected accounts | None |
 | `fluxmail accounts remove <accountId>` | Disconnect an account and delete its stored tokens | None |
@@ -53,7 +53,7 @@ To run a command without a global installation, replace `fluxmail` with `npx -y 
 | `fluxmail status` | Show accounts, members, entitlements, and provider availability | None |
 <!-- END GENERATED:cli -->
 
-For Gmail, Fluxmail uses the hosted browser flow when `FLUXMAIL_PUBLIC_URL` is set and the local loopback flow when it is not. Hosted links expire after 10 minutes and work once. The `--hosted` and `--local` flags override the automatic choice; they cannot be used together or with an IMAP account.
+For Gmail and Outlook, Fluxmail uses the hosted browser flow when `FLUXMAIL_PUBLIC_URL` is set to a non-loopback address and the local loopback flow otherwise. Hosted links expire after 10 minutes and work once. The `--hosted` and `--local` flags override the automatic choice; they cannot be used together or with an IMAP account. The provider name `microsoft` is accepted as an alias for `outlook`.
 
 ## IMAP account options
 

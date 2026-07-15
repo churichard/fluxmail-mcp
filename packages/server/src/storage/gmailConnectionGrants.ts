@@ -5,6 +5,7 @@ import type { AccountSharingMode } from '@fluxmail/core';
 
 export const GMAIL_CONNECTION_GRANT_TTL_MS = 10 * 60 * 1000;
 const GMAIL_CONNECTION_SCOPE = 'gmail_connect';
+const OUTLOOK_CONNECTION_SCOPE = 'outlook_connect';
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export interface GmailConnectionIntent {
@@ -26,23 +27,23 @@ export type GmailConnectionClaim =
 
 export type GmailConnectionGrantStatus = 'available' | 'invalid' | 'expired' | 'used';
 
+type ConnectionScope = typeof GMAIL_CONNECTION_SCOPE | typeof OUTLOOK_CONNECTION_SCOPE;
+
 export function gmailConnectionTokenHash(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-export function inspectGmailConnectionGrant(
+function inspectConnectionGrant(
   db: FluxmailDb,
   token: string,
+  scope: ConnectionScope,
   now = Date.now(),
 ): GmailConnectionGrantStatus {
   const existing = db
     .select()
     .from(gmailConnectionGrants)
     .where(
-      and(
-        eq(gmailConnectionGrants.tokenHash, gmailConnectionTokenHash(token)),
-        eq(gmailConnectionGrants.scope, GMAIL_CONNECTION_SCOPE),
-      ),
+      and(eq(gmailConnectionGrants.tokenHash, gmailConnectionTokenHash(token)), eq(gmailConnectionGrants.scope, scope)),
     )
     .get();
   if (!existing) return 'invalid';
@@ -50,8 +51,25 @@ export function inspectGmailConnectionGrant(
   return existing.expiresAt > now ? 'available' : 'expired';
 }
 
-export function createGmailConnectionGrant(
+export function inspectGmailConnectionGrant(
   db: FluxmailDb,
+  token: string,
+  now = Date.now(),
+): GmailConnectionGrantStatus {
+  return inspectConnectionGrant(db, token, GMAIL_CONNECTION_SCOPE, now);
+}
+
+export function inspectOutlookConnectionGrant(
+  db: FluxmailDb,
+  token: string,
+  now = Date.now(),
+): GmailConnectionGrantStatus {
+  return inspectConnectionGrant(db, token, OUTLOOK_CONNECTION_SCOPE, now);
+}
+
+function createConnectionGrant(
+  db: FluxmailDb,
+  scope: ConnectionScope,
   intent: GmailConnectionIntent = {},
   now = Date.now(),
 ): { token: string; expiresAt: number } {
@@ -64,7 +82,7 @@ export function createGmailConnectionGrant(
   db.insert(gmailConnectionGrants)
     .values({
       tokenHash: gmailConnectionTokenHash(token),
-      scope: GMAIL_CONNECTION_SCOPE,
+      scope,
       memberId: intent.memberId ?? null,
       reauthorizeAccountId: intent.reauthorizeAccountId ?? null,
       sharingMode: intent.sharingMode ?? null,
@@ -78,7 +96,28 @@ export function createGmailConnectionGrant(
   return { token, expiresAt };
 }
 
-export function claimGmailConnectionGrant(db: FluxmailDb, token: string, now = Date.now()): GmailConnectionClaim {
+export function createGmailConnectionGrant(
+  db: FluxmailDb,
+  intent: GmailConnectionIntent = {},
+  now = Date.now(),
+): { token: string; expiresAt: number } {
+  return createConnectionGrant(db, GMAIL_CONNECTION_SCOPE, intent, now);
+}
+
+export function createOutlookConnectionGrant(
+  db: FluxmailDb,
+  intent: GmailConnectionIntent = {},
+  now = Date.now(),
+): { token: string; expiresAt: number } {
+  return createConnectionGrant(db, OUTLOOK_CONNECTION_SCOPE, intent, now);
+}
+
+function claimConnectionGrant(
+  db: FluxmailDb,
+  token: string,
+  scope: ConnectionScope,
+  now = Date.now(),
+): GmailConnectionClaim {
   const tokenHash = gmailConnectionTokenHash(token);
   const claimed = db
     .update(gmailConnectionGrants)
@@ -86,7 +125,7 @@ export function claimGmailConnectionGrant(db: FluxmailDb, token: string, now = D
     .where(
       and(
         eq(gmailConnectionGrants.tokenHash, tokenHash),
-        eq(gmailConnectionGrants.scope, GMAIL_CONNECTION_SCOPE),
+        eq(gmailConnectionGrants.scope, scope),
         isNull(gmailConnectionGrants.consumedAt),
         gt(gmailConnectionGrants.expiresAt, now),
       ),
@@ -110,9 +149,17 @@ export function claimGmailConnectionGrant(db: FluxmailDb, token: string, now = D
   const existing = db
     .select()
     .from(gmailConnectionGrants)
-    .where(and(eq(gmailConnectionGrants.tokenHash, tokenHash), eq(gmailConnectionGrants.scope, GMAIL_CONNECTION_SCOPE)))
+    .where(and(eq(gmailConnectionGrants.tokenHash, tokenHash), eq(gmailConnectionGrants.scope, scope)))
     .get();
   if (!existing) return { status: 'invalid' };
   if (existing.consumedAt !== null) return { status: 'used' };
   return { status: 'expired' };
+}
+
+export function claimGmailConnectionGrant(db: FluxmailDb, token: string, now = Date.now()): GmailConnectionClaim {
+  return claimConnectionGrant(db, token, GMAIL_CONNECTION_SCOPE, now);
+}
+
+export function claimOutlookConnectionGrant(db: FluxmailDb, token: string, now = Date.now()): GmailConnectionClaim {
+  return claimConnectionGrant(db, token, OUTLOOK_CONNECTION_SCOPE, now);
 }

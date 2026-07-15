@@ -45,6 +45,7 @@
     "@fluxmail/core": "workspace:*",
     "@fluxmail/provider-gmail": "workspace:*",
     "@fluxmail/provider-imap": "workspace:*",
+    "@fluxmail/provider-outlook": "workspace:*",
     "@hono/node-server": "^1.14.3",
     "@modelcontextprotocol/sdk": "^1.13.0",
     "better-sqlite3": "^11.10.0",
