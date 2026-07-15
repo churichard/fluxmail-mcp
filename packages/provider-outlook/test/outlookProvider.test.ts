@@ -333,6 +333,9 @@ describe('OutlookProvider', () => {
       });
       const folder = folderResponse(url);
       if (folder) return folder;
+      if (url.pathname === '/v1.0/me/messages/message-1' && url.searchParams.get('$select') === 'parentFolderId') {
+        return json({ id: 'message-1', parentFolderId: 'folder-inbox' });
+      }
       if (url.pathname.endsWith('/attachments/attachment-1')) {
         if (url.searchParams.has('$select')) {
           return json({
@@ -364,6 +367,11 @@ describe('OutlookProvider', () => {
     await outlook.modify(['message-1'], 'archive');
     await outlook.modify(['message-1'], 'trash');
     await outlook.modify(['message-1'], 'delete');
+    for (const destination of ['trash', 'deleteditems', 'Deleted Items', 'folder-trash', 'archive', 'folder-archive']) {
+      await expect(outlook.modify(['message-1'], { move: destination })).rejects.toMatchObject({
+        code: 'invalid_request',
+      });
+    }
     const attachment = await outlook.getAttachment('message-1', 'attachment-1', { maxBytes: 10 });
 
     expect(attachment.content.toString()).toBe('hello');
@@ -384,6 +392,7 @@ describe('OutlookProvider', () => {
       body: { destinationId: 'deleteditems' },
     });
     expect(calls).toContainEqual({ path: '/v1.0/me/messages/message-1/permanentDelete', method: 'POST' });
+    expect(calls.filter((call) => call.path.endsWith('/move'))).toHaveLength(2);
     await expect(outlook.getAttachment('message-1', 'attachment-1', { maxBytes: 4 })).rejects.toMatchObject({
       code: 'invalid_request',
     });
@@ -399,5 +408,29 @@ describe('OutlookProvider', () => {
     expect(attachmentRequests[1]?.search).toBe('');
     expect(attachmentRequests[2]?.searchParams.get('$select')).toBe('id,name,contentType,size,isInline');
     expect(attachmentRequests[3]?.search).toBe('');
+  });
+
+  it('rejects archive and generic moves for messages in Trash', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const folder = folderResponse(url);
+      if (folder) return folder;
+      if (url.pathname === '/v1.0/me/messages/message-trash' && url.searchParams.get('$select') === 'parentFolderId') {
+        return json({ id: 'message-trash', parentFolderId: 'folder-trash' });
+      }
+      if (url.pathname.endsWith('/move')) return json({ id: 'message-trash' }, 201);
+      return json({ error: { code: 'ErrorItemNotFound', message: 'missing' } }, 404);
+    }) as unknown as typeof fetch;
+    const outlook = provider(fetchMock);
+
+    for (const action of ['archive', { move: 'inbox' }] as const) {
+      await expect(outlook.modify(['message-trash'], action)).rejects.toMatchObject({
+        code: 'invalid_request',
+      });
+    }
+
+    expect(vi.mocked(fetchMock).mock.calls.some(([input]) => new URL(String(input)).pathname.endsWith('/move'))).toBe(
+      false,
+    );
   });
 });
