@@ -3,10 +3,19 @@ import path from 'node:path';
 import {
   GENERATED_MARKERS,
   PUBLIC_DOCS_ROOT,
+  compatibilityManifest,
   pageFiles,
   parseFrontmatter,
+  readPublicDocsMeta,
   readPublicDocsManifest,
 } from './public-docs.js';
+
+const meta = readPublicDocsMeta();
+const manifest = readPublicDocsManifest();
+const expectedManifest = compatibilityManifest(meta);
+if (JSON.stringify(manifest) !== JSON.stringify(expectedManifest)) {
+  throw new Error('Compatibility manifest differs from pages/meta.json. Run pnpm docs:generate.');
+}
 
 const RESERVED_MAIL_SLUGS = new Set([
   'what-is-fluxmail',
@@ -26,20 +35,22 @@ const RESERVED_MAIL_SLUGS = new Set([
   'privacy-and-security',
 ]);
 
-const manifest = readPublicDocsManifest();
-const expectedFiles = manifest.pages.map((slug) => `${slug}.md`).sort();
+for (const slug of meta.pages) {
+  if (RESERVED_MAIL_SLUGS.has(slug)) {
+    throw new Error(`MCP documentation slug ${slug} collides with an existing Fluxmail documentation page.`);
+  }
+}
+
+const expectedFiles = meta.pages.map((slug) => `${slug}.md`).sort();
 const actualFiles = pageFiles();
 if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
   throw new Error(
-    `Manifest and pages directory differ. Expected ${expectedFiles.join(', ')}, found ${actualFiles.join(', ')}.`,
+    `Metadata and pages directory differ. Expected ${expectedFiles.join(', ')}, found ${actualFiles.join(', ')}.`,
   );
 }
 
-const collisions = manifest.pages.filter((slug) => RESERVED_MAIL_SLUGS.has(slug));
-if (collisions.length) throw new Error(`MCP and Fluxmail Mail slugs collide: ${collisions.join(', ')}.`);
-
 const sources = new Map<string, string>();
-for (const slug of manifest.pages) {
+for (const slug of meta.pages) {
   const filename = path.join(PUBLIC_DOCS_ROOT, 'pages', `${slug}.md`);
   const source = readFileSync(filename, 'utf8');
   parseFrontmatter(source, `${slug}.md`);
@@ -48,9 +59,12 @@ for (const slug of manifest.pages) {
 }
 
 for (const [slug, source] of sources) {
+  if (/\]\(\/docs\/mcp(?:\/|[)#?])/.test(source)) {
+    throw new Error(`${slug}.md contains a nested /docs/mcp link. Use /docs/.`);
+  }
   for (const match of source.matchAll(/\]\(\/docs\/([a-z0-9-]+)(?:[)#?])/g)) {
     const target = match[1];
-    if (target && !manifest.pages.includes(target) && !RESERVED_MAIL_SLUGS.has(target)) {
+    if (target && !meta.pages.includes(target) && !RESERVED_MAIL_SLUGS.has(target)) {
       throw new Error(`${slug}.md links to unknown documentation page /docs/${target}.`);
     }
   }
@@ -88,6 +102,9 @@ for (const [readme, docLink] of readmeDocLinks) {
   if (readme === 'packages/server/README.md' && source.includes('../../docs/public/')) {
     throw new Error(`${readme} must use published documentation URLs because repository files are not shipped to npm.`);
   }
+  if (/https:\/\/fluxmail\.ai\/docs\/mcp(?:\/|[)#?])/.test(source)) {
+    throw new Error(`${readme} contains a nested published documentation URL. Use /docs/.`);
+  }
 }
 
-console.log(`Validated ${manifest.pages.length} public documentation pages in manifest order.`);
+console.log(`Validated ${meta.pages.length} public documentation pages in Fumadocs order.`);

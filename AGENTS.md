@@ -14,6 +14,7 @@ This restriction does not prevent legitimate work on the licensing system, such 
 # Public documentation
 
 - Public Fluxmail MCP guides live in `docs/public/`. Keep provider setup, architecture, and licensing explanations hand written.
+- Add and order public pages in `docs/public/pages/meta.json`. The compatibility manifest is generated from that file and must not be edited by hand.
 - Changes to MCP tools, CLI commands, configuration, permissions, providers, or licensing must update the corresponding public guide.
 - The generated sections in `tools.md`, `cli.md`, `configuration.md`, and `permissions.md` come from the implementation. Run `pnpm docs:generate`, then `pnpm docs:check`.
 - Apply the humanizer guidance to all user-facing copy. Do not use em dashes or en dashes in public documentation.

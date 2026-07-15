@@ -1,4 +1,4 @@
-name: Publish documentation bundle
+name: Publish MCP documentation
 
 on:
   push:
@@ -6,75 +6,65 @@ on:
       - main
     paths:
       - docs/public/**
-  release:
-    types:
-      - published
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: docs-publish-${{ github.event_name == 'release' && github.event.release.prerelease == false && 'production' || github.sha }}
-  cancel-in-progress: ${{ github.event_name != 'release' || github.event.release.prerelease }}
+  group: docs-publish-main
+  cancel-in-progress: true
 
 jobs:
   dispatch:
     name: Request site deployment
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out documentation source
         uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          fetch-depth: 0
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build documentation dependencies
+        run: pnpm build
+
+      - name: Validate public documentation
+        run: pnpm docs:check
 
       - name: Resolve immutable source
         id: source
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          SOURCE_REF: ${{ github.ref_name }}
         run: |
-          if [[ "$EVENT_NAME" == "release" ]]; then
-            git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-            sha=$(git rev-parse "$RELEASE_TAG^{commit}")
-            version=$(node -p "require('./package.json').version")
-            if [[ "$RELEASE_TAG" != "v$version" ]]; then
-              echo "Release tag $RELEASE_TAG does not match package version $version." >&2
-              exit 1
-            fi
-            if [[ "$IS_PRERELEASE" == "false" ]]; then
-              channel=production
-            else
-              channel=preview
-            fi
-            ref=$RELEASE_TAG
-          else
-            sha=$(git rev-parse HEAD)
-            version=$(node -p "require('./package.json').version")
-            channel=preview
-            ref=$sha
+          if [[ "$SOURCE_REF" != "main" ]]; then
+            echo "Documentation publishing only accepts the main branch." >&2
+            exit 1
           fi
-          {
-            echo "sha=$sha"
-            echo "version=$version"
-            echo "channel=$channel"
-            echo "ref=$ref"
-          } >> "$GITHUB_OUTPUT"
+          sha=$(git rev-parse HEAD)
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Expected a full 40-character Git commit SHA, found $sha." >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch private site workflow
         env:
           GH_TOKEN: ${{ secrets.FLUXMAIL_DOCS_DEPLOY_TOKEN }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
-          SOURCE_REF: ${{ steps.source.outputs.ref }}
-          SOURCE_VERSION: ${{ steps.source.outputs.version }}
-          CHANNEL: ${{ steps.source.outputs.channel }}
         run: |
           jq -n \
             --arg ref main \
             --arg sourceSha "$SOURCE_SHA" \
-            --arg sourceRef "$SOURCE_REF" \
-            --arg sourceVersion "$SOURCE_VERSION" \
-            --arg channel "$CHANNEL" \
-            '{ref: $ref, inputs: {source_sha: $sourceSha, source_ref: $sourceRef, source_version: $sourceVersion, channel: $channel}}' |
+            '{ref: $ref, inputs: {source_sha: $sourceSha, source_ref: "main"}}' |
             gh api --method POST repos/churichard/fluxmail/actions/workflows/deploy-mcp-docs.yml/dispatches --input -

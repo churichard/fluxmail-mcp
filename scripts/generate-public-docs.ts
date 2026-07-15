@@ -14,7 +14,7 @@ import {
   customPermissionPolicy,
   permissionPolicyForProfile,
 } from '../packages/server/src/permissions.js';
-import { PUBLIC_DOCS_ROOT, replaceGeneratedSection } from './public-docs.js';
+import { PUBLIC_DOCS_ROOT, compatibilityManifest, readPublicDocsMeta, replaceGeneratedSection } from './public-docs.js';
 
 interface ToolReference {
   name: string;
@@ -163,6 +163,9 @@ function permissionCapabilitiesSection(): string {
 
 async function main(): Promise<void> {
   const check = process.argv.includes('--check');
+  const manifestFile = path.join(PUBLIC_DOCS_ROOT, 'manifest.json');
+  const currentManifest = readFileSync(manifestFile, 'utf8');
+  const nextManifest = `${JSON.stringify(compatibilityManifest(readPublicDocsMeta()), null, 2)}\n`;
   const generated = new Map<string, Map<string, string>>([
     ['tools.md', new Map([['tools', await toolsSection()]])],
     ['cli.md', new Map([['cli', cliSection()]])],
@@ -176,6 +179,10 @@ async function main(): Promise<void> {
     ],
   ]);
   const stale: string[] = [];
+  if (nextManifest !== currentManifest) {
+    if (check) stale.push('manifest.json');
+    else writeFileSync(manifestFile, nextManifest);
+  }
   for (const [filename, sections] of generated) {
     const file = path.join(PUBLIC_DOCS_ROOT, 'pages', filename);
     const current = readFileSync(file, 'utf8');
