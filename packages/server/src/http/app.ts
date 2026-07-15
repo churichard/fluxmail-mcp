@@ -404,6 +404,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
   });
 
   app.get('/auth/microsoft', (c) => {
+    c.header('referrer-policy', 'no-referrer');
     if (!adminAuthorized(c, true)) {
       return c.text('Unauthorized: append ?key=<an admin API key>', 401);
     }

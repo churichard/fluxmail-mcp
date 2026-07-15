@@ -85,6 +85,7 @@ interface FolderSnapshot {
   folders: Folder[];
   byId: Map<string, Folder>;
   byRole: Map<FolderRole, Folder>;
+  trashFolderIds: Set<string>;
 }
 
 interface RequestOptions {
@@ -284,25 +285,6 @@ export class OutlookProvider implements EmailProvider {
       return this.folderCache.snapshot;
     }
 
-    const rawFolders: Array<{ raw: GraphFolder; parentPath: string }> = [];
-    const visited = new Set<string>();
-    const walk = async (path: string, parentPath: string): Promise<void> => {
-      const children = await this.collection<GraphFolder>(path);
-      for (const raw of children) {
-        if (!raw.id || !raw.displayName || raw.isHidden || visited.has(raw.id)) continue;
-        visited.add(raw.id);
-        rawFolders.push({ raw, parentPath });
-        if ((raw.childFolderCount ?? 0) > 0) {
-          const childPath = `${parentPath ? `${parentPath}/` : ''}${raw.displayName}`;
-          await walk(
-            `/me/mailFolders/${encodeURIComponent(raw.id)}/childFolders?includeHiddenFolders=true&$top=100`,
-            childPath,
-          );
-        }
-      }
-    };
-    await walk('/me/mailFolders?includeHiddenFolders=true&$top=100', '');
-
     const roleById = new Map<string, FolderRole>();
     await Promise.all(
       WELL_KNOWN_FOLDERS.map(async (known) => {
@@ -315,6 +297,32 @@ export class OutlookProvider implements EmailProvider {
       }),
     );
 
+    const trashFolderId = [...roleById].find(([, role]) => role === 'trash')?.[0];
+    const trashFolderIds = new Set(trashFolderId ? [trashFolderId] : []);
+    const rawFolders: Array<{ raw: GraphFolder; parentPath: string }> = [];
+    const visited = new Set<string>();
+    const walk = async (path: string, parentPath: string, visibleBranch = true, insideTrash = false): Promise<void> => {
+      const children = await this.collection<GraphFolder>(path);
+      for (const raw of children) {
+        if (!raw.id || !raw.displayName || visited.has(raw.id)) continue;
+        visited.add(raw.id);
+        const folderIsVisible = visibleBranch && !raw.isHidden;
+        const folderIsInTrash = insideTrash || raw.id === trashFolderId;
+        if (folderIsVisible) rawFolders.push({ raw, parentPath });
+        if (folderIsInTrash) trashFolderIds.add(raw.id);
+        if ((raw.childFolderCount ?? 0) > 0 && (folderIsVisible || folderIsInTrash)) {
+          const childPath = `${parentPath ? `${parentPath}/` : ''}${raw.displayName}`;
+          await walk(
+            `/me/mailFolders/${encodeURIComponent(raw.id)}/childFolders?includeHiddenFolders=true&$top=100`,
+            childPath,
+            folderIsVisible,
+            folderIsInTrash,
+          );
+        }
+      }
+    };
+    await walk('/me/mailFolders?includeHiddenFolders=true&$top=100', '');
+
     const folders: Folder[] = rawFolders.map(({ raw, parentPath }) => ({
       id: raw.id!,
       name: parentPath ? `${parentPath}/${raw.displayName}` : raw.displayName!,
@@ -326,6 +334,7 @@ export class OutlookProvider implements EmailProvider {
       folders,
       byId: new Map(folders.map((folder) => [folder.id, folder])),
       byRole: new Map(folders.filter((folder) => folder.role).map((folder) => [folder.role!, folder])),
+      trashFolderIds,
     };
     this.folderCache = { fetchedAt: Date.now(), snapshot };
     return snapshot;
@@ -338,7 +347,8 @@ export class OutlookProvider implements EmailProvider {
   private async resolveFolder(value: string): Promise<Folder> {
     const normalized = value.toLowerCase();
     const folders = await this.folderSnapshot();
-    const role = folders.byRole.get(normalized as FolderRole);
+    const wellKnownRole = WELL_KNOWN_FOLDERS.find((folder) => folder.id === normalized)?.role;
+    const role = folders.byRole.get(wellKnownRole ?? (normalized as FolderRole));
     const match =
       role ?? folders.byId.get(value) ?? folders.folders.find((folder) => folder.name.toLowerCase() === normalized);
     if (!match) throw new EmailError('not_found', `No Outlook folder named "${value}"`);
@@ -604,6 +614,21 @@ export class OutlookProvider implements EmailProvider {
     }
   }
 
+  private async assertMessagesOutsideTrash(ids: string[]): Promise<void> {
+    const folders = await this.folderSnapshot();
+    for (const id of ids) {
+      const message = await this.request<GraphMessage>(
+        `/me/messages/${encodeURIComponent(id)}?${new URLSearchParams({ $select: 'parentFolderId' })}`,
+      );
+      if (!message.parentFolderId) {
+        throw new EmailError('provider_unavailable', `Microsoft Graph returned no parent folder for message "${id}"`);
+      }
+      if (folders.trashFolderIds.has(message.parentFolderId)) {
+        throw new EmailError('invalid_request', 'Use the untrash action before moving a message from Trash');
+      }
+    }
+  }
+
   async modify(ids: string[], action: ModifyAction): Promise<void> {
     if (!ids.length) return;
     if (typeof action === 'object' && ('addLabels' in action || 'removeLabels' in action)) {
@@ -612,15 +637,25 @@ export class OutlookProvider implements EmailProvider {
     if (action === 'archive') {
       const archive = await this.resolveFolder('archive');
       if (!archive) throw new EmailError('not_found', 'This Outlook mailbox has no archive folder');
+      await this.assertMessagesOutsideTrash(ids);
       return this.move(ids, archive.id);
     }
     if (action === 'trash') return this.move(ids, 'deleteditems');
     if (action === 'untrash') return this.move(ids, 'inbox');
     if (typeof action === 'object' && 'move' in action) {
       const target = await this.resolveFolder(action.move);
-      if (!target || target.role === 'all' || target.role === 'starred') {
+      const targetIsInTrash = (await this.folderSnapshot()).trashFolderIds.has(target.id);
+      if (
+        !target ||
+        target.role === 'all' ||
+        target.role === 'starred' ||
+        target.role === 'archive' ||
+        target.role === 'trash' ||
+        targetIsInTrash
+      ) {
         throw new EmailError('invalid_request', `Cannot move messages to "${action.move}"`);
       }
+      await this.assertMessagesOutsideTrash(ids);
       return this.move(ids, target.id);
     }
     if (action === 'delete') {

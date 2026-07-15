@@ -126,7 +126,7 @@ describe('HTTP app', () => {
     });
   });
 
-  it('only lets admin keys start the server-hosted OAuth flow', async () => {
+  it('only lets admin keys start server-hosted OAuth flows and suppresses Microsoft referrers', async () => {
     const deps = appDeps('apikey');
     const member = addMember(deps.db, { name: 'Alice', role: 'member' });
     const { key: memberKey } = createApiKey(deps.db, 'alice-key', member.id);
@@ -138,6 +138,10 @@ describe('HTTP app', () => {
     setMemberRole(deps.db, member.id, 'admin');
     const allowed = await app.request(`/auth/google?key=${encodeURIComponent(memberKey)}&owner=${member.id}`);
     expect(allowed.status).toBe(302);
+
+    const microsoft = await app.request(`/auth/microsoft?key=${encodeURIComponent(memberKey)}&owner=${member.id}`);
+    expect(microsoft.status).toBe(302);
+    expect(microsoft.headers.get('referrer-policy')).toBe('no-referrer');
   });
 
   it('requires confirmation before claiming a connection link', async () => {
