@@ -1,12 +1,12 @@
 ---
-title: 'Limit what an MCP client can do'
-description: 'Give each local or HTTP MCP connection only the Fluxmail email permissions it needs.'
+title: 'Limit what a connection can do'
+description: 'Give each MCP or REST connection only the Fluxmail email permissions it needs.'
 updated: '2026-07-14'
 ---
 
-Fluxmail can limit the email actions available to each MCP connection. Give a research agent read-only access, or let an inbox organizer manage messages without granting send or permanent-delete access.
+Fluxmail can limit the email actions available to each MCP or REST connection. Give a research client read-only access, or let an inbox organizer manage messages without granting send or permanent-delete access.
 
-Permissions control which tools Fluxmail exposes to the client and which actions are accepted by tools such as `modify_emails`.
+Permissions control which MCP tools Fluxmail exposes and which REST routes or message actions a key can call.
 
 Mailbox scope is separate from permissions. The member and optional account allowlist decide which mailboxes a connection can reach. The permission profile decides what it can do with those mailboxes. Fluxmail applies both checks to every connection.
 
@@ -17,7 +17,7 @@ Mailbox scope is separate from permissions. The member and optional account allo
 | --- | --- | --- |
 | `read-only` | Read and search mail, inspect folders and scheduled sends, and download attachments. | `mail.read` |
 | `read-write` | Read mail, manage drafts, organize messages, and move messages to or from Trash. | `mail.read`, `mail.drafts`, `mail.organize`, `mail.trash` |
-| `full` | Use every Fluxmail tool, including sending mail and permanently deleting messages. | `mail.read`, `mail.drafts`, `mail.organize`, `mail.trash`, `mail.delete`, `mail.send` |
+| `full` | Use every Fluxmail email capability, including sending mail and permanently deleting messages. | `mail.read`, `mail.drafts`, `mail.organize`, `mail.trash`, `mail.delete`, `mail.send` |
 <!-- END GENERATED:permission-profiles -->
 
 Fluxmail uses `full` when you do not choose a profile. Set a narrower profile for clients that do not need every email action.
@@ -51,7 +51,7 @@ For a client config file, put the profile in the argument list:
 
 ## Limit an HTTP connection
 
-HTTP permissions belong to the API key. Each key also belongs to a member. Create a separate key for each MCP client so you can change or revoke one connection without affecting the others.
+HTTP permissions belong to the API key. Each key also belongs to a member. Create a separate key for each MCP or REST client so you can change or revoke one connection without affecting the others.
 
 ```bash
 fluxmail apikey create \

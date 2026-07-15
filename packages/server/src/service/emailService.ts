@@ -215,6 +215,11 @@ export class EmailService {
     return accessible[0]!.id;
   }
 
+  /** Verify mailbox access without making a provider call. */
+  assertAccountAccess(accountId: string): void {
+    this.resolveScopedAccountId(accountId);
+  }
+
   /** Route a call to the right provider, recording auth failures on the account. */
   private async withProvider<T>(
     accountId: string | undefined,

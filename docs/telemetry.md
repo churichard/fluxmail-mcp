@@ -1,6 +1,6 @@
 # Telemetry
 
-Fluxmail uses PostHog to count active installations and understand which CLI and MCP features people use. Telemetry is on by default. It runs in the background, and analytics failures do not affect commands or MCP calls.
+Fluxmail uses PostHog to count active installations and understand which CLI, MCP, and REST features people use. Telemetry is on by default. It runs in the background, and analytics failures do not affect email operations.
 
 ## What Fluxmail sends
 
@@ -11,6 +11,7 @@ Every event contains a random installation ID, the Fluxmail version, the Node.js
 | `cli command used`   | `cli`             | Command name, such as `accounts add` or `status`                           |
 | `mcp server started` | `mcp`             | Transport: `stdio` or `http`                                               |
 | `mcp tool called`    | `mcp`             | Tool, transport, outcome, error code, duration, and selected feature modes |
+| `rest api called`    | `rest`            | Operation, outcome, error code, duration, and idempotency status           |
 
 Use the same `product_surface` property in the other Fluxmail products. Set it to `landing_page` on the marketing site and `mail_app` in Fluxmail Mail. PostHog can then filter or compare all four products in one project.
 
@@ -51,10 +52,11 @@ You can also set `FLUXMAIL_TELEMETRY=0` or `DO_NOT_TRACK=1` in the process envir
 
 Use unique installation IDs rather than total event counts when measuring adoption.
 
-- Active installations: unique users for `mcp tool called` or `cli command used`
+- Active installations: unique users for `mcp tool called`, `rest api called`, or `cli command used`
 - Product usage: relevant events, broken down by `product_surface`
 - MCP feature adoption: `mcp tool called`, broken down by `tool`
+- REST feature adoption: `rest api called`, broken down by `operation`
 - CLI feature adoption: `cli command used`, broken down by `command`
 - Transport adoption: `mcp server started`, broken down by `transport`
-- Reliability: `mcp tool called`, broken down by `outcome` and then `error_code`
+- Reliability: MCP and REST calls, broken down by `outcome` and then `error_code`
 - Scheduled sending: `mcp tool called` filtered to `tool = send_email`, broken down by `scheduled`

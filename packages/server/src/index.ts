@@ -1,5 +1,6 @@
 export { createContext, type AppContext } from './context.js';
 export { createApp } from './http/app.js';
+export { createRestApi, type RestApiDeps } from './http/rest.js';
 export {
   buildMcpServer,
   type BuildMcpServerOptions,

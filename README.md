@@ -4,7 +4,7 @@
 
 <p align="center"><a href="https://github.com/churichard/fluxmail-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/churichard/fluxmail-mcp/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;logo=github"></a> <a href="https://www.npmjs.com/package/fluxmail"><img alt="npm version" src="https://img.shields.io/npm/v/fluxmail?style=flat-square&amp;logo=npm&amp;color=1f4fcc"></a> <a href="https://github.com/churichard/fluxmail-mcp/pkgs/container/fluxmail-mcp"><img alt="Container image" src="https://img.shields.io/badge/GHCR-container-2496ED?style=flat-square&amp;logo=docker&amp;logoColor=white"></a></p>
 
-Fluxmail is a self-hosted MCP server that connects AI agents to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. It provides one API for reading, searching, drafting, sending, and organizing mail over stdio or Streamable HTTP.
+Fluxmail is a self-hosted email server for Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. AI agents can use MCP over stdio or Streamable HTTP. Scripts and applications can use the versioned REST API.
 
 ## Get started
 
@@ -21,6 +21,7 @@ Then follow the [quickstart](docs/public/pages/quickstart.md) to connect a mailb
 
 - [Overview](docs/public/pages/overview.md)
 - [Tools](docs/public/pages/tools.md)
+- [REST API](docs/public/pages/rest-api.md)
 - [Permissions](docs/public/pages/permissions.md)
 - [Configuration](docs/public/pages/configuration.md)
 - [CLI reference](docs/public/pages/cli.md)
@@ -30,7 +31,7 @@ Then follow the [quickstart](docs/public/pages/quickstart.md) to connect a mailb
 - [Architecture](docs/public/pages/architecture.md)
 - [Teams and plans](docs/public/pages/teams-and-plans.md)
 
-The source for Fluxmail MCP's public documentation lives in [`docs/public`](docs/public). Add and order pages in [`docs/public/pages/meta.json`](docs/public/pages/meta.json); `manifest.json` is generated for compatibility with the existing site integration. Generated reference sections come from the server implementation. Run `pnpm docs:generate` after changing tools, commands, configuration, or permissions, and run `pnpm docs:check` before committing.
+The source for Fluxmail's public documentation lives in [`docs/public`](docs/public). Add and order pages in [`docs/public/pages/meta.json`](docs/public/pages/meta.json); `manifest.json` is generated for compatibility with the existing site integration. Generated reference sections come from the server implementation. Run `pnpm docs:generate` after changing tools, commands, configuration, or permissions, and run `pnpm docs:check` before committing.
 
 ## Repository layout
 
@@ -40,7 +41,7 @@ packages/
   provider-gmail/   Gmail adapter
   provider-imap/    IMAP and SMTP adapter
   provider-outlook/ Microsoft Graph adapter
-  server/           service, storage, MCP transports, and CLI
+  server/           service, storage, MCP and REST transports, and CLI
 ```
 
 ## Plans and license

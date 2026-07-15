@@ -1,12 +1,12 @@
 ---
 title: 'Architecture'
-description: 'Where the self-hosted Fluxmail MCP server keeps your data and how the codebase is structured.'
+description: 'Where the self-hosted Fluxmail server keeps your data and how the codebase is structured.'
 updated: '2026-07-14'
 ---
 
 ## Where your data lives
 
-Fluxmail keeps its SQLite database on the machine where it runs. Google and Microsoft OAuth tokens and IMAP/SMTP passwords are encrypted at rest with AES-256-GCM. Your agent talks to your email provider through the self-hosted Fluxmail process. Fluxmail does not copy email content to a service operated by Fluxmail. Content returned through MCP is handled by the MCP client and may be sent to the client's model provider, depending on how that client runs. The [code is source-available](https://github.com/churichard/fluxmail-mcp) under the [Fluxmail proprietary license](https://github.com/churichard/fluxmail-mcp/blob/main/LICENSE.md).
+Fluxmail keeps its SQLite database on the machine where it runs. Google and Microsoft OAuth tokens and IMAP/SMTP passwords are encrypted at rest with AES-256-GCM. Your client talks to your email provider through the self-hosted Fluxmail process. Fluxmail does not copy email content to a service operated by Fluxmail. Content returned through MCP may be sent to the client's model provider, depending on how that client runs. The [code is source-available](https://github.com/churichard/fluxmail-mcp) under the [Fluxmail proprietary license](https://github.com/churichard/fluxmail-mcp/blob/main/LICENSE.md).
 
 ## How Fluxmail is built
 
@@ -18,15 +18,17 @@ packages/
   provider-gmail/   # Gmail adapter (googleapis): query translation, MIME, threading, labels
   provider-imap/    # IMAP/SMTP adapter: folders, search, MIME parts, synthetic threads
   provider-outlook/ # Microsoft Graph adapter: folders, conversations, drafts, attachments
-  server/           # EmailService, SQLite storage, OAuth, MCP tools, HTTP + stdio transports, CLI
+  server/           # EmailService, SQLite storage, OAuth, MCP and REST transports, CLI
 ```
 
-MCP tools are thin wrappers over `EmailService`, which owns account routing, reply and forward computation, and plan limits. Each provider implements one `EmailProvider` interface and declares a `capabilities` object, so the tools handle provider differences explicitly. Outlook uses Microsoft Graph conversations and folders. IMAP has folders instead of labels, uses its server's basic search, and has no server-side thread model. Fluxmail reconstructs IMAP threads from standard email headers.
+MCP tools and REST routes are thin wrappers over `EmailService`, which owns account routing, reply and forward computation, and plan limits. Each provider implements one `EmailProvider` interface and declares a `capabilities` object, so both APIs handle provider differences the same way. Outlook uses Microsoft Graph conversations and folders. IMAP has folders instead of labels, uses its server's basic search, and has no server-side thread model. Fluxmail reconstructs IMAP threads from standard email headers.
 
 ## How permissions are enforced
 
 Every connection acts for one member. Fluxmail first limits the connection to mailboxes that member can reach, then applies an optional account allowlist. An administrator can manage members and mailbox access, but the role does not grant access to private mailboxes.
 
-Stdio connections receive their member, account scope, and permission policy when the process starts. Streamable HTTP connections receive the same information from their API key. Fluxmail registers only the tools and `modify_emails` actions allowed by that policy, then checks mailbox access and capabilities again when a tool runs.
+Stdio connections receive their member, account scope, and permission policy when the process starts. MCP and REST requests over HTTP receive the same information from their API key. Fluxmail limits each request to that scope and checks its required capabilities before calling an email provider.
 
-Attachments are returned as embedded MCP resources. Every provider enforces the configured decoded-size limit before returning the file. The default limit is 10 MB, and the hard maximum is 25 MB.
+Attachments are returned as embedded MCP resources or raw REST responses. Every provider enforces the configured decoded-size limit before returning the file. The default limit is 10 MB, and the hard maximum is 25 MB.
+
+REST send, scheduled-send, and forward requests use idempotency records in SQLite. Each record is scoped to an API key and retained for 24 hours. This prevents a client retry from repeating the provider call during that period.

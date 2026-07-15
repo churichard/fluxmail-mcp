@@ -91,6 +91,8 @@ export function createApiKey(
 }
 
 export interface ApiKeyAuth {
+  /** Stable key id used to scope REST idempotency records. */
+  keyId: string;
   /** Member the key was issued to; null for a migrated system credential. */
   memberId: string | null;
   /** Current member role. null identifies a migrated management-only system key. */
@@ -116,7 +118,7 @@ export function authenticateApiKey(db: FluxmailDb, key: string): ApiKeyAuth | nu
     const accountIds = deserializeAccountIds(row.accountIds);
     const member = row.memberId ? getMember(db, row.memberId) : null;
     db.update(apiKeys).set({ lastUsedAt: Date.now() }).where(eq(apiKeys.id, row.id)).run();
-    return { memberId: row.memberId, role: member?.role ?? null, permissions, accountIds };
+    return { keyId: row.id, memberId: row.memberId, role: member?.role ?? null, permissions, accountIds };
   } catch {
     return null;
   }

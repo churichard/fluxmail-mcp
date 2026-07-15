@@ -62,7 +62,7 @@ export const CONFIG_REFERENCE = {
   },
   FLUXMAIL_PUBLIC_URL: {
     defaultValue: 'http://localhost:<FLUXMAIL_PORT>',
-    description: 'Public base URL used for the MCP endpoint and hosted OAuth callbacks.',
+    description: 'Public base URL used for HTTP APIs and hosted OAuth callbacks.',
   },
   FLUXMAIL_AUTH: {
     defaultValue: 'apikey',
@@ -78,7 +78,7 @@ export const CONFIG_REFERENCE = {
   },
   FLUXMAIL_MAX_ATTACHMENT_MB: {
     defaultValue: '10',
-    description: 'Largest decoded attachment returned through MCP, from 1 through 25 MB.',
+    description: 'Largest decoded attachment returned through MCP or REST, from 1 through 25 MB.',
   },
   FLUXMAIL_LICENSE_KEY: {
     defaultValue: 'none',
@@ -87,7 +87,7 @@ export const CONFIG_REFERENCE = {
   },
   FLUXMAIL_TELEMETRY: {
     defaultValue: '1',
-    description: 'Set to 0 to turn off anonymous CLI and MCP usage telemetry.',
+    description: 'Set to 0 to turn off anonymous CLI, MCP, and REST usage telemetry.',
   },
   DO_NOT_TRACK: {
     defaultValue: 'unset',
@@ -120,9 +120,9 @@ export interface FluxmailConfig {
   oauthPort: number;
   /** Bind address for the OAuth listener. Docker uses 0.0.0.0 so its published port can reach it. */
   oauthHost: string;
-  /** 'apikey' (default) requires a bearer token on /mcp; 'none' is for trusted networks only. */
+  /** 'apikey' (default) requires a bearer token on email APIs; 'none' is for trusted networks only. */
   authMode: 'apikey' | 'none';
-  /** Largest attachment Fluxmail will return through MCP. */
+  /** Largest attachment Fluxmail will return through MCP or REST. */
   maxAttachmentBytes: number;
   /** Paid-tier license key (fluxmail_lic_…); absent means free tier. */
   licenseKey?: string;

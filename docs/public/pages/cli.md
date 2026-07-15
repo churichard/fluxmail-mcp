@@ -17,7 +17,7 @@ To run a command without a global installation, replace `fluxmail` with `npx -y 
 <!-- BEGIN GENERATED:cli -->
 | Command | Description | Options |
 | --- | --- | --- |
-| `fluxmail serve` | Run the HTTP server (Streamable HTTP MCP at /mcp) | None |
+| `fluxmail serve` | Run the HTTP server (MCP at /mcp and REST at /api/v1) | None |
 | `fluxmail stdio` | Run as a stdio MCP server (for Claude Desktop / Claude Code local config) | `--member <member>`, `--account <account>`, `--profile <profile>`, `--allow <capability>` |
 | `fluxmail accounts` | Manage connected email accounts | None |
 | `fluxmail accounts add <provider>` | Connect a Gmail, Outlook, or IMAP account | `--reauthorize <account-id>`, `--owner <member>`, `--member <member>`, `--shared`, `--share-with <member>`, `--local`, `--hosted`, `--email <address>`, `--display-name <name>`, `--imap-host <host>`, `--imap-port <port>`, `--imap-security <mode>`, `--imap-user <user>`, `--imap-password-env <name>`, `--smtp-host <host>`, `--smtp-port <port>`, `--smtp-security <mode>`, `--smtp-user <user>`, `--smtp-password-env <name>`, `--sent-folder <path>`, `--drafts-folder <path>`, `--trash-folder <path>`, `--archive-folder <path>`, `--spam-folder <path>`, `--no-save-sent` |
@@ -31,12 +31,12 @@ To run a command without a global installation, replace `fluxmail` with `npx -y 
 | `fluxmail members list` | List members with their mailbox and API key counts | None |
 | `fluxmail members remove <memberId>` | Remove a member after reassigning or removing their mailboxes | None |
 | `fluxmail members role <member> <role>` | Change a member role | None |
-| `fluxmail apikey` | Manage API keys for the HTTP MCP endpoint | None |
-| `fluxmail apikey capabilities` | List MCP capabilities for custom permission policies | None |
+| `fluxmail apikey` | Manage API keys for the HTTP MCP and REST APIs | None |
+| `fluxmail apikey capabilities` | List email capabilities for custom permission policies | None |
 | `fluxmail apikey create` | Create an API key (shown once) | `--name <name>`, `--member <member>`, `--account <account>`, `--profile <profile>`, `--allow <capability>` |
 | `fluxmail apikey list` | List API keys | None |
 | `fluxmail apikey accounts <keyId>` | Replace or clear an API key mailbox allowlist | `--account <account>`, `--all-accounts` |
-| `fluxmail apikey permissions <keyId>` | Change the MCP permissions for an API key | `--profile <profile>`, `--allow <capability>` |
+| `fluxmail apikey permissions <keyId>` | Change the email permissions for an API key | `--profile <profile>`, `--allow <capability>` |
 | `fluxmail apikey revoke <keyId>` | Revoke an API key | None |
 | `fluxmail license` | Manage the paid-tier license | None |
 | `fluxmail license activate <key>` | Store a license key and validate it with the license server | None |
@@ -86,4 +86,4 @@ Without a password environment variable, Fluxmail prompts for the password in an
 
 The named profiles are `read-only`, `read-write`, and `full`. Use repeated `--allow` options for a custom policy. `--profile` and `--allow` cannot be used together on the same command.
 
-Permissions passed to `fluxmail stdio` apply to that local process. HTTP permissions are stored with the API key and can be changed later with `fluxmail apikey permissions`. See [Limit what an MCP client can do](/docs/permissions) for the capability list and workflow requirements.
+Permissions passed to `fluxmail stdio` apply to that local process. HTTP permissions are stored with the API key and can be changed later with `fluxmail apikey permissions`. See [Limit what a connection can do](/docs/permissions) for the capability list and workflow requirements.

@@ -25,7 +25,7 @@ export type PermissionProfile = NamedPermissionProfile | 'custom';
 export const PERMISSION_PROFILE_DESCRIPTIONS: Record<NamedPermissionProfile, string> = {
   'read-only': 'Read and search mail, inspect folders and scheduled sends, and download attachments.',
   'read-write': 'Read mail, manage drafts, organize messages, and move messages to or from Trash.',
-  full: 'Use every Fluxmail tool, including sending mail and permanently deleting messages.',
+  full: 'Use every Fluxmail email capability, including sending mail and permanently deleting messages.',
 };
 
 export interface PermissionPolicy {

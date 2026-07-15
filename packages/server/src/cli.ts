@@ -268,7 +268,7 @@ export function createCliProgram(): Command {
 
   program
     .command('serve')
-    .description('Run the HTTP server (Streamable HTTP MCP at /mcp)')
+    .description('Run the HTTP server (MCP at /mcp and REST at /api/v1)')
     .action(() => {
       installTelemetrySignalHandlers();
       const ctx = createContext();
@@ -278,6 +278,8 @@ export function createCliProgram(): Command {
         ctx.telemetry.capture('mcp server started', { product_surface: 'mcp', transport: 'http' });
         console.log(`Fluxmail listening on ${ctx.config.publicUrl}`);
         console.log(`  MCP endpoint:   ${ctx.config.publicUrl}/mcp`);
+        console.log(`  REST API:       ${ctx.config.publicUrl}/api/v1`);
+        console.log(`  OpenAPI:        ${ctx.config.publicUrl}/api/v1/openapi.json`);
         console.log(`  Auth mode:      ${ctx.config.authMode}`);
         if (ctx.config.authMode === 'apikey' && listApiKeys(ctx.db).length === 0) {
           console.log(
@@ -822,11 +824,11 @@ export function createCliProgram(): Command {
       }
     });
 
-  const apikey = program.command('apikey').description('Manage API keys for the HTTP MCP endpoint');
+  const apikey = program.command('apikey').description('Manage API keys for the HTTP MCP and REST APIs');
 
   apikey
     .command('capabilities')
-    .description('List MCP capabilities for custom permission policies')
+    .description('List email capabilities for custom permission policies')
     .action(() => {
       for (const capability of MCP_CAPABILITIES) console.log(capability);
     });
@@ -917,7 +919,7 @@ export function createCliProgram(): Command {
     .argument('<keyId>')
     .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
     .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
-    .description('Change the MCP permissions for an API key')
+    .description('Change the email permissions for an API key')
     .action((keyId: string, opts: PermissionOptions) => {
       const ctx = createContext();
       warnLicense(ctx.db);

@@ -70,6 +70,33 @@ describe('HTTP app', () => {
     });
   });
 
+  it('mounts the versioned REST API on the HTTP server', async () => {
+    const app = createApp(appDeps('none'));
+    const discovery = await app.request('/api/v1');
+    expect(discovery.status).toBe(200);
+    await expect(discovery.json()).resolves.toMatchObject({
+      data: { name: 'fluxmail', version: VERSION, openapi: '/api/v1/openapi.json' },
+    });
+    expect((await app.request('/api/v1/status')).status).toBe(200);
+
+    const malformed = await app.request('/api/v1/accounts/acct_1/drafts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{',
+    });
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({
+      error: { code: 'invalid_request' },
+    });
+
+    const missing = await app.request('/api/v1/missing');
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get('content-type')).toContain('application/json');
+    await expect(missing.json()).resolves.toEqual({
+      error: { code: 'not_found', message: 'No REST route matches this request.' },
+    });
+  });
+
   it('rejects query-string API keys on the MCP endpoint', async () => {
     const deps = appDeps('apikey');
     const member = addMember(deps.db, { name: 'Alice' });

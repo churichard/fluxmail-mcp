@@ -9,6 +9,7 @@
     "connect-outlook-to-mcp",
     "connect-an-imap-mailbox",
     "tools",
+    "rest-api",
     "permissions",
     "configuration",
     "cli",

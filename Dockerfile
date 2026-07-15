@@ -15,7 +15,7 @@ RUN pnpm build && pnpm --filter fluxmail deploy --legacy --prod /out
 
 FROM node:22-slim
 LABEL org.opencontainers.image.source="https://github.com/churichard/fluxmail-mcp" \
-      org.opencontainers.image.description="Fluxmail: a self-hosted MCP server that connects AI agents to your email"
+      org.opencontainers.image.description="Fluxmail: a self-hosted email API with MCP and REST support"
 ENV NODE_ENV=production \
     FLUXMAIL_DATA_DIR=/data \
     FLUXMAIL_PORT=8977

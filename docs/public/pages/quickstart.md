@@ -1,10 +1,10 @@
 ---
 title: 'Quickstart'
-description: 'Install the self-hosted Fluxmail MCP server, connect Gmail, Outlook, or an IMAP mailbox, and add it to your AI agent.'
+description: 'Install Fluxmail, connect Gmail, Outlook, or an IMAP mailbox, and use it through MCP or REST.'
 updated: '2026-07-14'
 ---
 
-Fluxmail is a self-hosted MCP server that connects AI agents to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. It runs on your machine or a server you control and gives any MCP client the same tools to read, search, draft, send, and organize mail over stdio or Streamable HTTP.
+Fluxmail is a self-hosted email server that connects to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. It runs on your machine or a server you control. AI agents can use MCP over stdio or Streamable HTTP, while scripts and applications can use REST.
 
 This guide takes you from installation to a working agent connection. Gmail uses a Google OAuth app that you own, while Microsoft mail uses your Microsoft Entra app registration. Generic IMAP accounts use credentials from your email provider.
 
@@ -16,6 +16,8 @@ Both setups support Gmail, Microsoft mail, and IMAP/SMTP. The difference is how 
 | ---------------------------------------------- | --------------------------------------------------- | --------------- |
 | [Local process](#local-setup-stdio)            | One person using agents on the same computer        | stdio           |
 | [Docker server](#docker-setup-streamable-http) | Remote access, shared instances, or several clients | Streamable HTTP |
+
+The HTTP server also provides the [REST API](/docs/rest-api) at `/api/v1`. You can run it on your computer without Docker by running `fluxmail serve` after connecting a mailbox and creating an API key.
 
 ## Local setup: stdio
 

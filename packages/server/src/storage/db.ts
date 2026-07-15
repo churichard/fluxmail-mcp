@@ -151,6 +151,24 @@ export const scheduledSends = sqliteTable(
   (table) => [index('scheduled_sends_pending_due').on(table.status, table.sendAt)],
 );
 
+export const restIdempotency = sqliteTable(
+  'rest_idempotency',
+  {
+    principalId: text('principal_id').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    requestHash: text('request_hash').notNull(),
+    state: text('state').notNull(),
+    responseStatus: integer('response_status'),
+    responseBody: text('response_body'),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.principalId, table.idempotencyKey] }),
+    index('rest_idempotency_expires_at').on(table.expiresAt),
+  ],
+);
+
 export type FluxmailDb = BetterSQLite3Database;
 
 const BOOTSTRAP_SQL = `
@@ -257,6 +275,19 @@ CREATE TABLE IF NOT EXISTS scheduled_sends (
 );
 CREATE INDEX IF NOT EXISTS scheduled_sends_pending_due
   ON scheduled_sends(status, send_at);
+CREATE TABLE IF NOT EXISTS rest_idempotency (
+  principal_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  state TEXT NOT NULL,
+  response_status INTEGER,
+  response_body TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (principal_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS rest_idempotency_expires_at
+  ON rest_idempotency(expires_at);
 `;
 
 function tableColumns(sqlite: Database.Database, table: string): Set<string> {

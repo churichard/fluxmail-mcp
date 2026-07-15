@@ -2,7 +2,7 @@
   "name": "fluxmail-monorepo",
   "version": "0.3.0",
   "private": true,
-  "description": "Self-hosted, source-available MCP server for Gmail, Outlook, and IMAP with a unified email API",
+  "description": "Self-hosted email API with MCP and REST support for Gmail, Outlook, and IMAP/SMTP",
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
   "engines": {

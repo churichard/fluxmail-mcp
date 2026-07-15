@@ -25,6 +25,7 @@ import { prepareHostedGmailConnection, prepareHostedOutlookConnection } from '..
 import { VERSION } from '../version.js';
 import type { Telemetry } from '../telemetry.js';
 import { findMember } from '../storage/members.js';
+import { createRestApi } from './rest.js';
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -148,7 +149,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
   // optional mailbox allowlist before any provider call.
   const authForRequest = (c: { req: { header(name: string): string | undefined } }): ApiKeyAuth | null => {
     if (config.authMode === 'none') {
-      return { memberId: null, role: null, permissions: FULL_PERMISSION_POLICY, accountIds: null };
+      return { keyId: 'auth:none', memberId: null, role: null, permissions: FULL_PERMISSION_POLICY, accountIds: null };
     }
     const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
     return bearer ? authenticateApiKey(db, bearer) : null;
@@ -512,6 +513,8 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
       return c.text('Could not connect the account; check the server logs.', 500);
     }
   });
+
+  app.route('/', createRestApi({ config, db, service, telemetry }));
 
   return app;
 }
