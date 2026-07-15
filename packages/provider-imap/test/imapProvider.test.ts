@@ -529,6 +529,65 @@ function testCredentials(saveSent = true) {
 }
 
 describe('ImapProvider connection and pagination state', () => {
+  it('force-closes a connected IMAP client without waiting for logout', async () => {
+    const fake = {
+      usable: true,
+      on: vi.fn(),
+      connect: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+      logout: vi.fn(() => new Promise<void>(() => {})),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const provider = new ImapProvider({
+      accountId: 'a1',
+      email: 'me@example.com',
+      credentials: {
+        imap: { host: 'imap.example.com', port: 993, security: 'tls', user: 'me', password: 'secret' },
+        smtp: { host: 'smtp.example.com', port: 587, security: 'starttls', user: 'me', password: 'secret' },
+        saveSent: true,
+      },
+      store: new MemoryStore(),
+      imapFactory: () => fake as unknown as ImapFlow,
+    });
+
+    await provider.listFolders();
+    await expect(provider.close()).resolves.toBeUndefined();
+    expect(fake.close).toHaveBeenCalledOnce();
+    expect(fake.logout).not.toHaveBeenCalled();
+  });
+
+  it('closes an in-progress IMAP client without waiting for connect to settle', async () => {
+    let finishConnect: (() => void) | undefined;
+    const pendingConnect = new Promise<void>((resolve) => {
+      finishConnect = resolve;
+    });
+    const fake = {
+      usable: false,
+      on: vi.fn(),
+      connect: vi.fn(() => pendingConnect),
+      close: vi.fn(),
+      list: vi.fn(),
+    };
+    const provider = new ImapProvider({
+      accountId: 'a1',
+      email: 'me@example.com',
+      credentials: {
+        imap: { host: 'imap.example.com', port: 993, security: 'tls', user: 'me', password: 'secret' },
+        smtp: { host: 'smtp.example.com', port: 587, security: 'starttls', user: 'me', password: 'secret' },
+        saveSent: true,
+      },
+      store: new MemoryStore(),
+      imapFactory: () => fake as unknown as ImapFlow,
+    });
+
+    const listing = provider.listFolders();
+    await vi.waitFor(() => expect(fake.connect).toHaveBeenCalledOnce());
+    await expect(provider.close()).resolves.toBeUndefined();
+    expect(fake.close).toHaveBeenCalledOnce();
+    finishConnect?.();
+    await expect(listing).rejects.toMatchObject({ code: 'provider_unavailable' });
+  });
+
   it('shares an in-flight IMAP connection between concurrent requests', async () => {
     let finishConnect!: () => void;
     const connected = new Promise<void>((resolve) => {

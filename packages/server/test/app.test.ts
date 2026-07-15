@@ -12,6 +12,7 @@ import { exchangeMicrosoftCode } from '../src/accounts/microsoftAuth.js';
 import type { MicrosoftCredentials } from '../src/accounts/microsoftAuth.js';
 import { VERSION } from '../src/version.js';
 import { EmailService } from '../src/service/emailService.js';
+import { permissionPolicyForProfile } from '../src/permissions.js';
 
 vi.mock('../src/accounts/googleAuth.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/accounts/googleAuth.js')>()),
@@ -128,18 +129,30 @@ describe('HTTP app', () => {
 
   it('only lets admin keys start server-hosted OAuth flows and suppresses Microsoft referrers', async () => {
     const deps = appDeps('apikey');
-    const member = addMember(deps.db, { name: 'Alice', role: 'member' });
-    const { key: memberKey } = createApiKey(deps.db, 'alice-key', member.id);
+    const member = addMember(deps.db, { name: 'Alice', role: 'admin' });
+    const { key: memberKey } = createApiKey(
+      deps.db,
+      'alice-key',
+      member.id,
+      permissionPolicyForProfile('full', ['admin.accounts']),
+    );
+    setMemberRole(deps.db, member.id, 'member');
     const app = createApp(deps);
 
-    const denied = await app.request(`/auth/google?key=${encodeURIComponent(memberKey)}&owner=${member.id}`);
-    expect(denied.status).toBe(401);
+    const denied = await app.request(`/auth/google?owner=${member.id}`, {
+      headers: { authorization: `Bearer ${memberKey}` },
+    });
+    expect(denied.status).toBe(403);
 
     setMemberRole(deps.db, member.id, 'admin');
-    const allowed = await app.request(`/auth/google?key=${encodeURIComponent(memberKey)}&owner=${member.id}`);
+    const allowed = await app.request(`/auth/google?owner=${member.id}`, {
+      headers: { authorization: `Bearer ${memberKey}` },
+    });
     expect(allowed.status).toBe(302);
 
-    const microsoft = await app.request(`/auth/microsoft?key=${encodeURIComponent(memberKey)}&owner=${member.id}`);
+    const microsoft = await app.request(`/auth/microsoft?owner=${member.id}`, {
+      headers: { authorization: `Bearer ${memberKey}` },
+    });
     expect(microsoft.status).toBe(302);
     expect(microsoft.headers.get('referrer-policy')).toBe('no-referrer');
   });
@@ -185,7 +198,12 @@ describe('HTTP app', () => {
     deps.config.publicUrl = 'https://mail.example.com';
     deps.config.publicUrlConfigured = true;
     const member = addMember(deps.db, { name: 'Alice', role: 'admin' });
-    const { key } = createApiKey(deps.db, 'admin-key', member.id);
+    const { key } = createApiKey(
+      deps.db,
+      'admin-key',
+      member.id,
+      permissionPolicyForProfile('full', ['admin.accounts']),
+    );
     const app = createApp(deps);
 
     const response = await app.request('/auth/connections', {
@@ -321,7 +339,12 @@ describe('HTTP app', () => {
     deps.config.publicUrl = 'https://mail.example.com';
     deps.config.publicUrlConfigured = true;
     const member = addMember(deps.db, { name: 'Owner', role: 'admin' });
-    const { key } = createApiKey(deps.db, 'admin-key', member.id);
+    const { key } = createApiKey(
+      deps.db,
+      'admin-key',
+      member.id,
+      permissionPolicyForProfile('full', ['admin.accounts']),
+    );
     const existing = deps.registry.addOutlookAccount(
       'expected@outlook.com',
       microsoftCredentials('old-refresh'),
@@ -383,7 +406,12 @@ describe('HTTP app', () => {
       })
       .run();
     const teammate = { id: 'member_teammate', email: 'teammate@example.com' };
-    const { key } = createApiKey(deps.db, 'admin-key', owner.id);
+    const { key } = createApiKey(
+      deps.db,
+      'admin-key',
+      owner.id,
+      permissionPolicyForProfile('full', ['admin.accounts']),
+    );
     const app = createApp(deps);
 
     const created = await app.request('/auth/connections', {
@@ -415,8 +443,14 @@ describe('HTTP app', () => {
     const deps = appDeps('apikey');
     deps.config.publicUrl = 'https://mail.example.com';
     deps.config.publicUrlConfigured = true;
-    const member = addMember(deps.db, { name: 'Member', role: 'member' });
-    const { key: memberKey } = createApiKey(deps.db, 'member-key', member.id);
+    const member = addMember(deps.db, { name: 'Member', role: 'admin' });
+    const { key: memberKey } = createApiKey(
+      deps.db,
+      'member-key',
+      member.id,
+      permissionPolicyForProfile('full', ['admin.accounts']),
+    );
+    setMemberRole(deps.db, member.id, 'member');
     const app = createApp(deps);
     const request = (body: unknown, key = memberKey) =>
       app.request('/auth/connections', {
@@ -425,7 +459,7 @@ describe('HTTP app', () => {
         body: JSON.stringify(body),
       });
 
-    expect((await request({ provider: 'outlook', owner: member.id })).status).toBe(401);
+    expect((await request({ provider: 'outlook', owner: member.id })).status).toBe(403);
     setMemberRole(deps.db, member.id, 'admin');
     expect((await request({ provider: 'exchange', owner: member.id })).status).toBe(400);
     expect((await request({ provider: 'outlook' })).status).toBe(400);
@@ -608,7 +642,15 @@ describe('HTTP app', () => {
     const member = addMember(deps.db, { name: 'Owner' });
     const app = createApp(deps);
 
-    const start = await app.request(`/auth/google?owner=${member.id}`);
+    const { key } = createApiKey(
+      deps.db,
+      'admin-key',
+      member.id,
+      permissionPolicyForProfile('full', ['admin.accounts']),
+    );
+    const start = await app.request(`/auth/google?owner=${member.id}`, {
+      headers: { authorization: `Bearer ${key}` },
+    });
     expect(start.status).toBe(302);
     const state = new URL(start.headers.get('location') ?? '').searchParams.get('state');
 

@@ -9,6 +9,10 @@ export const MCP_CAPABILITIES = [
 
 export type McpCapability = (typeof MCP_CAPABILITIES)[number];
 
+export const ADMIN_CAPABILITIES = ['admin.accounts', 'admin.api_keys', 'admin.license'] as const;
+export type AdminCapability = (typeof ADMIN_CAPABILITIES)[number];
+export type Capability = McpCapability | AdminCapability;
+
 export const MCP_CAPABILITY_DESCRIPTIONS: Record<McpCapability, string> = {
   'mail.read': 'List, search, and read mail; inspect status and folders; list scheduled sends; download attachments.',
   'mail.drafts': 'Create, update, and delete drafts; cancel scheduled sends.',
@@ -30,10 +34,14 @@ export const PERMISSION_PROFILE_DESCRIPTIONS: Record<NamedPermissionProfile, str
 
 export interface PermissionPolicy {
   profile: PermissionProfile;
-  capabilities: McpCapability[];
+  capabilities: Capability[];
+  /** Administrative capabilities added to a named mail profile. Empty for custom policies. */
+  supplementalCapabilities: AdminCapability[];
 }
 
 const CAPABILITY_SET = new Set<string>(MCP_CAPABILITIES);
+const ADMIN_CAPABILITY_SET = new Set<string>(ADMIN_CAPABILITIES);
+const ALL_CAPABILITY_SET = new Set<string>([...MCP_CAPABILITIES, ...ADMIN_CAPABILITIES]);
 const PROFILE_SET = new Set<string>(NAMED_PERMISSION_PROFILES);
 
 const PROFILE_CAPABILITIES: Record<NamedPermissionProfile, readonly McpCapability[]> = {
@@ -52,41 +60,90 @@ export function isMcpCapability(value: string): value is McpCapability {
   return CAPABILITY_SET.has(value);
 }
 
-export function permissionPolicyForProfile(profile: NamedPermissionProfile): PermissionPolicy {
-  return { profile, capabilities: [...PROFILE_CAPABILITIES[profile]] };
+export function isAdminCapability(value: string): value is AdminCapability {
+  return ADMIN_CAPABILITY_SET.has(value);
+}
+
+export function isCapability(value: string): value is Capability {
+  return ALL_CAPABILITY_SET.has(value);
+}
+
+export function normalizeAdminCapabilities(capabilities: readonly string[]): AdminCapability[] {
+  const unique = [...new Set(capabilities)];
+  const invalid = unique.filter((capability) => !isAdminCapability(capability));
+  if (invalid.length) {
+    throw new Error(
+      `Unknown administrative capability: ${invalid.join(', ')}. Expected one of: ${ADMIN_CAPABILITIES.join(', ')}.`,
+    );
+  }
+  return ADMIN_CAPABILITIES.filter((capability) => unique.includes(capability));
+}
+
+export function permissionPolicyForProfile(
+  profile: NamedPermissionProfile,
+  supplementalCapabilities: readonly string[] = [],
+): PermissionPolicy {
+  const supplemental = normalizeAdminCapabilities(supplementalCapabilities);
+  return {
+    profile,
+    capabilities: [...PROFILE_CAPABILITIES[profile], ...supplemental],
+    supplementalCapabilities: supplemental,
+  };
 }
 
 export function customPermissionPolicy(capabilities: readonly string[]): PermissionPolicy {
   if (!capabilities.length) throw new Error('A custom permission policy must allow at least one capability.');
   const unique = [...new Set(capabilities)];
-  const invalid = unique.filter((capability) => !isMcpCapability(capability));
+  const invalid = unique.filter((capability) => !isCapability(capability));
   if (invalid.length) {
-    throw new Error(`Unknown MCP capability: ${invalid.join(', ')}. Expected one of: ${MCP_CAPABILITIES.join(', ')}.`);
+    throw new Error(
+      `Unknown capability: ${invalid.join(', ')}. Expected one of: ${[...MCP_CAPABILITIES, ...ADMIN_CAPABILITIES].join(', ')}.`,
+    );
   }
   return {
     profile: 'custom',
-    capabilities: MCP_CAPABILITIES.filter((capability) => unique.includes(capability)),
+    capabilities: [...MCP_CAPABILITIES, ...ADMIN_CAPABILITIES].filter((capability) => unique.includes(capability)),
+    supplementalCapabilities: [],
   };
 }
 
 export function normalizePermissionPolicy(policy: PermissionPolicy): PermissionPolicy {
   if (policy.profile === 'custom') return customPermissionPolicy(policy.capabilities);
   if (!isNamedPermissionProfile(policy.profile)) throw new Error(`Unknown permission profile: ${policy.profile}`);
-  return permissionPolicyForProfile(policy.profile);
+  return permissionPolicyForProfile(policy.profile, policy.supplementalCapabilities);
 }
 
-export function deserializePermissionPolicy(profile: string, customCapabilities: string | null): PermissionPolicy {
+function parseCapabilityArray(value: string, description: string): string[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === 'string')) {
+    throw new Error(`${description} must be a JSON array of strings.`);
+  }
+  return parsed;
+}
+
+export function deserializePermissionPolicy(
+  profile: string,
+  customCapabilities: string | null,
+  supplementalCapabilities: string | null = null,
+): PermissionPolicy {
   if (profile === 'custom') {
     if (customCapabilities === null) throw new Error('Custom permission policy has no capabilities.');
-    const parsed = JSON.parse(customCapabilities) as unknown;
-    if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === 'string')) {
-      throw new Error('Custom permission capabilities must be a JSON array of strings.');
+    if (
+      supplementalCapabilities !== null &&
+      parseCapabilityArray(supplementalCapabilities, 'Supplemental capabilities').length
+    ) {
+      throw new Error('Custom permission policies cannot store supplemental capabilities.');
     }
-    return customPermissionPolicy(parsed);
+    return customPermissionPolicy(parseCapabilityArray(customCapabilities, 'Custom permission capabilities'));
   }
   if (customCapabilities !== null) throw new Error('Named permission profiles cannot store custom capabilities.');
   if (!isNamedPermissionProfile(profile)) throw new Error(`Unknown permission profile: ${profile}`);
-  return permissionPolicyForProfile(profile);
+  return permissionPolicyForProfile(
+    profile,
+    supplementalCapabilities === null
+      ? []
+      : parseCapabilityArray(supplementalCapabilities, 'Supplemental capabilities'),
+  );
 }
 
 export function serializeCustomCapabilities(policy: PermissionPolicy): string | null {
@@ -94,6 +151,11 @@ export function serializeCustomCapabilities(policy: PermissionPolicy): string | 
   return normalized.profile === 'custom' ? JSON.stringify(normalized.capabilities) : null;
 }
 
-export function hasCapability(policy: PermissionPolicy, capability: McpCapability): boolean {
+export function serializeSupplementalCapabilities(policy: PermissionPolicy): string {
+  const normalized = normalizePermissionPolicy(policy);
+  return JSON.stringify(normalized.profile === 'custom' ? [] : normalized.supplementalCapabilities);
+}
+
+export function hasCapability(policy: PermissionPolicy, capability: Capability): boolean {
   return policy.capabilities.includes(capability);
 }

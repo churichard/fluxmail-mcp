@@ -4,6 +4,7 @@ import { AccountRegistry } from './accounts/registry.js';
 import { EmailService } from './service/emailService.js';
 import { SendScheduler } from './scheduler/sendScheduler.js';
 import { getTelemetry, type Telemetry } from './telemetry.js';
+import { LicenseController } from './licensing/refresher.js';
 
 export interface AppContext {
   config: FluxmailConfig;
@@ -13,6 +14,7 @@ export interface AppContext {
   telemetry: Telemetry;
   /** Inert until start(); only the long-lived serve/stdio commands start it. */
   scheduler: SendScheduler;
+  licenseController: LicenseController;
 }
 
 export function createContext(): AppContext {
@@ -22,6 +24,11 @@ export function createContext(): AppContext {
   const service = new EmailService(registry, db);
   const scheduler = new SendScheduler(db, service);
   const telemetry = getTelemetry(config.dataDir);
+  const licenseController = new LicenseController({
+    db,
+    config,
+    onRefreshed: () => scheduler.wake(),
+  });
   service.onScheduleChanged = () => scheduler.wake();
-  return { config, db, registry, service, scheduler, telemetry };
+  return { config, db, registry, service, scheduler, telemetry, licenseController };
 }

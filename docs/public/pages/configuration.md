@@ -1,7 +1,7 @@
 ---
 title: 'Configuration'
 description: 'Environment variables and telemetry controls for the self-hosted Fluxmail server.'
-updated: '2026-07-14'
+updated: '2026-07-15'
 ---
 
 ## Environment variables
@@ -36,7 +36,7 @@ For a personal setup, `fluxmail config set` is the simplest way to save OAuth ap
 | `DO_NOT_TRACK` | `unset` | Set to 1 to turn off anonymous usage telemetry. |
 <!-- END GENERATED:configuration -->
 
-With `FLUXMAIL_AUTH=apikey`, each HTTP API key can have its own permission profile. The profile applies to MCP and REST. `FLUXMAIL_AUTH=none` gives every HTTP client full access, so use it only behind a network boundary you control. See [Limit what a connection can do](/docs/permissions) for profiles and custom policies.
+With `FLUXMAIL_AUTH=apikey`, each HTTP API key can have its own permission profile. The profile applies to MCP and REST. `FLUXMAIL_AUTH=none` gives every HTTP client full access to mail routes, so use it only behind a network boundary you control. Administrative routes still require a bearer key with the matching `admin.*` capability. See [Limit what a connection can do](/docs/permissions) for profiles and custom policies.
 
 For the full command set, see the [CLI reference](/docs/cli).
 

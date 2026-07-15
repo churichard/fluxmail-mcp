@@ -74,6 +74,34 @@ fluxmail apikey permissions <key-id> --profile read-only
 
 Existing keys and keys created without permission options use `full`. When `FLUXMAIL_AUTH=none`, the HTTP endpoint also uses `full` because there is no API key to identify the client. Only disable authentication behind a network boundary you control.
 
+`FLUXMAIL_AUTH=none` does not apply to `/api/v1/admin` or the compatible `/auth/connections` endpoint. Those routes always require an administrative bearer key.
+
+## Administrative capabilities
+
+Administrative access is separate from mail access:
+
+| Capability | What it allows |
+| --- | --- |
+| `admin.accounts` | Connect and reauthorize mailboxes, test IMAP and SMTP settings, and update IMAP folder mappings. |
+| `admin.api_keys` | Create, update, list, and revoke API keys. |
+| `admin.license` | Read license status and activate a license. |
+
+Add administrative capabilities to a named mail profile with repeated `--admin` options:
+
+```bash
+fluxmail apikey create \
+  --name account-operator \
+  --member you@example.com \
+  --profile read-only \
+  --admin admin.accounts
+```
+
+When changing an existing key, `--admin` keeps its current named mail profile and replaces its administrative capabilities. A custom policy has no separate administrative list, so pass every allowed capability with `--allow` instead.
+
+For a custom policy, put both mail and administrative capabilities in repeated `--allow` options. Fluxmail rejects administrative capabilities for non-admin members. It also checks the member's current role at request time. Migrated memberless management keys rely on their capabilities because they have no member role.
+
+Treat `admin.api_keys` as root authority. The REST API will not revoke the last usable root key or remove its `admin.api_keys` capability. Create another root key before rotating the current one.
+
 ## Build a custom policy
 
 Use repeated `--allow` options when the named profiles are too broad. List the available capabilities first:

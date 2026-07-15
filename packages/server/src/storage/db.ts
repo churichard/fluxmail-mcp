@@ -101,9 +101,27 @@ export const apiKeys = sqliteTable('api_keys', {
   permissionProfile: text('permission_profile').notNull().default('full'),
   /** JSON array of explicit MCP capabilities for custom policies. */
   customCapabilities: text('custom_capabilities'),
+  /** JSON array of admin capabilities added to a named mail profile. */
+  supplementalCapabilities: text('supplemental_capabilities').notNull().default('[]'),
   /** NULL means no extra narrowing; otherwise a JSON array of canonical account ids. */
   accountIds: text('account_ids'),
 });
+
+export const adminAuditEvents = sqliteTable(
+  'admin_audit_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    timestamp: integer('timestamp').notNull(),
+    operation: text('operation').notNull(),
+    outcome: text('outcome').notNull(),
+    actorKeyId: text('actor_key_id'),
+    actorMemberId: text('actor_member_id'),
+    resourceType: text('resource_type'),
+    resourceId: text('resource_id'),
+    errorCode: text('error_code'),
+  },
+  (table) => [index('admin_audit_events_timestamp').on(table.timestamp)],
+);
 
 export const gmailConnectionGrants = sqliteTable('gmail_connection_grants', {
   /** SHA-256 hex digest. The raw token is printed once and never stored. */
@@ -237,8 +255,22 @@ CREATE TABLE IF NOT EXISTS api_keys (
   member_id TEXT REFERENCES members(id) ON DELETE SET NULL,
   permission_profile TEXT NOT NULL DEFAULT 'full',
   custom_capabilities TEXT,
+  supplemental_capabilities TEXT NOT NULL DEFAULT '[]',
   account_ids TEXT
 );
+CREATE TABLE IF NOT EXISTS admin_audit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp INTEGER NOT NULL,
+  operation TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  actor_key_id TEXT,
+  actor_member_id TEXT,
+  resource_type TEXT,
+  resource_id TEXT,
+  error_code TEXT
+);
+CREATE INDEX IF NOT EXISTS admin_audit_events_timestamp
+  ON admin_audit_events(timestamp);
 CREATE TABLE IF NOT EXISTS gmail_connection_grants (
   token_hash TEXT PRIMARY KEY,
   scope TEXT NOT NULL,
@@ -356,6 +388,33 @@ export function openDb(dbPath: string): FluxmailDb {
   }
   if (!apiKeyCols.has('custom_capabilities')) {
     sqlite.exec('ALTER TABLE api_keys ADD COLUMN custom_capabilities TEXT');
+  }
+  if (!apiKeyCols.has('supplemental_capabilities')) {
+    sqlite.exec("ALTER TABLE api_keys ADD COLUMN supplemental_capabilities TEXT NOT NULL DEFAULT '[]'");
+    // Preserve the account-management authority that admin and memberless keys
+    // held before administrative capabilities existed. Broader capabilities
+    // must still be granted explicitly.
+    sqlite.exec(`
+      UPDATE api_keys
+      SET supplemental_capabilities = '["admin.accounts"]'
+      WHERE permission_profile != 'custom'
+        AND (
+          member_id IS NULL
+          OR member_id IN (SELECT id FROM members WHERE role = 'admin')
+        )
+    `);
+    sqlite.exec(`
+      UPDATE api_keys
+      SET custom_capabilities = json_insert(
+        COALESCE(custom_capabilities, '[]'),
+        '$[#]', 'admin.accounts'
+      )
+      WHERE permission_profile = 'custom'
+        AND (
+          member_id IS NULL
+          OR member_id IN (SELECT id FROM members WHERE role = 'admin')
+        )
+    `);
   }
   if (!apiKeyCols.has('account_ids')) {
     sqlite.exec('ALTER TABLE api_keys ADD COLUMN account_ids TEXT');

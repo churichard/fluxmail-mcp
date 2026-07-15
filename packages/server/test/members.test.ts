@@ -229,11 +229,58 @@ describe('API key migrations', () => {
     expect(account?.id).toBe('acct_1');
     expect(account?.memberId).toBeNull();
     expect(account?.sharingMode).toBe('all');
-    expect(listApiKeys(db)[0]).toMatchObject({ memberId: null, permissionProfile: 'full', accountIds: null });
-    expect(authenticateApiKey(db, legacyKey)).toMatchObject({ memberId: null, role: null, accountIds: null });
+    expect(listApiKeys(db)[0]).toMatchObject({
+      memberId: null,
+      permissionProfile: 'full',
+      accountIds: null,
+      supplementalCapabilities: ['admin.accounts'],
+    });
+    expect(authenticateApiKey(db, legacyKey)).toMatchObject({
+      memberId: null,
+      role: null,
+      accountIds: null,
+      permissions: { supplementalCapabilities: ['admin.accounts'] },
+    });
     // The first member becomes the owner while migrated sharing stays global.
     const member = addMember(db, { name: 'Alice' });
     expect(db.select().from(accounts).all()[0]?.memberId).toBe(member.id);
     expect(db.select().from(accounts).all()[0]?.sharingMode).toBe('all');
+  });
+
+  it('preserves only account-management access for existing admin-owned keys', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'fluxmail-admin-capability-migrate-'));
+    const dbPath = path.join(dir, 'fluxmail.db');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE members (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT,
+        role TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO members VALUES ('member_admin', 'Admin', NULL, 'admin', 1);
+      INSERT INTO members VALUES ('member_user', 'User', NULL, 'member', 2);
+      CREATE TABLE api_keys (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        key_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        member_id TEXT REFERENCES members(id) ON DELETE SET NULL,
+        permission_profile TEXT NOT NULL DEFAULT 'full',
+        custom_capabilities TEXT,
+        account_ids TEXT
+      );
+      INSERT INTO api_keys VALUES ('key_admin', 'admin', 'hash-admin', 1, NULL, 'member_admin', 'full', NULL, NULL);
+      INSERT INTO api_keys VALUES ('key_user', 'user', 'hash-user', 2, NULL, 'member_user', 'full', NULL, NULL);
+      INSERT INTO api_keys VALUES ('key_custom', 'custom', 'hash-custom', 3, NULL, 'member_admin', 'custom', '["mail.read"]', NULL);
+    `);
+    raw.close();
+
+    const keys = listApiKeys(openDb(dbPath));
+    expect(keys.find((key) => key.id === 'key_admin')?.supplementalCapabilities).toEqual(['admin.accounts']);
+    expect(keys.find((key) => key.id === 'key_user')?.supplementalCapabilities).toEqual([]);
+    expect(keys.find((key) => key.id === 'key_custom')?.capabilities).toEqual(['mail.read', 'admin.accounts']);
   });
 });

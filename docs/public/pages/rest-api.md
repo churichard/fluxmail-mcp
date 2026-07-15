@@ -1,7 +1,7 @@
 ---
 title: 'REST API'
 description: 'Use Fluxmail from local scripts and applications through the versioned JSON API.'
-updated: '2026-07-14'
+updated: '2026-07-15'
 ---
 
 Fluxmail serves a REST API at `/api/v1` alongside its MCP endpoint. The API uses the same connected mailboxes, member access rules, permission profiles, plan limits, and scheduled-send worker as MCP.
@@ -35,6 +35,79 @@ curl http://localhost:8977/api/v1/status \
 ```
 
 The same routes work in Docker and remote deployments. The HTTP server is not restricted to loopback, so use the host firewall and reverse proxy to control network access. Keep `FLUXMAIL_AUTH=apikey` unless the server is behind a trusted network boundary.
+
+Administrative routes always require an API key, including when `FLUXMAIL_AUTH=none` disables authentication for mail routes. Fluxmail accepts plaintext administrative traffic only from loopback. An HTTPS reverse proxy should reach the Fluxmail backend over loopback, and the plain backend port must not be exposed to remote clients.
+
+## Create an administrative key
+
+The first member is the initial administrator. Create the first administrative API key from a local terminal:
+
+```bash
+fluxmail apikey create \
+  --name instance-admin \
+  --member you@example.com \
+  --profile full \
+  --admin admin.accounts \
+  --admin admin.api_keys \
+  --admin admin.license
+```
+
+New keys have no administrative access unless you add it. Fluxmail checks both the key capability and the key owner's current administrator role on every request. A key stops working on administrative routes as soon as its owner loses that role.
+
+## Administrative routes
+
+The management API is under `/api/v1/admin`:
+
+| Capability | Routes |
+| --- | --- |
+| `admin.accounts` | Create Gmail, Outlook, and IMAP connections; test IMAP settings; update IMAP folder overrides. |
+| `admin.api_keys` | List, create, update, and revoke API keys. |
+| `admin.license` | Read license status and activate a license key. |
+
+All JSON management requests require `Content-Type: application/json` and have a 64 KiB body limit. Send API keys only in the `Authorization` header. Query string credentials are rejected.
+
+### Manage API keys
+
+Create a read-only key for an existing member:
+
+```bash
+curl "$FLUXMAIL_PUBLIC_URL/api/v1/admin/api-keys" \
+  -X POST \
+  -H "Authorization: Bearer $FLUXMAIL_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "name": "reporting",
+    "member": "you@example.com",
+    "permissionProfile": "read-only",
+    "accounts": null
+  }'
+```
+
+The response contains the plaintext `key` once. Later list and update responses contain metadata only. Use `accounts: null` for every mailbox granted to the member, an empty array for no mailboxes, or an array of account IDs or addresses.
+
+`PATCH /api/v1/admin/api-keys/:keyId` can replace the permission policy, administrative supplements, or mailbox scope. `DELETE` revokes a key. Fluxmail refuses to revoke the last usable key with `admin.api_keys`, or to remove that capability from it.
+
+### Check and activate a license
+
+`GET /api/v1/admin/license` returns plan limits, usage, lease dates, and renewal warnings. It never returns the configured license key.
+
+Activate a key with:
+
+```bash
+curl "$FLUXMAIL_PUBLIC_URL/api/v1/admin/license/activate" \
+  -X POST \
+  -H "Authorization: Bearer $FLUXMAIL_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data '{"licenseKey":"fluxmail_lic_..."}'
+```
+
+A validated activation returns `200`. If the license service is unavailable, Fluxmail saves the key and returns `202`; the running server retries without a restart. REST cannot replace a key supplied through `FLUXMAIL_LICENSE_KEY`.
+
+### Management response security
+
+Management responses set `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`. Fluxmail does not enable CORS for these routes.
+
+Fluxmail stores an audit row for each authenticated management mutation. Rows contain the operation, outcome, actor IDs, resource IDs when available, and a stable error code. They do not contain request bodies, names, addresses, hosts, passwords, plaintext API keys, OAuth links, license keys, or error text. The database keeps the newest 10,000 events. There is no audit read API in this release.
 
 ## Find an account ID
 

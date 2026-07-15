@@ -4,6 +4,7 @@ import type { FluxmailConfig } from '../src/config.js';
 import { createApp, type AppDeps } from '../src/http/app.js';
 import { AccountRegistry } from '../src/accounts/registry.js';
 import { createApiKey } from '../src/storage/apiKeys.js';
+import { permissionPolicyForProfile } from '../src/permissions.js';
 import { accountCredentials, openDb } from '../src/storage/db.js';
 import { decryptString } from '../src/storage/crypto.js';
 import { addMember } from '../src/storage/members.js';
@@ -96,7 +97,12 @@ describe('hosted Outlook OAuth flow', () => {
 
     const deps = hostedDeps();
     const owner = addMember(deps.db, { name: 'Owner', email: 'owner@example.com', role: 'admin' });
-    const { key } = createApiKey(deps.db, 'product-backend', owner.id);
+    const { key } = createApiKey(
+      deps.db,
+      'product-backend',
+      owner.id,
+      permissionPolicyForProfile('full', ['admin.accounts']),
+    );
     const app = createApp(deps);
 
     const linkResponse = await app.request('/auth/connections', {

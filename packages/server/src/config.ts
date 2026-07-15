@@ -126,6 +126,8 @@ export interface FluxmailConfig {
   maxAttachmentBytes: number;
   /** Paid-tier license key (fluxmail_lic_…); absent means free tier. */
   licenseKey?: string;
+  /** True when the license key came from the environment or a cwd dotenv file. */
+  licenseKeyFromEnvironment?: boolean;
   /** Base URL of the hosted license server. */
   licenseServerUrl: string;
   google?: {
@@ -340,6 +342,7 @@ function loadEncryptionKey(dataDir: string): Buffer {
 export function loadConfig(): FluxmailConfig {
   // Precedence: shell env > cwd .env.local > cwd .env > data-dir config.env.
   const dataDir = resolveDataDir();
+  const licenseKeyFromEnvironment = readEnvironment('FLUXMAIL_LICENSE_KEY') !== undefined;
   applyStoredConfig(dataDir);
 
   const port = readPort('FLUXMAIL_PORT', 8977);
@@ -370,7 +373,10 @@ export function loadConfig(): FluxmailConfig {
   };
 
   const licenseKey = readEnvironment('FLUXMAIL_LICENSE_KEY')?.trim();
-  if (licenseKey) config.licenseKey = licenseKey;
+  if (licenseKey) {
+    config.licenseKey = licenseKey;
+    config.licenseKeyFromEnvironment = licenseKeyFromEnvironment;
+  }
 
   const clientId = readEnvironment('GOOGLE_CLIENT_ID');
   const clientSecret = readEnvironment('GOOGLE_CLIENT_SECRET');

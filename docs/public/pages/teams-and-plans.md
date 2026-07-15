@@ -1,7 +1,7 @@
 ---
 title: 'Teams & plans'
 description: 'Add members, share mailboxes across a team, and unlock paid-plan limits with a license key on the self-hosted Fluxmail MCP server.'
-updated: '2026-07-14'
+updated: '2026-07-15'
 ---
 
 ## Members and shared mailboxes
@@ -65,6 +65,8 @@ Unlock a paid plan with your license key:
 fluxmail license activate <key>
 fluxmail license status
 ```
+
+An administrative REST client can read the same status from `GET /api/v1/admin/license` and activate a key with `POST /api/v1/admin/license/activate`. The API key needs `admin.license`. The status response never includes the configured license key. If `FLUXMAIL_LICENSE_KEY` supplies the key, REST cannot replace it.
 
 One license activates one instance, and enforcement keeps working offline. If you schedule a cancellation, the paid plan works until the end of the billing period. After the subscription ends or a payment fails, the instance drops back to Personal limits. Deactivating, downgrading, or lapsing never deletes accounts or data.
 

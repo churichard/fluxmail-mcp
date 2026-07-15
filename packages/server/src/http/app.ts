@@ -26,6 +26,10 @@ import { VERSION } from '../version.js';
 import type { Telemetry } from '../telemetry.js';
 import { findMember } from '../storage/members.js';
 import { createRestApi } from './rest.js';
+import { hasCapability } from '../permissions.js';
+import type { LicenseController } from '../licensing/refresher.js';
+import { administrationUsesHttps as administrationRequestUsesHttps, requestBodyExceedsLimit } from './admin.js';
+import { recordAdminAuditEvent } from '../storage/adminAudit.js';
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -35,10 +39,11 @@ export interface AppDeps {
   registry: AccountRegistry;
   service: EmailService;
   telemetry?: Telemetry;
+  licenseController?: LicenseController;
 }
 
 export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
-  const { config, db, registry, service, telemetry } = deps;
+  const { config, db, registry, service, telemetry, licenseController } = deps;
   const app = new Hono<{ Bindings: HttpBindings }>();
   const googleOauthStates = new Map<string, { expiresAt: number; intent?: GmailConnectionIntent }>();
   const microsoftOauthStates = new Map<
@@ -133,17 +138,20 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
   };
 
   // Connecting a mailbox requires an admin member or a migrated management key.
-  const adminAuthorized = (
-    c: { req: { header(name: string): string | undefined; query(name: string): string | undefined } },
-    allowQueryKey = false,
-  ): boolean => {
-    if (config.authMode === 'none') return true;
-    const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
-    const key = bearer ?? (allowQueryKey ? c.req.query('key') : undefined);
-    if (!key) return false;
-    const auth = authenticateApiKey(db, key);
-    return auth !== null && (auth.memberId === null || auth.role === 'admin');
+  const adminAuth = (c: { req: { header(name: string): string | undefined } }): ApiKeyAuth | null => {
+    const authorization = c.req.header('authorization');
+    const bearer = authorization?.match(/^Bearer\s+([^\s]+)$/i)?.[1];
+    return bearer ? authenticateApiKey(db, bearer) : null;
   };
+
+  const canAdministerAccounts = (auth: ApiKeyAuth): boolean =>
+    hasCapability(auth.permissions, 'admin.accounts') && (auth.memberId === null || auth.role === 'admin');
+
+  const administrationUsesHttps = (c: { req: { raw: Request }; env?: Partial<HttpBindings> }): boolean =>
+    administrationRequestUsesHttps(c.req.raw, {
+      remoteAddress: c.env?.incoming?.socket.remoteAddress,
+      encrypted: Boolean((c.env?.incoming?.socket as { encrypted?: boolean } | undefined)?.encrypted),
+    });
 
   // Authenticate an MCP request. The service applies member grants and the key's
   // optional mailbox allowlist before any provider call.
@@ -155,9 +163,47 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     return bearer ? authenticateApiKey(db, bearer) : null;
   };
 
-  app.post('/auth/connections', async (c) => {
+  app.use('/auth/connections', async (c, next) => {
     c.header('cache-control', 'no-store');
-    if (!adminAuthorized(c)) return c.json({ error: 'An admin API key is required.' }, 401);
+    c.header('x-content-type-options', 'nosniff');
+    c.header('referrer-policy', 'no-referrer');
+    return next();
+  });
+
+  app.post('/auth/connections', async (c) => {
+    const auth = adminAuth(c);
+    if (!auth) return c.json({ error: 'An admin API key is required.' }, 401);
+
+    const audit = (outcome: 'success' | 'error', errorCode?: string): void => {
+      try {
+        recordAdminAuditEvent(db, {
+          operation: 'post /auth/connections',
+          outcome,
+          actorKeyId: auth.keyId,
+          actorMemberId: auth.memberId,
+          ...(errorCode ? { errorCode } : {}),
+        });
+      } catch {
+        // Auditing must not replace the API response.
+      }
+    };
+    if (!canAdministerAccounts(auth)) {
+      audit('error', 'permission_denied');
+      return c.json({ error: 'The API key cannot manage accounts.' }, 403);
+    }
+    if (!administrationUsesHttps(c)) {
+      audit('error', 'https_required');
+      return c.json({ error: 'Administrative routes require HTTPS outside loopback.' }, 400);
+    }
+    const mediaType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+    if (mediaType !== 'application/json') {
+      audit('error', 'unsupported_media_type');
+      return c.json({ error: 'Content-Type must be application/json.' }, 415);
+    }
+    if (await requestBodyExceedsLimit(c.req.raw)) {
+      audit('error', 'request_too_large');
+      return c.json({ error: 'Request body is limited to 64 KiB.' }, 413);
+    }
 
     let input: {
       provider?: unknown;
@@ -169,6 +215,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     try {
       input = await c.req.json();
     } catch {
+      audit('error', 'invalid_request');
       return c.json({ error: 'Request body must be valid JSON.' }, 400);
     }
 
@@ -179,11 +226,17 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
       const reauthorizeAccountId =
         typeof input.reauthorizeAccountId === 'string' ? input.reauthorizeAccountId.trim() : undefined;
       const ownerRef = typeof input.owner === 'string' ? input.owner.trim() : undefined;
+      if ((reauthorizeAccountId?.length ?? 0) > 200 || (ownerRef?.length ?? 0) > 200) {
+        throw new EmailError('invalid_request', 'Account and member references are limited to 200 characters.');
+      }
       if (input.shareWith !== undefined && !Array.isArray(input.shareWith)) {
         throw new EmailError('invalid_request', 'shareWith must be an array of member ids or email addresses.');
       }
+      if ((input.shareWith?.length ?? 0) > 100) {
+        throw new EmailError('invalid_request', 'shareWith is limited to 100 members.');
+      }
       const shareWith = (input.shareWith ?? []).map((value) => {
-        if (typeof value !== 'string' || !value.trim()) {
+        if (typeof value !== 'string' || !value.trim() || value.trim().length > 200) {
           throw new EmailError('invalid_request', 'shareWith must contain member ids or email addresses.');
         }
         return value.trim();
@@ -231,6 +284,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
         input.provider === 'gmail'
           ? prepareHostedGmailConnection(db, config, intent)
           : prepareHostedOutlookConnection(db, config, intent);
+      audit('success');
       return c.json(
         {
           provider: input.provider,
@@ -240,7 +294,11 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
         201,
       );
     } catch (err) {
-      if (isEmailError(err)) return c.json({ error: err.message }, 400);
+      if (isEmailError(err)) {
+        audit('error', err.code);
+        return c.json({ error: err.message }, 400);
+      }
+      audit('error', 'internal');
       return c.json({ error: 'Could not create the connection link.' }, 500);
     }
   });
@@ -303,9 +361,15 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
 
   // Server-hosted OAuth flow (for remote deployments; the CLI uses a loopback flow instead).
   app.get('/auth/google', (c) => {
-    if (!adminAuthorized(c, true)) {
-      return c.text('Unauthorized: append ?key=<an admin API key>', 401);
+    c.header('cache-control', 'no-store');
+    c.header('x-content-type-options', 'nosniff');
+    c.header('referrer-policy', 'no-referrer');
+    if (!administrationUsesHttps(c)) return c.text('Administrative routes require HTTPS outside loopback.', 400);
+    const auth = adminAuth(c);
+    if (!auth) {
+      return c.text('Unauthorized: pass an admin API key as a Bearer token.', 401);
     }
+    if (!canAdministerAccounts(auth)) return c.text('Forbidden.', 403);
     const ownerRef = c.req.query('owner');
     if (!ownerRef) {
       return c.text(
@@ -404,10 +468,15 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
   });
 
   app.get('/auth/microsoft', (c) => {
+    c.header('cache-control', 'no-store');
+    c.header('x-content-type-options', 'nosniff');
     c.header('referrer-policy', 'no-referrer');
-    if (!adminAuthorized(c, true)) {
-      return c.text('Unauthorized: append ?key=<an admin API key>', 401);
+    if (!administrationUsesHttps(c)) return c.text('Administrative routes require HTTPS outside loopback.', 400);
+    const auth = adminAuth(c);
+    if (!auth) {
+      return c.text('Unauthorized: pass an admin API key as a Bearer token.', 401);
     }
+    if (!canAdministerAccounts(auth)) return c.text('Forbidden.', 403);
     const ownerRef = c.req.query('owner');
     if (!ownerRef) {
       return c.text(
@@ -515,7 +584,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     }
   });
 
-  app.route('/', createRestApi({ config, db, service, telemetry }));
+  app.route('/', createRestApi({ config, db, service, telemetry, registry, licenseController }));
 
   return app;
 }

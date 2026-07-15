@@ -1,7 +1,7 @@
 ---
 title: 'Connect Outlook to the MCP server'
 description: 'Register a Microsoft Entra application and connect Microsoft 365 or Outlook.com to Fluxmail.'
-updated: '2026-07-14'
+updated: '2026-07-15'
 ---
 
 Fluxmail connects to Microsoft 365 and Outlook.com through Microsoft Graph. You create the Microsoft Entra app registration, and Fluxmail stores its OAuth tokens on the server you run.
@@ -116,16 +116,18 @@ Open the printed connection link in your browser, continue to Microsoft, and app
 
 ## Create hosted connection links through the API
 
-A product backend can create a hosted link without running the CLI. Send an admin API key to the management endpoint:
+A product backend can create a hosted link without running the CLI. The API key needs `admin.accounts`, and its owner must still be an administrator:
 
 ```bash
-curl -X POST "$FLUXMAIL_PUBLIC_URL/auth/connections" \
+curl -X POST "$FLUXMAIL_PUBLIC_URL/api/v1/admin/connections" \
   -H "Authorization: Bearer $FLUXMAIL_ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"provider":"outlook","owner":"you@example.com"}'
 ```
 
-The response contains `connectionUrl` and `expiresAt`. Send `connectionUrl` to the user, but keep the admin API key on your backend. To reconnect an existing mailbox, send `reauthorizeAccountId` instead of `owner`. The endpoint also accepts `provider: "gmail"`.
+The response contains `data.connectionUrl` and `data.expiresAt`. Send the URL to the user, but keep the admin API key on your backend. To reconnect an existing mailbox, send `reauthorizeAccountId` instead of `owner`. The endpoint also accepts `provider: "gmail"`.
+
+`POST /auth/connections` remains available for existing integrations. It has the same authentication requirement and no longer bypasses authentication under `FLUXMAIL_AUTH=none`.
 
 ## Reconnect Outlook later
 

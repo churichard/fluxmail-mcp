@@ -32,6 +32,7 @@ import {
   revokeApiKey,
   updateApiKeyAccounts,
   updateApiKeyPermissions,
+  type ApiKeyInfo,
 } from './storage/apiKeys.js';
 import { addMember, findMember, listMembers, removeMember, setMemberRole, type MemberRole } from './storage/members.js';
 import { activateLicense } from './licensing/activation.js';
@@ -44,12 +45,13 @@ import {
   readLeaseRow,
   type Entitlements,
 } from './licensing/entitlements.js';
-import { loadInstanceId, startLicenseRefresher } from './licensing/refresher.js';
+import { loadInstanceId } from './licensing/refresher.js';
 import { VERSION } from './version.js';
 import type { FluxmailDb } from './storage/db.js';
 import type { ImapCredentials, ImapSecurity } from '@fluxmail/provider-imap';
 import {
   customPermissionPolicy,
+  ADMIN_CAPABILITIES,
   FULL_PERMISSION_POLICY,
   isNamedPermissionProfile,
   MCP_CAPABILITIES,
@@ -96,6 +98,7 @@ interface AddAccountOptions {
 interface PermissionOptions {
   profile?: string;
   allow: string[];
+  admin?: string[];
 }
 
 interface ScopedMcpOptions extends PermissionOptions {
@@ -118,18 +121,38 @@ function sharingMode(shared: boolean | undefined, sharedMemberIds: readonly stri
 }
 
 export function permissionPolicyFromOptions(opts: PermissionOptions, requireSelection = false): PermissionPolicy {
+  const supplemental = opts.admin ?? [];
   if (opts.profile && opts.allow.length) {
     throw new Error('--profile cannot be combined with --allow.');
+  }
+  if (opts.allow.length && supplemental.length) {
+    throw new Error(
+      '--admin can only be combined with a named --profile. Put admin capabilities in --allow for a custom policy.',
+    );
   }
   if (opts.profile) {
     if (!isNamedPermissionProfile(opts.profile)) {
       throw new Error(`Unknown profile "${opts.profile}". Expected one of: ${NAMED_PERMISSION_PROFILES.join(', ')}.`);
     }
-    return permissionPolicyForProfile(opts.profile);
+    return permissionPolicyForProfile(opts.profile, supplemental);
   }
   if (opts.allow.length) return customPermissionPolicy(opts.allow);
+  if (supplemental.length) return permissionPolicyForProfile('full', supplemental);
   if (requireSelection) throw new Error('Choose --profile or at least one --allow capability.');
   return FULL_PERMISSION_POLICY;
+}
+
+export function permissionPolicyForUpdate(
+  opts: PermissionOptions,
+  existing: Pick<ApiKeyInfo, 'permissionProfile'>,
+): PermissionPolicy {
+  const supplemental = opts.admin ?? [];
+  if (opts.profile || opts.allow.length) return permissionPolicyFromOptions(opts, true);
+  if (!supplemental.length) throw new Error('Choose --profile, --admin, or at least one --allow capability.');
+  if (existing.permissionProfile === 'custom') {
+    throw new Error('This key uses a custom policy. Pass every capability with --allow.');
+  }
+  return permissionPolicyForProfile(existing.permissionProfile, supplemental);
 }
 
 function connectionPort(value: string, option: string): number {
@@ -294,12 +317,7 @@ export function createCliProgram(): Command {
         );
         console.log(`  Plan:           ${planLine(getEntitlements(ctx.db))}`);
         warnLicense(ctx.db, console.log);
-        startLicenseRefresher({
-          db: ctx.db,
-          config: ctx.config,
-          log: console.log,
-          onRefreshed: () => ctx.scheduler.wake(),
-        });
+        ctx.licenseController.start(console.log);
       });
     });
 
@@ -328,12 +346,7 @@ export function createCliProgram(): Command {
       await server.connect(new StdioServerTransport());
       ctx.telemetry.capture('mcp server started', { product_surface: 'mcp', transport: 'stdio' });
       // stdout belongs to the MCP protocol; log to stderr only.
-      startLicenseRefresher({
-        db: ctx.db,
-        config: ctx.config,
-        log: console.error,
-        onRefreshed: () => ctx.scheduler.wake(),
-      });
+      ctx.licenseController.start(console.error);
       console.error('Fluxmail MCP server running on stdio');
       warnLicense(ctx.db);
       const pending = scopedService.listScheduled().filter((send) => send.status === 'pending').length;
@@ -828,9 +841,9 @@ export function createCliProgram(): Command {
 
   apikey
     .command('capabilities')
-    .description('List email capabilities for custom permission policies')
+    .description('List capabilities for API key permission policies')
     .action(() => {
-      for (const capability of MCP_CAPABILITIES) console.log(capability);
+      for (const capability of [...MCP_CAPABILITIES, ...ADMIN_CAPABILITIES]) console.log(capability);
     });
 
   apikey
@@ -839,7 +852,8 @@ export function createCliProgram(): Command {
     .requiredOption('--member <member>', 'Member (id or email) the key is issued to')
     .option('--account <account>', 'Limit the key to one mailbox; repeat as needed', collectOption, [])
     .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
-    .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
+    .option('--allow <capability>', 'Allow one capability in a custom policy; repeat as needed', collectOption, [])
+    .option('--admin <capability>', 'Add one admin capability to a named profile; repeat as needed', collectOption, [])
     .description('Create an API key (shown once)')
     .action((opts: { name: string; member: string; account: string[] } & PermissionOptions) => {
       const ctx = createContext();
@@ -881,6 +895,7 @@ export function createCliProgram(): Command {
         console.log(
           `${k.id}  ${k.name}  member=${member}  accounts=${accountScope}  profile=${k.permissionProfile}` +
             (k.permissionProfile === 'custom' ? `  allows=${k.capabilities.join(',')}` : '') +
+            (k.supplementalCapabilities.length ? `  admin=${k.supplementalCapabilities.join(',')}` : '') +
             `  created=${new Date(k.createdAt).toISOString()}  lastUsed=${lastUsed}`,
         );
       }
@@ -918,13 +933,20 @@ export function createCliProgram(): Command {
     .command('permissions')
     .argument('<keyId>')
     .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
-    .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
-    .description('Change the email permissions for an API key')
+    .option('--allow <capability>', 'Allow one capability in a custom policy; repeat as needed', collectOption, [])
+    .option('--admin <capability>', 'Add one admin capability to a named profile; repeat as needed', collectOption, [])
+    .description('Change the permissions for an API key')
     .action((keyId: string, opts: PermissionOptions) => {
       const ctx = createContext();
       warnLicense(ctx.db);
       try {
-        const permissions = permissionPolicyFromOptions(opts, true);
+        const existing = listApiKeys(ctx.db).find((key) => key.id === keyId);
+        if (!existing) {
+          console.error(`No key with id ${keyId}`);
+          process.exitCode = 1;
+          return;
+        }
+        const permissions = permissionPolicyForUpdate(opts, existing);
         if (!updateApiKeyPermissions(ctx.db, keyId, permissions)) {
           console.error(`No key with id ${keyId}`);
           process.exitCode = 1;

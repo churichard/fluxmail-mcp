@@ -5,6 +5,8 @@ import { HTTPException } from 'hono/http-exception';
 import type { HttpBindings } from '@hono/node-server';
 import { EmailError, isEmailError, type EmailQuery, type ModifyAction, type PageOpts } from '@fluxmail/core';
 import type { FluxmailConfig } from '../config.js';
+import type { AccountRegistry } from '../accounts/registry.js';
+import type { LicenseController } from '../licensing/refresher.js';
 import type { AccessScope, EmailService, SendInput } from '../service/emailService.js';
 import type { FluxmailDb } from '../storage/db.js';
 import { authenticateApiKey, type ApiKeyAuth } from '../storage/apiKeys.js';
@@ -12,6 +14,8 @@ import { completeIdempotencyKey, reserveIdempotencyKey } from '../storage/restId
 import { FULL_PERMISSION_POLICY, hasCapability, type McpCapability } from '../permissions.js';
 import type { Telemetry, TelemetryProperties } from '../telemetry.js';
 import { VERSION } from '../version.js';
+import { administrationUsesHttps, registerAdminRoutes, requestBodyExceedsLimit } from './admin.js';
+import { recordAdminAuditEvent } from '../storage/adminAudit.js';
 
 interface RestVariables {
   restAuth: ApiKeyAuth;
@@ -26,6 +30,8 @@ export interface RestApiDeps {
   db: FluxmailDb;
   service: EmailService;
   telemetry?: Telemetry;
+  registry?: AccountRegistry;
+  licenseController?: LicenseController;
 }
 
 const id = z.string().trim().min(1).openapi({ example: 'msg_123' });
@@ -360,7 +366,13 @@ function apiFailure(err: unknown): ApiFailure {
 function jsonResponse(body: unknown, status: number, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json; charset=UTF-8', 'cache-control': 'no-store', ...headers },
+    headers: {
+      'content-type': 'application/json; charset=UTF-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+      ...headers,
+    },
   });
 }
 
@@ -642,6 +654,22 @@ function toEmailQuery(input: z.infer<typeof messageQuerySchema>): { query: Email
   };
 }
 
+const FIXED_ADMIN_AUDIT_PATHS = new Set([
+  '/api/v1/admin/connections',
+  '/api/v1/admin/imap/tests',
+  '/api/v1/admin/api-keys',
+  '/api/v1/admin/license/activate',
+]);
+
+function adminAuditPath(path: string): string {
+  if (FIXED_ADMIN_AUDIT_PATHS.has(path)) return path;
+  if (/^\/api\/v1\/admin\/api-keys\/[^/]+$/.test(path)) return '/api/v1/admin/api-keys/:id';
+  if (/^\/api\/v1\/admin\/accounts\/[^/]+\/imap\/folders$/.test(path)) {
+    return '/api/v1/admin/accounts/:id/imap/folders';
+  }
+  return '/api/v1/admin/*';
+}
+
 function modifyAction(input: z.infer<typeof ModifyRequestSchema>): ModifyAction {
   if (input.action === 'move') {
     const folder = input.folder!;
@@ -679,10 +707,59 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     },
   });
 
+  app.use('/api/v1/admin/*', async (c, next) => {
+    await next();
+    if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(c.req.method)) return;
+    const auth = c.get('restAuth');
+    if (!auth) return;
+    const resource = c.req.path.match(/\/(api-keys|accounts)\/((?:key|acct)_[^/]+)/);
+    const operation = `${c.req.method.toLowerCase()} ${adminAuditPath(c.req.path)}`;
+    let errorCode: string | undefined;
+    if (c.res.status >= 400) {
+      try {
+        const payload = (await c.res.clone().json()) as { error?: { code?: unknown } };
+        if (typeof payload.error?.code === 'string') errorCode = payload.error.code;
+      } catch {
+        errorCode = 'internal';
+      }
+    }
+    try {
+      recordAdminAuditEvent(deps.db, {
+        operation,
+        outcome: c.res.status < 400 ? 'success' : 'error',
+        actorKeyId: auth.keyId,
+        actorMemberId: auth.memberId,
+        ...(resource
+          ? { resourceType: resource[1] === 'api-keys' ? 'api_key' : 'account', resourceId: resource[2] }
+          : {}),
+        ...(errorCode ? { errorCode } : {}),
+      });
+    } catch {
+      // Auditing must not replace the API response.
+    }
+  });
+
   app.use('/api/v1/*', async (c, next) => {
     if (c.req.path === '/api/v1' || c.req.path === '/api/v1/openapi.json') return next();
+    const administrative = c.req.path.startsWith('/api/v1/admin/');
+    if (administrative) {
+      c.header('cache-control', 'no-store');
+      c.header('x-content-type-options', 'nosniff');
+      c.header('referrer-policy', 'no-referrer');
+      if (
+        !administrationUsesHttps(c.req.raw, {
+          remoteAddress: c.env?.incoming?.socket.remoteAddress,
+          encrypted: Boolean((c.env?.incoming?.socket as { encrypted?: boolean } | undefined)?.encrypted),
+        })
+      ) {
+        return jsonResponse(
+          { error: { code: 'https_required', message: 'Administrative routes require HTTPS outside loopback.' } },
+          400,
+        );
+      }
+    }
     let auth: ApiKeyAuth | null;
-    if (deps.config.authMode === 'none') {
+    if (deps.config.authMode === 'none' && !administrative) {
       auth = {
         keyId: 'auth:none',
         memberId: null,
@@ -691,7 +768,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
         accountIds: null,
       };
     } else {
-      const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
+      const authorization = c.req.header('authorization');
+      const bearer = authorization?.match(/^Bearer\s+([^\s]+)$/i)?.[1];
       auth = bearer ? authenticateApiKey(deps.db, bearer) : null;
     }
     if (!auth) {
@@ -700,6 +778,21 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
       });
     }
     c.set('restAuth', auth);
+    if (administrative && (c.req.method === 'POST' || c.req.method === 'PATCH' || c.req.method === 'PUT')) {
+      const mediaType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+      if (mediaType !== 'application/json') {
+        return jsonResponse(
+          { error: { code: 'unsupported_media_type', message: 'Content-Type must be application/json.' } },
+          415,
+        );
+      }
+      if (await requestBodyExceedsLimit(c.req.raw)) {
+        return jsonResponse(
+          { error: { code: 'request_too_large', message: 'Administrative request bodies are limited to 64 KiB.' } },
+          413,
+        );
+      }
+    }
     const scope: AccessScope =
       deps.config.authMode === 'none'
         ? { memberId: null }
@@ -707,6 +800,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     c.set('restService', deps.service.withScope(scope));
     return next();
   });
+
+  registerAdminRoutes(app, deps);
 
   const discoveryRoute = createRoute({
     method: 'get',

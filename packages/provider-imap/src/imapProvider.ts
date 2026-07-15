@@ -200,6 +200,7 @@ export function smtpTransportOptions(config: ImapCredentials['smtp']) {
 export class ImapProvider implements EmailProvider {
   readonly capabilities = IMAP_CAPABILITIES;
   private imap?: ImapFlow;
+  private connectingImap?: ImapFlow;
   private imapConnection?: Promise<ImapFlow>;
   private smtp?: Transporter;
   private resolved?: ResolvedFolders;
@@ -207,16 +208,13 @@ export class ImapProvider implements EmailProvider {
   constructor(private readonly options: ImapProviderOptions) {}
 
   async close(): Promise<void> {
-    const imap = this.imap ?? (await this.imapConnection?.catch(() => undefined));
+    const imap = this.imap;
+    const connecting = this.connectingImap;
     this.imap = undefined;
+    this.connectingImap = undefined;
     this.imapConnection = undefined;
-    if (imap?.usable) {
-      try {
-        await imap.logout();
-      } catch {
-        imap.close();
-      }
-    }
+    if (connecting && connecting !== imap) connecting.close();
+    if (imap && imap !== connecting) imap.close();
     this.smtp?.close();
     this.smtp = undefined;
   }
@@ -244,15 +242,21 @@ export class ImapProvider implements EmailProvider {
     if (!this.imapConnection) {
       const client = this.options.imapFactory?.(this.imapOptions()) ?? new ImapFlow(this.imapOptions());
       client.on('error', () => {});
+      this.connectingImap = client;
       this.imapConnection = (async () => {
         try {
           await client.connect();
+          if (this.connectingImap !== client) {
+            client.close();
+            throw new EmailError('provider_unavailable', 'The IMAP connection was closed during setup.');
+          }
           this.imap = client;
           return client;
         } catch (error) {
           client.close();
           throw mapImapError(error);
         } finally {
+          if (this.connectingImap === client) this.connectingImap = undefined;
           this.imapConnection = undefined;
         }
       })();

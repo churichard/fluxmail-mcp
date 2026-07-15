@@ -13,9 +13,9 @@ import {
   readLeaseRow,
   saveLeaseToken,
 } from '../src/licensing/entitlements.js';
-import { loadInstanceId, refreshLicense } from '../src/licensing/refresher.js';
+import { LicenseController, loadInstanceId, refreshLicense } from '../src/licensing/refresher.js';
 import { activateLicense } from '../src/licensing/activation.js';
-import { readStoredConfig, setStoredConfig } from '../src/config.js';
+import { readStoredConfig, setStoredConfig, type FluxmailConfig } from '../src/config.js';
 import { openDb } from '../src/storage/db.js';
 
 function makeKeypair(): { privateKey: KeyObject; publicKeyB64: string } {
@@ -429,6 +429,66 @@ describe('activateLicense', () => {
 
     expect(result.outcome).toBe('not_found');
     expect(readStoredConfig(dir).FLUXMAIL_LICENSE_KEY).toBe(oldKey);
+  });
+});
+
+describe('LicenseController', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('reloads a newly stored key when the running controller is woken', async () => {
+    vi.stubEnv('FLUXMAIL_LICENSE_PUBLIC_KEYS', keys.publicKeyB64);
+    const dir = mkdtempSync(path.join(tmpdir(), 'fluxmail-controller-'));
+    const db = openDb(':memory:');
+    const token = signLease(keys.privateKey, leasePayload());
+    const { fetchImpl } = fakeFetch(() => Response.json({ lease: token }));
+    const config = {
+      dataDir: dir,
+      licenseServerUrl: 'https://license.invalid',
+    } as FluxmailConfig;
+    const controller = new LicenseController({ db, config, fetchImpl });
+    controller.start();
+
+    setStoredConfig(dir, 'FLUXMAIL_LICENSE_KEY', `fluxmail_lic_${'ef'.repeat(20)}`);
+    controller.wake();
+    await vi.waitFor(() => expect(readLeaseRow(db)?.token).toBe(token));
+    controller.stop();
+  });
+
+  it('refreshes a replacement key after an older refresh finishes', async () => {
+    vi.stubEnv('FLUXMAIL_LICENSE_PUBLIC_KEYS', keys.publicKeyB64);
+    const dir = mkdtempSync(path.join(tmpdir(), 'fluxmail-controller-race-'));
+    const db = openDb(':memory:');
+    const oldKey = `fluxmail_lic_${'12'.repeat(20)}`;
+    const replacementKey = `fluxmail_lic_${'34'.repeat(20)}`;
+    const oldToken = signLease(keys.privateKey, leasePayload({ licenseId: 'old-license', maxAccounts: 4 }));
+    const replacementToken = signLease(
+      keys.privateKey,
+      leasePayload({ licenseId: 'replacement-license', maxAccounts: 20 }),
+    );
+    let finishOldRefresh!: () => void;
+    const oldRefresh = new Promise<Response>((resolve) => {
+      finishOldRefresh = () => resolve(Response.json({ lease: oldToken }));
+    });
+    const { fetchImpl, calls } = fakeFetch(() =>
+      calls.length === 1 ? oldRefresh : Response.json({ lease: replacementToken }),
+    );
+    const config = {
+      dataDir: dir,
+      licenseKey: oldKey,
+      licenseServerUrl: 'https://license.invalid',
+    } as FluxmailConfig;
+    const controller = new LicenseController({ db, config, fetchImpl });
+    controller.start();
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+
+    setStoredConfig(dir, 'FLUXMAIL_LICENSE_KEY', replacementKey);
+    controller.wake();
+    finishOldRefresh();
+
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await vi.waitFor(() => expect(readLeaseRow(db)?.token).toBe(replacementToken));
+    expect(calls.map((call) => (call.body as { licenseKey: string }).licenseKey)).toEqual([oldKey, replacementKey]);
+    controller.stop();
   });
 });
 

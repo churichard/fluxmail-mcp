@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { FluxmailConfig } from '../config.js';
+import { readStoredConfig } from '../config.js';
 import type { FluxmailDb } from '../storage/db.js';
 import { validateLicense } from './client.js';
 import { licensePublicKeys, verifyLease, type LeasePayload } from './lease.js';
@@ -40,6 +41,14 @@ export interface RefreshOptions {
   licenseKey: string;
   serverUrl: string;
   dataDir: string;
+  fetchImpl?: typeof fetch;
+}
+
+export interface LicenseControllerOptions {
+  db: FluxmailDb;
+  config: FluxmailConfig;
+  log?: (line: string) => void;
+  onRefreshed?: () => void;
   fetchImpl?: typeof fetch;
 }
 
@@ -117,62 +126,104 @@ export async function refreshLicense(db: FluxmailDb, opts: RefreshOptions): Prom
  * are unref'd and every failure path is caught, so licensing can never keep
  * the process alive or take it down. Returns a stop function.
  */
-export function startLicenseRefresher(deps: {
-  db: FluxmailDb;
-  config: FluxmailConfig;
-  log?: (line: string) => void;
-  /** Notify long-lived services that renewed entitlements are available. */
-  onRefreshed?: () => void;
-}): () => void {
-  const { db, config } = deps;
-  const log = deps.log ?? (() => {});
-  const licenseKey = config.licenseKey;
-  if (!licenseKey) return () => {};
+export class LicenseController {
+  private timer?: NodeJS.Timeout;
+  private stopped = true;
+  private running?: Promise<RefreshResult | undefined>;
+  private refreshPending = false;
 
-  let timer: NodeJS.Timeout | undefined;
-  let stopped = false;
+  constructor(private readonly deps: LicenseControllerOptions) {}
 
-  const schedule = (delayMs: number): void => {
-    if (stopped) return;
-    timer = setTimeout(() => void run(), delayMs);
-    timer.unref();
-  };
+  configuredKey(): string | undefined {
+    if (this.deps.config.licenseKeyFromEnvironment) return this.deps.config.licenseKey;
+    return readStoredConfig(this.deps.config.dataDir).FLUXMAIL_LICENSE_KEY?.trim() || this.deps.config.licenseKey;
+  }
 
-  const run = async (): Promise<void> => {
+  private schedule(delayMs: number): void {
+    if (this.stopped || !this.configuredKey()) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => void this.refreshNow(), delayMs);
+    this.timer.unref();
+  }
+
+  async refreshNow(): Promise<RefreshResult | undefined> {
+    if (this.running) return this.running;
+    const licenseKey = this.configuredKey();
+    if (!licenseKey) return undefined;
+    this.running = this.run(licenseKey).finally(() => {
+      const refreshPending = this.refreshPending && !this.stopped;
+      this.refreshPending = false;
+      this.running = undefined;
+      if (refreshPending) {
+        if (this.timer) clearTimeout(this.timer);
+        this.timer = undefined;
+        void this.refreshNow();
+      }
+    });
+    return this.running;
+  }
+
+  private async run(licenseKey: string): Promise<RefreshResult | undefined> {
     let result: RefreshResult;
     try {
-      result = await refreshLicense(db, {
+      result = await refreshLicense(this.deps.db, {
         licenseKey,
-        serverUrl: config.licenseServerUrl,
-        dataDir: config.dataDir,
+        serverUrl: this.deps.config.licenseServerUrl,
+        dataDir: this.deps.config.dataDir,
+        ...(this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {}),
       });
     } catch (err) {
-      log(`License refresh failed: ${err instanceof Error ? err.message : String(err)}`);
-      schedule(OUTAGE_RETRY_MS);
-      return;
+      this.deps.log?.(`License refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.schedule(OUTAGE_RETRY_MS);
+      return undefined;
     }
     if (result.outcome === 'refreshed') {
-      log(`License validated; lease renewed until ${result.lease.expiresAt}`);
-      deps.onRefreshed?.();
-      schedule(VALIDATE_INTERVAL_MS);
+      this.deps.log?.(`License validated; lease renewed until ${result.lease.expiresAt}`);
+      this.deps.onRefreshed?.();
+      this.schedule(VALIDATE_INTERVAL_MS);
     } else {
-      log(
+      this.deps.log?.(
         `License validation: ${result.message}` +
           (result.cachedLeaseActive
             ? ' The cached lease keeps paid limits for now.'
             : ' Running with Personal-plan limits.'),
       );
-      schedule(result.outcome === 'outage' ? OUTAGE_RETRY_MS : VALIDATE_INTERVAL_MS);
+      this.schedule(result.outcome === 'outage' ? OUTAGE_RETRY_MS : VALIDATE_INTERVAL_MS);
     }
-  };
+    return result;
+  }
 
-  const row = readLeaseRow(db);
-  const sinceLastValidation = row ? Date.now() - row.updatedAt : Number.POSITIVE_INFINITY;
-  if (sinceLastValidation >= VALIDATE_INTERVAL_MS) void run();
-  else schedule(VALIDATE_INTERVAL_MS - sinceLastValidation);
+  start(log?: (line: string) => void): void {
+    if (log) this.deps.log = log;
+    this.stopped = false;
+    if (!this.configuredKey()) return;
+    const row = readLeaseRow(this.deps.db);
+    const sinceLastValidation = row ? Date.now() - row.updatedAt : Number.POSITIVE_INFINITY;
+    if (sinceLastValidation >= VALIDATE_INTERVAL_MS) void this.refreshNow();
+    else this.schedule(VALIDATE_INTERVAL_MS - sinceLastValidation);
+  }
 
-  return () => {
-    stopped = true;
-    if (timer) clearTimeout(timer);
-  };
+  wake(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    if (this.stopped) return;
+    if (this.running) {
+      this.refreshPending = true;
+      return;
+    }
+    void this.refreshNow();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.refreshPending = false;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+  }
+}
+
+export function startLicenseRefresher(deps: LicenseControllerOptions): () => void {
+  const controller = new LicenseController(deps);
+  controller.start();
+  return () => controller.stop();
 }

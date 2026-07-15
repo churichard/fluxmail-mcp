@@ -1,7 +1,7 @@
 ---
 title: 'Architecture'
 description: 'Where the self-hosted Fluxmail server keeps your data and how the codebase is structured.'
-updated: '2026-07-14'
+updated: '2026-07-15'
 ---
 
 ## Where your data lives
@@ -28,6 +28,10 @@ MCP tools and REST routes are thin wrappers over `EmailService`, which owns acco
 Every connection acts for one member. Fluxmail first limits the connection to mailboxes that member can reach, then applies an optional account allowlist. An administrator can manage members and mailbox access, but the role does not grant access to private mailboxes.
 
 Stdio connections receive their member, account scope, and permission policy when the process starts. MCP and REST requests over HTTP receive the same information from their API key. Fluxmail limits each request to that scope and checks its required capabilities before calling an email provider.
+
+Administrative REST routes add a second check. The key must contain the capability for that route, and its owner must have the administrator role at the time of the request. Memberless keys retained from older installations use their explicit administrative capabilities. Mail routes can run without authentication under `FLUXMAIL_AUTH=none`, but administrative routes cannot.
+
+Authenticated management mutations create rows in `admin_audit_events`. The table stores stable identifiers and outcome codes, not request data or secrets, and retains the newest 10,000 rows. Fluxmail does not send actor or resource identifiers through anonymous telemetry.
 
 Attachments are returned as embedded MCP resources or raw REST responses. Every provider enforces the configured decoded-size limit before returning the file. The default limit is 10 MB, and the hard maximum is 25 MB.
 

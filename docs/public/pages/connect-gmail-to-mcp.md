@@ -1,7 +1,7 @@
 ---
 title: 'Connect Gmail to the MCP server'
 description: 'Create a Google OAuth app, connect Gmail or Google Workspace, and reconnect an expired token.'
-updated: '2026-07-14'
+updated: '2026-07-15'
 ---
 
 Fluxmail connects to Gmail through a Google Cloud OAuth app that you own. Your Google credentials and OAuth tokens stay with the Fluxmail server you run.
@@ -94,16 +94,18 @@ Fluxmail uses the hosted flow whenever `FLUXMAIL_PUBLIC_URL` is set. Without it,
 
 ### Create a hosted link through the API
 
-A product backend can create a hosted connection link without running the CLI. Send an admin API key to the management endpoint:
+A product backend can create a hosted connection link without running the CLI. The API key needs `admin.accounts`, and its owner must still be an administrator:
 
 ```bash
-curl -X POST "$FLUXMAIL_PUBLIC_URL/auth/connections" \
+curl -X POST "$FLUXMAIL_PUBLIC_URL/api/v1/admin/connections" \
   -H "Authorization: Bearer $FLUXMAIL_ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"provider":"gmail","owner":"you@example.com"}'
 ```
 
-The response contains `connectionUrl` and `expiresAt`. Send `connectionUrl` to the user, but keep the admin API key on your backend. To reconnect an existing mailbox, send `reauthorizeAccountId` instead of `owner`. The endpoint also accepts `provider: "outlook"`.
+The response contains `data.connectionUrl` and `data.expiresAt`. Send the URL to the user, but keep the admin API key on your backend. To reconnect an existing mailbox, send `reauthorizeAccountId` instead of `owner`. The endpoint also accepts `provider: "outlook"`.
+
+`POST /auth/connections` remains available for existing integrations. It has the same authentication requirement and no longer bypasses authentication under `FLUXMAIL_AUTH=none`.
 
 ## Optional: avoid seven-day token expiration
 

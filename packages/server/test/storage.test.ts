@@ -24,7 +24,7 @@ import {
   inspectGmailConnectionGrant,
   inspectOutlookConnectionGrant,
 } from '../src/storage/gmailConnectionGrants.js';
-import { addMember, removeMember } from '../src/storage/members.js';
+import { addMember, removeMember, setMemberRole } from '../src/storage/members.js';
 import {
   assertAccountLimit,
   assertMemberLimit,
@@ -117,6 +117,26 @@ describe('api keys', () => {
       customPermissionPolicy(['mail.read', 'mail.trash']),
     );
     expect(listApiKeys(db).map((key) => key.permissionProfile)).toEqual(['read-only', 'custom']);
+  });
+
+  it('stores named profile supplements and rejects admin capabilities for non-admin members', () => {
+    const db = openDb(':memory:');
+    const member = addMember(db, { name: 'Alice', role: 'admin' });
+    const root = createApiKey(
+      db,
+      'root',
+      member.id,
+      permissionPolicyForProfile('read-only', ['admin.accounts', 'admin.api_keys']),
+    );
+    expect(authenticateApiKey(db, root.key)?.permissions).toEqual(
+      permissionPolicyForProfile('read-only', ['admin.accounts', 'admin.api_keys']),
+    );
+    expect(listApiKeys(db)[0]?.supplementalCapabilities).toEqual(['admin.accounts', 'admin.api_keys']);
+
+    setMemberRole(db, member.id, 'member');
+    expect(() =>
+      createApiKey(db, 'forbidden', member.id, customPermissionPolicy(['mail.read', 'admin.license'])),
+    ).toThrow(/admin member/);
   });
 
   it('updates permissions without rotating the key', () => {

@@ -9,11 +9,14 @@ export {
 } from './mcp/buildServer.js';
 export {
   MCP_CAPABILITIES,
+  ADMIN_CAPABILITIES,
   NAMED_PERMISSION_PROFILES,
   FULL_PERMISSION_POLICY,
   permissionPolicyForProfile,
   customPermissionPolicy,
   type McpCapability,
+  type AdminCapability,
+  type Capability,
   type NamedPermissionProfile,
   type PermissionProfile,
   type PermissionPolicy,
@@ -56,7 +59,14 @@ export {
   LICENSE_KEY_PATTERN,
   type ValidateOutcome,
 } from './licensing/client.js';
-export { refreshLicense, startLicenseRefresher, loadInstanceId, type RefreshResult } from './licensing/refresher.js';
+export {
+  refreshLicense,
+  startLicenseRefresher,
+  loadInstanceId,
+  LicenseController,
+  type RefreshResult,
+  type LicenseControllerOptions,
+} from './licensing/refresher.js';
 export {
   createTelemetry,
   isTelemetryEnabled,

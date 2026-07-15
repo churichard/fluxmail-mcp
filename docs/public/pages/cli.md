@@ -32,11 +32,11 @@ To run a command without a global installation, replace `fluxmail` with `npx -y 
 | `fluxmail members remove <memberId>` | Remove a member after reassigning or removing their mailboxes | None |
 | `fluxmail members role <member> <role>` | Change a member role | None |
 | `fluxmail apikey` | Manage API keys for the HTTP MCP and REST APIs | None |
-| `fluxmail apikey capabilities` | List email capabilities for custom permission policies | None |
-| `fluxmail apikey create` | Create an API key (shown once) | `--name <name>`, `--member <member>`, `--account <account>`, `--profile <profile>`, `--allow <capability>` |
+| `fluxmail apikey capabilities` | List capabilities for API key permission policies | None |
+| `fluxmail apikey create` | Create an API key (shown once) | `--name <name>`, `--member <member>`, `--account <account>`, `--profile <profile>`, `--allow <capability>`, `--admin <capability>` |
 | `fluxmail apikey list` | List API keys | None |
 | `fluxmail apikey accounts <keyId>` | Replace or clear an API key mailbox allowlist | `--account <account>`, `--all-accounts` |
-| `fluxmail apikey permissions <keyId>` | Change the email permissions for an API key | `--profile <profile>`, `--allow <capability>` |
+| `fluxmail apikey permissions <keyId>` | Change the permissions for an API key | `--profile <profile>`, `--allow <capability>`, `--admin <capability>` |
 | `fluxmail apikey revoke <keyId>` | Revoke an API key | None |
 | `fluxmail license` | Manage the paid-tier license | None |
 | `fluxmail license activate <key>` | Store a license key and validate it with the license server | None |
