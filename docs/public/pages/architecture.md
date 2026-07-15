@@ -1,6 +1,6 @@
 ---
 title: 'Architecture'
-description: 'Where the self-hosted Fluxmail server keeps your data and how the codebase is structured.'
+description: 'Where the self-hosted Fluxmail server keeps your data and how requests move through it.'
 updated: '2026-07-15'
 ---
 
@@ -8,20 +8,11 @@ updated: '2026-07-15'
 
 Fluxmail keeps its SQLite database on the machine where it runs. Google and Microsoft OAuth tokens and IMAP/SMTP passwords are encrypted at rest with AES-256-GCM. Your client talks to your email provider through the self-hosted Fluxmail process. Fluxmail does not copy email content to a service operated by Fluxmail. Content returned through MCP may be sent to the client's model provider, depending on how that client runs. The [code is source-available](https://github.com/churichard/fluxmail-mcp) under the [Fluxmail proprietary license](https://github.com/churichard/fluxmail-mcp/blob/main/LICENSE.md).
 
-## How Fluxmail is built
+## How requests flow
 
-Fluxmail is a small monorepo:
+Clients connect to Fluxmail through MCP or REST. Both interfaces send requests through the same service, which selects the mailbox, checks plan limits, and passes the operation to Gmail, Microsoft Graph, or an IMAP/SMTP server. This keeps account routing, replies, forwards, and provider capabilities consistent across MCP and REST.
 
-```
-packages/
-  core/             # unified types, the EmailQuery language, the EmailProvider interface
-  provider-gmail/   # Gmail adapter (googleapis): query translation, MIME, threading, labels
-  provider-imap/    # IMAP/SMTP adapter: folders, search, MIME parts, synthetic threads
-  provider-outlook/ # Microsoft Graph adapter: folders, conversations, drafts, attachments
-  server/           # EmailService, SQLite storage, OAuth, MCP and REST transports, CLI
-```
-
-MCP tools and REST routes are thin wrappers over `EmailService`, which owns account routing, reply and forward computation, and plan limits. Each provider implements one `EmailProvider` interface and declares a `capabilities` object, so both APIs handle provider differences the same way. Outlook uses Microsoft Graph conversations and folders. IMAP has folders instead of labels, uses its server's basic search, and has no server-side thread model. Fluxmail reconstructs IMAP threads from standard email headers.
+Provider differences still affect the available behavior. Outlook uses Microsoft Graph conversations and folders. IMAP has folders instead of labels, uses the mail server's basic search, and has no server-side thread model. Fluxmail reconstructs IMAP threads from standard email headers.
 
 ## How permissions are enforced
 

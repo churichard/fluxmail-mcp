@@ -15,36 +15,21 @@ npm install -g fluxmail
 fluxmail members add --name "Your name" --email you@example.com
 ```
 
-Then follow the [quickstart](docs/public/pages/quickstart.md) to connect a mailbox, choose who can use it, and configure your MCP client. The published version is available at [fluxmail.ai/docs/quickstart](https://fluxmail.ai/docs/quickstart).
+Then follow the [quickstart](https://fluxmail.ai/docs/quickstart) to connect a mailbox, choose who can use it, and configure your MCP client.
 
 ## Documentation
 
-- [Overview](docs/public/pages/overview.md)
-- [Tools](docs/public/pages/tools.md)
-- [REST API](docs/public/pages/rest-api/index.md)
-- [Permissions](docs/public/pages/permissions.md)
-- [Configuration](docs/public/pages/configuration.md)
-- [CLI reference](docs/public/pages/cli.md)
-- [Gmail setup](docs/public/pages/connect-gmail-to-mcp.md)
-- [Outlook setup](docs/public/pages/connect-outlook-to-mcp.md)
-- [IMAP setup](docs/public/pages/connect-an-imap-mailbox.md)
-- [Architecture](docs/public/pages/architecture.md)
-- [Teams and plans](docs/public/pages/teams-and-plans.md)
-
-The source for Fluxmail's public documentation lives in [`docs/public`](docs/public). Add and order pages in [`docs/public/pages/meta.json`](docs/public/pages/meta.json); `manifest.json` is generated for compatibility with the existing site integration. The REST endpoint pages and other generated reference sections come from the server implementation. Run `pnpm docs:generate` after changing tools, REST routes, commands, configuration, or permissions, and run `pnpm docs:check` before committing.
-
-Run `pnpm docs:preview` to generate the public references and open them in the Fluxmail documentation site. The script finds a sibling Fluxmail checkout automatically. Set `FLUXMAIL_WEB_ROOT` if the site lives somewhere else. The preview uses this worktree as its source and does not change the site's pinned submodule.
-
-## Repository layout
-
-```text
-packages/
-  core/             unified types and provider interface
-  provider-gmail/   Gmail adapter
-  provider-imap/    IMAP and SMTP adapter
-  provider-outlook/ Microsoft Graph adapter
-  server/           service, storage, MCP and REST transports, and CLI
-```
+- [Overview](https://fluxmail.ai/docs/overview)
+- [Tools](https://fluxmail.ai/docs/tools)
+- [REST API](https://fluxmail.ai/docs/rest-api)
+- [Permissions](https://fluxmail.ai/docs/permissions)
+- [Configuration](https://fluxmail.ai/docs/configuration)
+- [CLI reference](https://fluxmail.ai/docs/cli)
+- [Gmail setup](https://fluxmail.ai/docs/connect-gmail-to-mcp)
+- [Outlook setup](https://fluxmail.ai/docs/connect-outlook-to-mcp)
+- [IMAP setup](https://fluxmail.ai/docs/connect-an-imap-mailbox)
+- [Architecture](https://fluxmail.ai/docs/architecture)
+- [Teams and plans](https://fluxmail.ai/docs/teams-and-plans)
 
 ## Plans and license
 

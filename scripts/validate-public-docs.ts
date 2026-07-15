@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import {
   GENERATED_MARKERS,
@@ -94,19 +94,21 @@ for (const [filename, markers] of generatedPages) {
   }
 }
 
-const readmeDocLinks = new Map<string, (slug: string) => string>([
-  ['README.md', (slug) => `docs/public/pages/${slug}.md`],
-  ['packages/server/README.md', (slug) => `https://fluxmail.ai/docs/${slug}`],
-]);
-for (const [readme, docLink] of readmeDocLinks) {
-  if (!existsSync(readme)) continue;
+const packageReadmes = readdirSync('packages', { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => path.join('packages', entry.name, 'README.md'))
+  .filter(existsSync);
+const readmes = ['README.md', ...packageReadmes];
+for (const readme of readmes) {
   const source = readFileSync(readme, 'utf8');
-  for (const required of ['quickstart', 'tools', 'permissions', 'configuration', 'cli']) {
-    const link = docLink(required);
-    if (!source.includes(link)) throw new Error(`${readme} must link to ${link}.`);
+  if (readme === 'README.md' || readme === path.join('packages', 'server', 'README.md')) {
+    for (const required of ['quickstart', 'tools', 'permissions', 'configuration', 'cli']) {
+      const link = `https://fluxmail.ai/docs/${required}`;
+      if (!source.includes(link)) throw new Error(`${readme} must link to ${link}.`);
+    }
   }
-  if (readme === 'packages/server/README.md' && source.includes('../../docs/public/')) {
-    throw new Error(`${readme} must use published documentation URLs because repository files are not shipped to npm.`);
+  if (/\]\((?:\.\.\/)*docs\/public\//.test(source)) {
+    throw new Error(`${readme} must use published documentation URLs instead of repository files.`);
   }
   if (/https:\/\/fluxmail\.ai\/docs\/mcp(?:\/|[)#?])/.test(source)) {
     throw new Error(`${readme} contains a nested published documentation URL. Use /docs/.`);
