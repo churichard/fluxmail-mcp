@@ -39,7 +39,7 @@ pnpm release doctor --json --npm-trust
 
 Read `docs/releasing.md` only when preflight reports missing external setup or when troubleshooting a failure. Fix safe repository-local problems directly. Before changing npm or GitHub configuration, show the proposed external changes and ask for one setup approval. Do not add a required environment reviewer unless the user asks for a second approval gate.
 
-If npm requests interactive authentication, open the reported URL when browser control is available. Otherwise, give the user that one URL and resume as soon as authentication completes. Configure missing trusted publishers during npm's five-minute bulk window, then rerun the strict preflight.
+If npm reports that login is required, start `npm login` and let the user complete browser authentication. If npm reports a separate authentication URL, open it when browser control is available. Otherwise, give the user that one URL and resume as soon as authentication completes. Configure missing trusted publishers during npm's five-minute bulk window, then rerun the strict preflight.
 
 ## Audit and choose the version
 
@@ -129,10 +129,13 @@ pnpm release status --version <version> --json
 Keep these stop conditions:
 
 - Stop if Docker exists while any npm package is missing.
+- Stop if an existing npm version has a missing or stale `latest` or `next` tag without a consistent newer release. The OIDC workflow cannot repair that tag.
 - Stop if a published GitHub Release exists while another destination is missing.
 - Stop if a tag points to a commit other than the approved release SHA.
 - Stop if a draft GitHub Release contains uploaded assets.
 - Never republish an existing immutable npm or MCP Registry version.
+
+When a newer release already owns the npm and Docker channel tags, treat the older release as a historical resume. Publish only its missing immutable destinations and leave the newer channels unchanged.
 
 Otherwise, resume with the same version, SHA, and npm tag. Do not claim success until this passes:
 

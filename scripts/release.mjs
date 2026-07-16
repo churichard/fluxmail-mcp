@@ -6,7 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { loadReleasePackages, loadReleaseVersion, releaseConfig, repositoryRoot } from './release-config.mjs';
-import { inspectNpmPackages, run } from './publish.mjs';
+import { classifyNpmChannel, inspectDockerReleaseTags, inspectNpmReleaseState, run } from './publish.mjs';
 
 const changelogPath = path.join(repositoryRoot, 'CHANGELOG.md');
 
@@ -141,23 +141,34 @@ async function inspectReleaseEnvironment() {
 
   const environment = JSON.parse(result.stdout);
   const policy = environment.deployment_branch_policy;
-  let restricted = Boolean(policy?.protected_branches);
+  let branchPolicies = [];
   if (policy?.custom_branch_policies) {
-    const policies = await run('gh', ['api', `${endpoint}/deployment-branch-policies`, '--paginate'], {
+    const policies = await run('gh', ['api', `${endpoint}/deployment-branch-policies`, '--paginate', '--slurp'], {
       output: 'capture',
       allowFailure: true,
     });
     if (policies.code === 0) {
-      restricted = JSON.parse(policies.stdout).branch_policies?.some(({ name }) => name === 'main') ?? false;
+      branchPolicies = JSON.parse(policies.stdout).flatMap((page) => page.branch_policies ?? []);
     }
   }
+  const restricted = isMainOnlyEnvironmentPolicy(policy, branchPolicies);
   return {
     id: 'github-environment',
     status: restricted ? 'pass' : 'fail',
     message: restricted
-      ? `The ${releaseConfig.githubEnvironment} environment exists and has a deployment branch policy.`
+      ? `The ${releaseConfig.githubEnvironment} environment only permits main.`
       : `Restrict the ${releaseConfig.githubEnvironment} environment to main.`,
   };
+}
+
+export function isMainOnlyEnvironmentPolicy(policy, branchPolicies = []) {
+  return (
+    policy?.custom_branch_policies === true &&
+    policy?.protected_branches === false &&
+    branchPolicies.length === 1 &&
+    branchPolicies[0].name === 'main' &&
+    (branchPolicies[0].type === undefined || branchPolicies[0].type === 'branch')
+  );
 }
 
 async function inspectGhcrAccess() {
@@ -202,16 +213,9 @@ async function inspectNpmTrustedPublishers(packages) {
       allowFailure: true,
     });
     if (result.code !== 0) {
-      const authUrl = (extractJson(result.stdout) ?? extractJson(result.stderr))?.error?.authUrl;
-      checks.push({
-        id: `npm-trusted-publisher:${manifest.name}`,
-        status: authUrl ? 'action_required' : 'fail',
-        message: authUrl
-          ? `Authenticate npm for ${manifest.name}, then rerun the preflight.`
-          : `Could not inspect the trusted publisher for ${manifest.name}.`,
-        ...(authUrl ? { authUrl } : {}),
-      });
-      if (authUrl) {
+      const check = buildNpmTrustFailureCheck(manifest.name, result);
+      checks.push(check);
+      if (check.status === 'action_required') {
         for (const remaining of packages.slice(checks.length)) {
           checks.push({
             id: `npm-trusted-publisher:${remaining.manifest.name}`,
@@ -236,6 +240,22 @@ async function inspectNpmTrustedPublishers(packages) {
   }
 
   return checks;
+}
+
+export function buildNpmTrustFailureCheck(packageName, result) {
+  const error = extractJson(result.stdout) ?? extractJson(result.stderr);
+  const authUrl = error?.error?.authUrl;
+  const loginRequired = error?.error?.code === 'E401';
+  return {
+    id: `npm-trusted-publisher:${packageName}`,
+    status: authUrl || loginRequired ? 'action_required' : 'fail',
+    message: authUrl
+      ? `Authenticate npm for ${packageName}, then rerun the preflight.`
+      : loginRequired
+        ? 'Log in to npm, then rerun the preflight.'
+        : `Could not inspect the trusted publisher for ${packageName}.`,
+    ...(authUrl ? { authUrl } : {}),
+  };
 }
 
 export function isExpectedNpmTrustedPublisher(config) {
@@ -317,10 +337,11 @@ async function notes(args) {
 }
 
 async function status(args) {
-  const options = parseOptions(args, { values: ['version', 'docker-image'], boolean: ['json'] });
+  const options = parseOptions(args, { values: ['version', 'npm-tag', 'docker-image'], boolean: ['json'] });
   const version = options.version ?? (await loadReleaseVersion()).version;
   const releaseStatus = await inspectReleaseStatus(version, {
     dockerImage: options.dockerImage,
+    npmTag: options.npmTag,
     attempts: 1,
   });
 
@@ -338,6 +359,8 @@ async function publish(args) {
   const npmTag = options.npmTag ?? defaultNpmTag(version);
   const dockerImage = options.dockerImage ?? releaseConfig.dockerImage;
 
+  assertNpmTagMatchesVersion(version, npmTag);
+
   if (options.ci && process.env.GITHUB_ACTIONS !== 'true') {
     throw new Error('--ci is reserved for GitHub Actions.');
   }
@@ -349,7 +372,7 @@ async function publish(args) {
   }
 
   await assertPublishSource({ version, releaseSha });
-  let releaseStatus = await inspectReleaseStatus(version, { dockerImage, attempts: 3 });
+  let releaseStatus = await inspectReleaseStatus(version, { dockerImage, npmTag, attempts: 3 });
   await assertExistingGitState(releaseStatus, version, releaseSha);
   let plan = planRelease(releaseStatus);
   if (plan.inconsistent) throw new Error(plan.message);
@@ -360,7 +383,7 @@ async function publish(args) {
     if (options.skipChecks) publishArgs.push('--skip-checks');
     if (options.ci) publishArgs.push('--npm-oidc');
     await run('node', publishArgs);
-    releaseStatus = await inspectReleaseStatus(version, { dockerImage, attempts: 6 });
+    releaseStatus = await inspectReleaseStatus(version, { dockerImage, npmTag, attempts: 6 });
     plan = planRelease(releaseStatus);
     if (plan.inconsistent || plan.publishNpmOrDocker) {
       throw new Error(plan.message ?? 'npm or Docker publishing did not complete.');
@@ -371,7 +394,7 @@ async function publish(args) {
     await run('mcp-publisher', ['validate', 'server.json']);
     await run('mcp-publisher', ['login', options.ci ? 'github-oidc' : 'github']);
     await run('mcp-publisher', ['publish']);
-    releaseStatus = await inspectReleaseStatus(version, { dockerImage, attempts: 6 });
+    releaseStatus = await inspectReleaseStatus(version, { dockerImage, npmTag, attempts: 6 });
     plan = planRelease(releaseStatus);
     if (plan.inconsistent || plan.publishRegistry) {
       throw new Error(plan.message ?? 'The MCP Registry did not confirm the published version.');
@@ -379,7 +402,7 @@ async function publish(args) {
   }
 
   if (plan.publishGitHubRelease) {
-    await publishGitHubRelease({ version, releaseSha, releaseStatus });
+    await publishGitHubRelease({ version, releaseSha, releaseStatus, historical: plan.historical });
   }
 
   await verifyRelease({ version, releaseSha, npmTag, dockerImage });
@@ -400,29 +423,19 @@ async function verify(args) {
 }
 
 async function verifyRelease({ version, releaseSha, npmTag, dockerImage }) {
-  const releaseStatus = await inspectReleaseStatus(version, { dockerImage, attempts: 6 });
+  const releaseStatus = await inspectReleaseStatus(version, { dockerImage, npmTag, attempts: 6 });
   const plan = planRelease(releaseStatus);
   if (plan.inconsistent || !plan.complete) {
     throw new Error(plan.message ?? `Fluxmail ${version} is incomplete.`);
   }
 
-  const packages = await loadReleasePackages();
-  const npmTags = await Promise.all(
-    packages.map(async ({ manifest }) => ({
-      name: manifest.name,
-      tags: JSON.parse(await capture('npm', ['view', manifest.name, 'dist-tags', '--json'])),
-    })),
-  );
-  for (const { name, tags } of npmTags) {
-    if (tags[npmTag] !== version) {
-      throw new Error(`npm tag ${name}@${npmTag} points to ${tags[npmTag] ?? '<missing>'}, expected ${version}.`);
-    }
-  }
-
   const versionedDockerDigest = await inspectDockerDigest(`${dockerImage}:${version}`);
+  const expectedChannelDigest = plan.historical
+    ? await inspectDockerDigest(`${dockerImage}:${plan.channelVersion}`)
+    : versionedDockerDigest;
   const channelDockerDigest = await inspectDockerDigest(`${dockerImage}:${npmTag}`);
-  if (channelDockerDigest !== versionedDockerDigest) {
-    throw new Error(`Docker tag ${dockerImage}:${npmTag} does not match ${dockerImage}:${version}.`);
+  if (channelDockerDigest !== expectedChannelDigest) {
+    throw new Error(`Docker tag ${dockerImage}:${npmTag} does not match ${dockerImage}:${plan.channelVersion}.`);
   }
   if (releaseStatus.gitTag.sha !== releaseSha) {
     throw new Error(`Git tag v${version} points to ${releaseStatus.gitTag.sha}, expected ${releaseSha}.`);
@@ -446,28 +459,78 @@ async function verifyRelease({ version, releaseSha, npmTag, dockerImage }) {
   console.log(`Verified Fluxmail ${version} on npm, GHCR, the MCP Registry, and GitHub Releases.`);
 }
 
-export async function inspectReleaseStatus(version, { dockerImage = releaseConfig.dockerImage, attempts = 1 } = {}) {
+export async function inspectReleaseStatus(
+  version,
+  { dockerImage = releaseConfig.dockerImage, npmTag = defaultNpmTag(version), attempts = 1 } = {},
+) {
   assertVersion(version);
   const packages = (await loadReleasePackages()).map((releasePackage) => ({
     ...releasePackage,
     manifest: { ...releasePackage.manifest, version },
   }));
 
-  const [npm, docker, registry, githubRelease, gitTag] = await Promise.all([
-    inspectNpmPackages(packages, { attempts, initialDelayMs: 1_000 }),
-    inspectDockerStatus(`${dockerImage}:${version}`),
-    inspectRegistryStatus(version, attempts),
-    inspectGitHubRelease(version),
-    inspectGitTag(version),
+  const npmStatePromise = inspectNpmReleaseState(packages, version, {
+    attempts,
+    initialDelayMs: 1_000,
+    npmTag,
+  });
+  const registryPromise = inspectRegistryStatus(version, attempts);
+  const githubReleasePromise = inspectGitHubRelease(version);
+  const gitTagPromise = inspectGitTag(version);
+  const { npmStates: npm, npmChannel } = await npmStatePromise;
+  const channelVersion = npmChannel.channelVersion ?? version;
+  const [dockerTags, registry, githubRelease, gitTag] = await Promise.all([
+    inspectDockerReleaseTags(
+      `${dockerImage}:${version}`,
+      `${dockerImage}:${channelVersion}`,
+      `${dockerImage}:${npmTag}`,
+      { attempts, initialDelayMs: 1_000 },
+    ),
+    registryPromise,
+    githubReleasePromise,
+    gitTagPromise,
   ]);
 
-  return { version, npm, docker, registry, githubRelease, gitTag };
+  const docker = {
+    ...dockerTags.dockerVersion,
+    channel: dockerTags.dockerChannel,
+    channelTarget: dockerTags.dockerChannelVersion,
+    channelVersion,
+    channelMatches:
+      dockerTags.dockerChannelVersion.published &&
+      dockerTags.dockerChannel.published &&
+      dockerTags.dockerChannelVersion.digest === dockerTags.dockerChannel.digest,
+  };
+
+  return { version, npmTag, npm, docker, registry, githubRelease, gitTag };
 }
 
 export function planRelease(status) {
   const missingNpm = status.npm.filter(({ published }) => !published);
+  const npmChannel = classifyNpmChannel(status.npm, status.version, status.npmTag);
+  if (npmChannel.inconsistent) {
+    return {
+      complete: false,
+      inconsistent: true,
+      message: npmChannel.message,
+    };
+  }
+
+  const updateChannel = !npmChannel.historical;
+  if (npmChannel.historical && !status.docker.channelMatches) {
+    return {
+      complete: false,
+      historical: true,
+      inconsistent: true,
+      message: `Docker tag ${status.npmTag} does not match the newer npm channel version ${npmChannel.channelVersion}.`,
+    };
+  }
   const missingCoreDestination =
-    missingNpm.length > 0 || !status.docker.published || !status.registry.published || !status.gitTag.published;
+    missingNpm.length > 0 ||
+    !status.docker.published ||
+    !status.docker.channelMatches ||
+    !status.registry.published ||
+    !status.gitTag.published;
 
   if (status.docker.published && missingNpm.length > 0) {
     return {
@@ -495,13 +558,18 @@ export function planRelease(status) {
     complete:
       missingNpm.length === 0 &&
       status.docker.published &&
+      status.docker.channelMatches &&
       status.registry.published &&
       status.githubRelease.state === 'published' &&
       status.gitTag.published,
+    channelVersion: npmChannel.channelVersion,
+    historical: npmChannel.historical,
     inconsistent: false,
-    publishNpmOrDocker: missingNpm.length > 0 || !status.docker.published,
+    publishNpmOrDocker:
+      missingNpm.length > 0 || !status.docker.published || (updateChannel && !status.docker.channelMatches),
     publishRegistry: !status.registry.published,
     publishGitHubRelease: status.githubRelease.state !== 'published' || !status.gitTag.published,
+    updateChannel,
   };
 }
 
@@ -539,6 +607,17 @@ export function validateChangelogEntry(changelog, version) {
   const noUserChanges = section.body.trim() === '_No user-facing changes._';
   if (bulletCount === 0 && !noUserChanges)
     errors.push('Add at least one referenced change or `_No user-facing changes._`.');
+  const versionLink = changelog.match(new RegExp(`^\\[${escapeRegExp(version)}\\]:\\s*(\\S+)\\s*$`, 'm'))?.[1];
+  const releaseTarget = `v${version}`;
+  const previousVersion = String.raw`v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?`;
+  const compareLink = new RegExp(
+    `^https://github\\.com/${escapeRegExp(releaseConfig.githubRepository)}/compare/${previousVersion}\\.\\.\\.${escapeRegExp(releaseTarget)}$`,
+  );
+  const firstReleaseLink = `https://github.com/${releaseConfig.githubRepository}/releases/tag/${releaseTarget}`;
+  if (!versionLink) errors.push(`Add the [${version}] release link to CHANGELOG.md.`);
+  else if (!compareLink.test(versionLink) && versionLink !== firstReleaseLink) {
+    errors.push(`The [${version}] release link must target ${releaseTarget} in the Fluxmail repository.`);
+  }
   if (/[\u2013\u2014]/.test(section.body)) errors.push('Replace en dashes and em dashes in the changelog entry.');
   if (errors.length > 0) throw new Error(errors.join('\n'));
   return section;
@@ -713,7 +792,7 @@ async function assertExistingGitState(status, version, releaseSha) {
   throw new Error(`Draft GitHub Release v${version} does not target the approved release commit ${releaseSha}.`);
 }
 
-async function publishGitHubRelease({ version, releaseSha, releaseStatus }) {
+async function publishGitHubRelease({ version, releaseSha, releaseStatus, historical }) {
   const tag = `v${version}`;
   if (releaseStatus.gitTag.published && releaseStatus.gitTag.sha !== releaseSha) {
     throw new Error(`${tag} points to ${releaseStatus.gitTag.sha}, expected ${releaseSha}.`);
@@ -725,7 +804,7 @@ async function publishGitHubRelease({ version, releaseSha, releaseStatus }) {
   const directory = await mkdtemp(path.join(tmpdir(), 'fluxmail-release-notes-'));
   const notesPath = path.join(directory, 'notes.md');
   const prerelease = version.includes('-');
-  const historicalBackfill = await isHistoricalBackfill(releaseSha, prerelease);
+  const historicalBackfill = historical || (await isHistoricalBackfill(releaseSha, prerelease));
   const latestArgs = historicalBackfill ? ['--latest=false'] : [];
   const prereleaseArgs = prerelease ? ['--prerelease'] : [];
 
@@ -799,13 +878,6 @@ async function isHistoricalBackfill(releaseSha, prerelease) {
     if (ancestry.code === 0) return true;
   }
   return false;
-}
-
-async function inspectDockerStatus(image) {
-  const result = await run('docker', ['manifest', 'inspect', image], { output: 'capture', allowFailure: true });
-  if (result.code === 0) return { image, published: true };
-  if (/manifest unknown|no such manifest|not found/i.test(result.stderr)) return { image, published: false };
-  throw new Error(`Could not inspect Docker image ${image}: ${result.stderr.trim()}`);
 }
 
 async function inspectDockerDigest(image) {
@@ -883,6 +955,15 @@ function printStatus(status) {
     );
   }
   console.log(`Docker ${status.docker.image}: ${status.docker.published ? 'published' : 'missing'}`);
+  console.log(
+    `Docker ${status.docker.channel.image}: ${
+      status.docker.channel.published
+        ? status.docker.channelMatches
+          ? `matches ${status.docker.channelTarget.image}`
+          : 'points to another image'
+        : 'missing'
+    }`,
+  );
   console.log(`MCP Registry ${status.version}: ${status.registry.published ? 'published' : 'missing'}`);
   console.log(`Git tag v${status.version}: ${status.gitTag.published ? status.gitTag.sha : 'missing'}`);
   console.log(`GitHub Release v${status.version}: ${status.githubRelease.state}`);
@@ -999,6 +1080,13 @@ function requiredOption(options, name) {
 
 function defaultNpmTag(version) {
   return version.includes('-') ? 'next' : 'latest';
+}
+
+export function assertNpmTagMatchesVersion(version, npmTag) {
+  const expectedTag = defaultNpmTag(version);
+  if (npmTag !== expectedTag) {
+    throw new Error(`Fluxmail ${version} must use the ${expectedTag} npm tag.`);
+  }
 }
 
 function assertVersion(version) {

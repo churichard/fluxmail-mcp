@@ -21,7 +21,7 @@ on:
           - next
 
 concurrency:
-  group: publish-release-${{ inputs.version }}
+  group: publish-release
   cancel-in-progress: false
 
 jobs:

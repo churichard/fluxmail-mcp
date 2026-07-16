@@ -12,17 +12,7 @@ export async function main(args = process.argv.slice(2)) {
   const { packages, version } = await loadReleaseVersion();
   const dockerImage = options.dockerImage ?? process.env.DOCKER_IMAGE ?? releaseConfig.dockerImage;
   const npmTag = options.tag ?? process.env.NPM_TAG ?? 'latest';
-  const dockerTags = [...new Set([version, npmTag])];
   const dockerPlatforms = process.env.DOCKER_PLATFORMS ?? 'linux/amd64,linux/arm64';
-  const dockerBuildArgs = [
-    'buildx',
-    'build',
-    '--progress',
-    'plain',
-    '--platform',
-    dockerPlatforms,
-    ...dockerTags.flatMap((tag) => ['--tag', `${dockerImage}:${tag}`]),
-  ];
 
   console.log(`Publishing Fluxmail ${version}`);
   console.log(`npm tag: ${npmTag}`);
@@ -47,9 +37,24 @@ export async function main(args = process.argv.slice(2)) {
 
   await run('docker', ['info'], { output: 'ignore' });
 
-  const npmStates = await inspectNpmPackages(packages, { attempts: options.resume ? 3 : 1 });
-  const dockerState = await inspectDockerImage(`${dockerImage}:${version}`);
-  const plan = planNpmAndDockerRelease({ npmStates, dockerPublished: dockerState.published });
+  const { npmStates, npmChannel } = await inspectNpmReleaseState(packages, version, {
+    attempts: options.resume ? 3 : 1,
+    npmTag,
+  });
+  const channelVersion = npmChannel.channelVersion ?? version;
+  const { dockerVersion, dockerChannelVersion, dockerChannel } = await inspectDockerReleaseTags(
+    `${dockerImage}:${version}`,
+    `${dockerImage}:${channelVersion}`,
+    `${dockerImage}:${npmTag}`,
+  );
+  const plan = planNpmAndDockerRelease({
+    npmStates,
+    dockerVersion,
+    dockerChannelVersion,
+    dockerChannel,
+    npmTag,
+    version,
+  });
 
   if (plan.inconsistent) fail(plan.message);
   if (plan.complete) {
@@ -58,7 +63,18 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
 
-  await run('docker', [...dockerBuildArgs, '--pull', '.']);
+  const dockerTags = plan.updateChannel ? [...new Set([version, npmTag])] : [version];
+  const dockerBuildArgs = [
+    'buildx',
+    'build',
+    '--progress',
+    'plain',
+    '--platform',
+    dockerPlatforms,
+    ...dockerTags.flatMap((tag) => ['--tag', `${dockerImage}:${tag}`]),
+  ];
+
+  if (plan.publishDocker) await run('docker', [...dockerBuildArgs, '--pull', '.']);
 
   for (const packageState of plan.missingPackages) {
     await run('pnpm', [
@@ -84,15 +100,62 @@ export async function main(args = process.argv.slice(2)) {
     await publishPackage(releasePackage, npmTag, { npmOidc: options.npmOidc });
   }
 
-  const publishedNpmStates = await inspectNpmPackages(packages, { attempts: 6, initialDelayMs: 1_000 });
+  const { npmStates: publishedNpmStates, npmChannel: publishedNpmChannel } = await inspectNpmReleaseState(
+    packages,
+    version,
+    {
+      attempts: 6,
+      initialDelayMs: 1_000,
+      npmTag,
+    },
+  );
   const missingAfterPublish = publishedNpmStates.filter(({ published }) => !published);
   if (missingAfterPublish.length > 0) {
     fail(
       `npm did not confirm these packages after publishing: ${missingAfterPublish.map(({ name }) => name).join(', ')}`,
     );
   }
+  if (
+    publishedNpmChannel.inconsistent ||
+    publishedNpmChannel.historical !== plan.historical ||
+    publishedNpmChannel.channelVersion !== plan.channelVersion
+  ) {
+    fail(publishedNpmChannel.message ?? `npm tag ${npmTag} changed while publishing ${version}.`);
+  }
 
-  await run('docker', [...dockerBuildArgs, '--push', '.']);
+  if (plan.publishDocker) {
+    await run('docker', [...dockerBuildArgs, '--push', '.']);
+  } else if (plan.repairDockerChannel) {
+    await run('docker', [
+      'buildx',
+      'imagetools',
+      'create',
+      '--tag',
+      `${dockerImage}:${npmTag}`,
+      `${dockerImage}:${version}`,
+    ]);
+  }
+
+  const {
+    dockerVersion: publishedDockerVersion,
+    dockerChannelVersion: publishedDockerChannelVersion,
+    dockerChannel: publishedDockerChannel,
+  } = await inspectDockerReleaseTags(
+    `${dockerImage}:${version}`,
+    `${dockerImage}:${plan.channelVersion}`,
+    `${dockerImage}:${npmTag}`,
+    { attempts: 6, initialDelayMs: 1_000 },
+  );
+  if (!publishedDockerVersion.published) {
+    fail(`Docker image ${dockerImage}:${version} was not found after publishing.`);
+  }
+  if (
+    !publishedDockerChannelVersion.published ||
+    !publishedDockerChannel.published ||
+    publishedDockerChannelVersion.digest !== publishedDockerChannel.digest
+  ) {
+    fail(`Docker tag ${dockerImage}:${npmTag} does not match ${dockerImage}:${plan.channelVersion}.`);
+  }
   console.log(`\nPublished Fluxmail ${version} to npm and ${dockerImage}.`);
 }
 
@@ -124,10 +187,20 @@ export function parseArgs(args) {
   return parsed;
 }
 
-export function planNpmAndDockerRelease({ npmStates, dockerPublished }) {
+export function planNpmAndDockerRelease({
+  npmStates,
+  dockerVersion,
+  dockerChannelVersion = dockerVersion,
+  dockerChannel,
+  npmTag = 'latest',
+  version,
+}) {
+  const releaseVersion = version ?? npmStates[0]?.version;
   const missingPackages = npmStates.filter(({ published }) => !published);
+  const dockerChannelMatches =
+    dockerChannelVersion.published && dockerChannel.published && dockerChannelVersion.digest === dockerChannel.digest;
 
-  if (dockerPublished && missingPackages.length > 0) {
+  if (dockerVersion.published && missingPackages.length > 0) {
     return {
       complete: false,
       inconsistent: true,
@@ -136,11 +209,77 @@ export function planNpmAndDockerRelease({ npmStates, dockerPublished }) {
     };
   }
 
+  const npmChannel = classifyNpmChannel(npmStates, releaseVersion, npmTag);
+  if (npmChannel.inconsistent) {
+    return {
+      complete: false,
+      inconsistent: true,
+      message: npmChannel.message,
+      missingPackages,
+    };
+  }
+
+  const updateChannel = !npmChannel.historical;
+  if (npmChannel.historical && !dockerChannelMatches) {
+    return {
+      complete: false,
+      historical: true,
+      inconsistent: true,
+      message: `Docker tag ${npmTag} does not match the newer npm channel version ${npmChannel.channelVersion}.`,
+      missingPackages,
+    };
+  }
+
   return {
-    complete: dockerPublished && missingPackages.length === 0,
+    channelVersion: npmChannel.channelVersion,
+    complete: dockerVersion.published && dockerChannelMatches && missingPackages.length === 0,
+    historical: npmChannel.historical,
     inconsistent: false,
     missingPackages,
+    publishDocker: !dockerVersion.published,
+    repairDockerChannel: updateChannel && dockerVersion.published && !dockerChannelMatches,
+    updateChannel,
   };
+}
+
+export function classifyNpmChannel(npmStates, version, npmTag = 'latest') {
+  const missingPackages = npmStates.filter(({ published }) => !published);
+  const publishedPackages = npmStates.filter(({ published }) => published);
+  const mismatchedPublished = publishedPackages.filter(({ tagVersion }) => tagVersion !== version);
+  const newerTags = npmStates.filter(({ tagVersion }) => {
+    if (!tagVersion) return false;
+    const comparison = compareReleaseVersions(tagVersion, version);
+    return comparison !== undefined && comparison > 0;
+  });
+
+  if (missingPackages.length === 0 && mismatchedPublished.length === publishedPackages.length) {
+    const activeVersions = new Set(mismatchedPublished.map(({ tagVersion }) => tagVersion));
+    const allNewer = mismatchedPublished.every(({ tagVersion }) => {
+      const comparison = compareReleaseVersions(tagVersion, version);
+      return comparison !== undefined && comparison > 0;
+    });
+    if (allNewer && activeVersions.size === 1) {
+      return { channelVersion: mismatchedPublished[0].tagVersion, historical: true, inconsistent: false };
+    }
+  }
+
+  if (mismatchedPublished.length > 0) {
+    return {
+      historical: false,
+      inconsistent: true,
+      message: `npm tag ${npmTag} does not point to ${version} for these published packages: ${mismatchedPublished.map(({ name }) => name).join(', ')}. Repair the npm tags before resuming.`,
+    };
+  }
+
+  if (missingPackages.length > 0 && newerTags.length > 0) {
+    return {
+      historical: false,
+      inconsistent: true,
+      message: `npm tag ${npmTag} already points to a newer version for these packages: ${newerTags.map(({ name }) => name).join(', ')}. Publishing ${version} would move the channel backward.`,
+    };
+  }
+
+  return { channelVersion: version, historical: false, inconsistent: false };
 }
 
 async function publishPackage(releasePackage, npmTag, { npmOidc }) {
@@ -188,13 +327,40 @@ async function ensureNpmAuthentication(npmOidc) {
 }
 
 export async function inspectNpmPackages(packages, retryOptions = {}) {
+  const { expectedTagVersion, npmTag, ...inspectionOptions } = retryOptions;
   return Promise.all(
-    packages.map(async ({ manifest }) => ({
-      name: manifest.name,
-      version: manifest.version,
-      published: await isPublished(manifest, retryOptions),
-    })),
+    packages.map(async ({ manifest }) => {
+      const [published, tagVersion] = await Promise.all([
+        isPublished(manifest, inspectionOptions),
+        npmTag ? inspectNpmTag(manifest, npmTag, { ...inspectionOptions, expectedTagVersion }) : undefined,
+      ]);
+      return {
+        name: manifest.name,
+        version: manifest.version,
+        published,
+        ...(npmTag ? { tagVersion } : {}),
+      };
+    }),
   );
+}
+
+export async function inspectNpmReleaseState(packages, version, options = {}) {
+  const { attempts = 1, initialDelayMs = 500, npmTag = 'latest' } = options;
+  let npmStates = await inspectNpmPackages(packages, { attempts: 1, initialDelayMs, npmTag });
+  let npmChannel = classifyNpmChannel(npmStates, version, npmTag);
+  const needsRetry = attempts > 1 && (npmChannel.inconsistent || npmStates.some(({ published }) => !published));
+
+  if (needsRetry) {
+    npmStates = await inspectNpmPackages(packages, {
+      attempts,
+      expectedTagVersion: npmChannel.channelVersion ?? version,
+      initialDelayMs,
+      npmTag,
+    });
+    npmChannel = classifyNpmChannel(npmStates, version, npmTag);
+  }
+
+  return { npmStates, npmChannel };
 }
 
 async function isPublished(manifest, { attempts = 1, initialDelayMs = 500 } = {}) {
@@ -217,14 +383,123 @@ async function isPublished(manifest, { attempts = 1, initialDelayMs = 500 } = {}
   return false;
 }
 
+export async function inspectNpmTag(
+  manifest,
+  npmTag,
+  { attempts = 1, expectedTagVersion, initialDelayMs = 500, runCommand = run, waitFor = wait } = {},
+) {
+  let delayMs = initialDelayMs;
+  let tagVersion;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const result = await runCommand('npm', ['view', manifest.name, 'dist-tags', '--json'], {
+      output: 'capture',
+      allowFailure: true,
+    });
+
+    if (result.code === 0) {
+      tagVersion = JSON.parse(result.stdout)[npmTag];
+      if (expectedTagVersion === undefined || tagVersion === expectedTagVersion) return tagVersion;
+    } else if (!isMissingNpmResult(result)) {
+      throw new Error(`Could not inspect npm tag ${manifest.name}@${npmTag}: ${result.stderr.trim()}`);
+    }
+    if (attempt < attempts) await waitFor(delayMs);
+    delayMs = Math.min(delayMs * 2, 4_000);
+  }
+
+  return tagVersion;
+}
+
+function compareReleaseVersions(left, right) {
+  const leftVersion = parseReleaseVersion(left);
+  const rightVersion = parseReleaseVersion(right);
+  if (!leftVersion || !rightVersion) return undefined;
+
+  for (const field of ['major', 'minor', 'patch']) {
+    if (leftVersion[field] !== rightVersion[field]) return leftVersion[field] > rightVersion[field] ? 1 : -1;
+  }
+  if (!leftVersion.prerelease && !rightVersion.prerelease) return 0;
+  if (!leftVersion.prerelease) return 1;
+  if (!rightVersion.prerelease) return -1;
+
+  const length = Math.max(leftVersion.prerelease.length, rightVersion.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftVersion.prerelease[index];
+    const rightPart = rightVersion.prerelease[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    if (leftPart === rightPart) continue;
+
+    const leftNumeric = /^\d+$/.test(leftPart);
+    const rightNumeric = /^\d+$/.test(rightPart);
+    if (leftNumeric && rightNumeric) return Number(leftPart) > Number(rightPart) ? 1 : -1;
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftPart > rightPart ? 1 : -1;
+  }
+  return 0;
+}
+
+function parseReleaseVersion(value) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value ?? '');
+  if (!match) return undefined;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4]?.split('.'),
+  };
+}
+
 function isMissingNpmResult(result) {
   return /E404|404 Not Found|is not in this registry|No match found/i.test(`${result.stdout}\n${result.stderr}`);
 }
 
+export async function inspectDockerTags(versionImage, channelImage, { attempts = 1, initialDelayMs = 500 } = {}) {
+  let delayMs = initialDelayMs;
+  let states;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const [dockerVersion, dockerChannel] = await Promise.all([
+      inspectDockerImage(versionImage),
+      inspectDockerImage(channelImage),
+    ]);
+    states = { dockerVersion, dockerChannel };
+    if (dockerVersion.published && dockerChannel.published && dockerVersion.digest === dockerChannel.digest) break;
+    if (attempt < attempts) await wait(delayMs);
+    delayMs = Math.min(delayMs * 2, 4_000);
+  }
+
+  return states;
+}
+
+export async function inspectDockerReleaseTags(versionImage, channelVersionImage, channelImage, options = {}) {
+  if (versionImage === channelVersionImage) {
+    const { dockerVersion, dockerChannel } = await inspectDockerTags(versionImage, channelImage, options);
+    return { dockerVersion, dockerChannelVersion: dockerVersion, dockerChannel };
+  }
+
+  const [dockerVersion, channelTags] = await Promise.all([
+    inspectDockerImage(versionImage),
+    inspectDockerTags(channelVersionImage, channelImage, options),
+  ]);
+  return {
+    dockerVersion,
+    dockerChannelVersion: channelTags.dockerVersion,
+    dockerChannel: channelTags.dockerChannel,
+  };
+}
+
 async function inspectDockerImage(image) {
-  const result = await run('docker', ['manifest', 'inspect', image], { output: 'capture', allowFailure: true });
-  if (result.code === 0) return { published: true };
-  if (/manifest unknown|no such manifest|not found/i.test(result.stderr)) return { published: false };
+  const result = await run('docker', ['buildx', 'imagetools', 'inspect', image, '--format', '{{json .Manifest}}'], {
+    output: 'capture',
+    allowFailure: true,
+  });
+  if (result.code === 0) {
+    const manifest = JSON.parse(result.stdout);
+    if (!manifest.digest) fail(`Docker did not return a digest for ${image}.`);
+    return { digest: manifest.digest, image, published: true };
+  }
+  if (/manifest unknown|no such manifest|not found/i.test(result.stderr)) return { image, published: false };
   fail(`Could not verify whether Docker image ${image} is already published.`);
 }
 

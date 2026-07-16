@@ -6,6 +6,7 @@ export const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.met
 
 export const releaseConfig = Object.freeze({
   githubRepository: 'churichard/fluxmail-mcp',
+  githubRepositoryUrl: 'git+https://github.com/churichard/fluxmail-mcp.git',
   githubWorkflow: 'publish-release.yml',
   githubEnvironment: 'release',
   dockerImage: 'ghcr.io/churichard/fluxmail-mcp',
@@ -35,6 +36,14 @@ export async function loadReleasePackages(root = repositoryRoot) {
     if (manifest.private === true) continue;
     if (!manifest.name || !manifest.version) {
       throw new Error(`${directory}/package.json must define a name and version.`);
+    }
+    if (
+      manifest.repository?.url !== releaseConfig.githubRepositoryUrl ||
+      manifest.repository?.directory !== directory
+    ) {
+      throw new Error(
+        `${directory}/package.json must set repository.url to ${releaseConfig.githubRepositoryUrl} and repository.directory to ${directory}.`,
+      );
     }
 
     packages.push({ directory, manifest, manifestPath });

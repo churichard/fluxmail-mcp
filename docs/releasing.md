@@ -13,7 +13,7 @@ pnpm release doctor --json
 pnpm release doctor --json --npm-trust
 ```
 
-The strict npm check may return an authentication URL because npm requires proof of presence for trusted-publisher settings. Authenticate once, select npm's option to skip additional two-factor prompts for five minutes, and rerun the command. That window is long enough to inspect or configure all five packages.
+The strict npm check requires an npm login. If it returns an authentication URL, open it and complete the proof-of-presence check. Select npm's option to skip additional two-factor prompts for five minutes, then rerun the command. That window is long enough to inspect or configure all five packages.
 
 ### GitHub release environment
 
@@ -93,7 +93,9 @@ pnpm release verify \
 
 When a workflow publish job fails after validation, rerun only the failed job. The release command skips existing immutable versions and starts at the first missing destination.
 
-Stop instead of retrying when Docker exists before every npm package, a published GitHub Release has a missing destination, a tag points to the wrong commit, or a draft GitHub Release has uploaded assets.
+For the active release, a retry repairs a missing or stale Docker `latest` or `next` tag without rebuilding the image. A historical retry leaves newer npm and Docker channel tags unchanged.
+
+Stop instead of retrying when Docker exists before every npm package, an existing npm version has the wrong channel tag without a consistent newer release, a published GitHub Release has a missing destination, a Git tag points to the wrong commit, or a draft GitHub Release has uploaded assets.
 
 ## Local fallback
 
