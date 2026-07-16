@@ -161,23 +161,112 @@ describe('OutlookProvider', () => {
       const url = new URL(String(input));
       const folder = folderResponse(url);
       if (folder) return folder;
-      if (url.pathname === '/v1.0/me/messages') return json({ value: [] });
+      if (url.pathname === '/v1.0/me/messages') {
+        return json({
+          value: [
+            {
+              id: 'message-inbox',
+              conversationId: 'thread-inbox',
+              parentFolderId: 'folder-inbox',
+              subject: 'Inbox report',
+              receivedDateTime: '2026-07-14T12:00:00Z',
+              isRead: false,
+            },
+            {
+              id: 'message-trash-child',
+              conversationId: 'thread-trash-child',
+              parentFolderId: 'folder-trash-child',
+              subject: 'Deleted report',
+              receivedDateTime: '2026-07-14T13:00:00Z',
+              isRead: false,
+            },
+          ],
+        });
+      }
       return json({ error: { code: 'ErrorItemNotFound', message: 'missing' } }, 404);
     }) as unknown as typeof fetch;
     const outlook = provider(fetchMock);
 
     await outlook.listMessages({ folder: 'Flagged' });
-    await outlook.listMessages({ folder: 'All mail' });
+    const allMail = await outlook.listMessages({ folder: 'All mail' });
+    const omittedFolder = await outlook.listMessages({});
+
+    expect(allMail.items.map((message) => message.id)).toEqual(['message-inbox']);
+    expect(omittedFolder.items.map((message) => message.id)).toEqual(['message-inbox']);
 
     const messageRequests = vi
       .mocked(fetchMock)
       .mock.calls.map(([input]) => new URL(String(input)))
       .filter((url) => url.pathname.endsWith('/messages'));
-    expect(messageRequests).toHaveLength(2);
+    expect(messageRequests).toHaveLength(3);
     expect(messageRequests[0]?.pathname).toBe('/v1.0/me/messages');
     expect(messageRequests[0]?.searchParams.get('$filter')).toContain("flag/flagStatus eq 'flagged'");
+    expect(messageRequests[0]?.searchParams.get('$filter')).toContain("parentFolderId ne 'folder-trash'");
+    expect(messageRequests[0]?.searchParams.get('$filter')).toContain("parentFolderId ne 'folder-spam'");
     expect(messageRequests[1]?.pathname).toBe('/v1.0/me/messages');
-    expect(messageRequests[1]?.searchParams.get('$filter')).toBeNull();
+    expect(messageRequests[1]?.searchParams.get('$filter')).toContain("parentFolderId ne 'folder-trash'");
+    expect(messageRequests[1]?.searchParams.get('$filter')).toContain("parentFolderId ne 'folder-spam'");
+    expect(messageRequests[1]?.searchParams.get('$filter')).not.toContain('folder-trash-child');
+    expect(messageRequests[2]?.searchParams.get('$filter')).toBe(messageRequests[1]?.searchParams.get('$filter'));
+  });
+
+  it('excludes junk and deleted messages from mailbox-wide search pages', async () => {
+    const nextLink = 'https://graph.microsoft.com/v1.0/me/messages?$skip=25';
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const folder = folderResponse(url);
+      if (folder) return folder;
+      if (url.pathname === '/v1.0/me/messages') {
+        if (url.searchParams.get('$skip') === '25') {
+          return json({
+            value: [
+              {
+                id: 'message-trash-child',
+                conversationId: 'thread-trash-child',
+                parentFolderId: 'folder-trash-child',
+                subject: 'Deleted report',
+                receivedDateTime: '2026-07-14T14:00:00Z',
+                isRead: false,
+              },
+            ],
+          });
+        }
+        return json({
+          value: [
+            {
+              id: 'message-inbox',
+              conversationId: 'thread-inbox',
+              parentFolderId: 'folder-inbox',
+              subject: 'Inbox report',
+              receivedDateTime: '2026-07-14T12:00:00Z',
+              isRead: false,
+            },
+            {
+              id: 'message-spam',
+              conversationId: 'thread-spam',
+              parentFolderId: 'folder-spam',
+              subject: 'Spam report',
+              receivedDateTime: '2026-07-14T13:00:00Z',
+              isRead: false,
+            },
+          ],
+          '@odata.nextLink': nextLink,
+        });
+      }
+      return json({ error: { code: 'ErrorItemNotFound', message: 'missing' } }, 404);
+    }) as unknown as typeof fetch;
+    const outlook = provider(fetchMock);
+
+    const first = await outlook.listMessages({ text: 'report', unreadOnly: true });
+    expect(first.items.map((message) => message.id)).toEqual(['message-inbox']);
+    expect(first.nextPageToken).toBeTruthy();
+    expect(JSON.parse(Buffer.from(first.nextPageToken!, 'base64url').toString('utf8'))).toMatchObject({
+      localFilter: { unreadOnly: true, allMailScope: true },
+    });
+    expect(Buffer.from(first.nextPageToken!, 'base64url').toString('utf8')).not.toContain('folder-trash');
+
+    const second = await outlook.listMessages({}, { pageToken: first.nextPageToken });
+    expect(second.items).toEqual([]);
   });
 
   it('refreshes once after a 401 response', async () => {

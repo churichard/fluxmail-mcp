@@ -297,6 +297,11 @@ export class ImapProvider implements EmailProvider {
     return folders.paths[role];
   }
 
+  private allMailPaths(folders: ResolvedFolders): string[] {
+    if (folders.paths.all) return [folders.paths.all];
+    return folders.allMailPaths;
+  }
+
   private requireRole(role: 'drafts' | 'sent' | 'trash' | 'archive'): string {
     const path = this.resolved?.paths[role];
     if (path) return path;
@@ -406,12 +411,11 @@ export class ImapProvider implements EmailProvider {
     if (explicit) {
       const rolePath = this.rolePath(explicit as FolderRole, folders);
       const exact = folders.selectablePaths.find((path) => path === explicit);
-      if (!rolePath && !exact && (explicit === 'starred' || explicit === 'all'))
-        paths = folders.selectablePaths.filter((p) => p !== folders.paths.all);
+      if (!rolePath && !exact && (explicit === 'starred' || explicit === 'all')) paths = this.allMailPaths(folders);
       else if (!rolePath && !exact) throw new EmailError('not_found', `No folder named "${explicit}"`);
       else paths = [rolePath ?? exact!];
     } else {
-      paths = folders.selectablePaths.filter((path) => path !== folders.paths.all);
+      paths = this.allMailPaths(folders);
     }
     const normalizedQuery = { ...query, ...(explicit === 'starred' ? { starredOnly: true } : {}), folder: undefined };
     const hash = cursorHash({ query: { ...normalizedQuery, ...(explicit ? { folder: explicit } : {}) }, paths });

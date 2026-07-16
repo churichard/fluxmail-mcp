@@ -26,7 +26,7 @@ curl 'http://localhost:8977/api/v1/accounts/acct_123/messages' \
 | Name | Location | Required | Type | Details |
 | --- | --- | --- | --- | --- |
 | `accountId` | path | Yes | `string` | Minimum length: 1. |
-| `folder` | query | No | `string` | Minimum length: 1. |
+| `folder` | query | No | `string` | Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name. Use all or omit this field to search all mail except Spam and Trash. An IMAP server's \All mailbox may use different rules. Minimum length: 1. |
 | `text` | query | No | `string` | None |
 | `from` | query | No | `string` | None |
 | `to` | query | No | `string` | None |

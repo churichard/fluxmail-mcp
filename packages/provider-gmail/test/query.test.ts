@@ -22,11 +22,8 @@ describe('toGmailQuery', () => {
     expect(q.labelIds).toBeUndefined();
   });
 
-  it('includes spam and trash when targeting all mail', () => {
-    expect(toGmailQuery({ folder: 'all' }, noLabels)).toEqual({
-      q: 'in:anywhere',
-      includeSpamTrash: true,
-    });
+  it('uses Gmail default scope when targeting all mail', () => {
+    expect(toGmailQuery({ folder: 'all' }, noLabels)).toEqual({});
   });
 
   it('resolves user labels through the resolver', () => {

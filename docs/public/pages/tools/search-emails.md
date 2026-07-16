@@ -20,7 +20,7 @@ Required capabilities: `mail.read`.
 | --- | --- | --- | --- |
 | `accountId` | No | `string` | Account to operate on. Optional when exactly one account is connected. Minimum length: 1. |
 | `query` | Yes | `string` | Search text |
-| `folder` | No | `string` | Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name Minimum length: 1. |
+| `folder` | No | `string` | Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name. Use all or omit this field to search all mail except Spam and Trash. An IMAP server's \All mailbox may use different rules. Minimum length: 1. |
 | `from` | No | `string` | None |
 | `to` | No | `string` | None |
 | `subject` | No | `string` | None |
@@ -52,7 +52,7 @@ Required capabilities: `mail.read`.
     "folder": {
       "type": "string",
       "minLength": 1,
-      "description": "Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name"
+      "description": "Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name. Use all or omit this field to search all mail except Spam and Trash. An IMAP server's \\All mailbox may use different rules."
     },
     "from": {
       "type": "string"

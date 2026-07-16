@@ -623,7 +623,7 @@ describe('ImapProvider connection and pagination state', () => {
     expect(factory).toHaveBeenCalledOnce();
   });
 
-  function paginationProvider(initialUids: number[]) {
+  function paginationProvider(initialUids: number[], listedFolders = [folder('INBOX'), folder('Sent')]) {
     const store = new MemoryStore();
     let selected = 'INBOX';
     let uids = initialUids;
@@ -634,7 +634,7 @@ describe('ImapProvider connection and pagination state', () => {
       on: vi.fn(),
       connect: vi.fn(),
       close: vi.fn(),
-      list: vi.fn().mockResolvedValue([folder('INBOX'), folder('Sent')]),
+      list: vi.fn().mockResolvedValue(listedFolders),
       getMailboxLock: vi.fn(async (path: string) => {
         selected = path;
         fake.mailbox = { uidValidity: 1n } as never;
@@ -688,10 +688,28 @@ describe('ImapProvider connection and pagination state', () => {
     expect(page.nextPageToken).toBeUndefined();
   });
 
-  it('lists all selectable folders when the server has no All mailbox', async () => {
-    const { provider } = paginationProvider([1]);
+  it('excludes resolved Spam and Trash folders when the server has no All mailbox', async () => {
+    const spam = folder('Spam');
+    spam.specialUse = '\\Junk';
+    const spamChild = folder('Spam/Review');
+    const trash = folder('Trash');
+    trash.specialUse = '\\Trash';
+    const trashChild = folder('Trash/Receipts');
+    const { provider } = paginationProvider([1], [folder('INBOX'), folder('Sent'), spam, spamChild, trash, trashChild]);
     const page = await provider.listMessages({ folder: 'all' });
     expect(page.items.map((message) => message.subject)).toEqual(['INBOX-1', 'Sent-1']);
+  });
+
+  it('uses the server All mailbox for an omitted folder', async () => {
+    const all = folder('All Mail');
+    all.specialUse = '\\All';
+    const spam = folder('Spam');
+    spam.specialUse = '\\Junk';
+    const { provider } = paginationProvider([1], [folder('INBOX'), folder('Sent'), all, spam]);
+
+    const page = await provider.listMessages({});
+
+    expect(page.items.map((message) => message.subject)).toEqual(['All Mail-1']);
   });
 });
 

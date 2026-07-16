@@ -296,7 +296,13 @@ const ModifyRequestSchema = z
 
 const messageQuerySchema = z
   .object({
-    folder: z.string().min(1).optional(),
+    folder: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name. Use all or omit this field to search all mail except Spam and Trash. An IMAP server's \\All mailbox may use different rules.",
+      ),
     text: z.string().optional(),
     from: z.string().optional(),
     to: z.string().optional(),

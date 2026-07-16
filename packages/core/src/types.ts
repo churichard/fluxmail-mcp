@@ -147,7 +147,7 @@ export type ModifyAction =
   | { removeLabels: string[] };
 
 export interface EmailQuery {
-  /** Folder id or role. Defaults to no folder restriction. */
+  /** Folder id or role. An omitted folder uses All Mail, excluding Spam and Trash. */
   folder?: string;
   /** Full-text search. */
   text?: string;

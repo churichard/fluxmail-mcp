@@ -86,6 +86,8 @@ interface FolderSnapshot {
   byId: Map<string, Folder>;
   byRole: Map<FolderRole, Folder>;
   trashFolderIds: Set<string>;
+  allMailExcludedRootFolderIds: Set<string>;
+  allMailExcludedFolderIds: Set<string>;
 }
 
 interface RequestOptions {
@@ -97,6 +99,7 @@ interface LocalMessageFilter {
   unreadOnly?: true;
   starredOnly?: true;
   hasAttachment?: true;
+  allMailScope?: true;
 }
 
 interface PageTokenPayload {
@@ -149,8 +152,10 @@ function decodePageToken(token: string): PageTokenPayload {
         throw new Error();
       }
       const entries = Object.entries(payload.localFilter);
-      const allowed = new Set(['unreadOnly', 'starredOnly', 'hasAttachment']);
-      if (entries.some(([key, enabled]) => !allowed.has(key) || enabled !== true)) throw new Error();
+      const booleanKeys = new Set(['unreadOnly', 'starredOnly', 'hasAttachment', 'allMailScope']);
+      if (entries.some(([key, value]) => !booleanKeys.has(key) || value !== true)) {
+        throw new Error();
+      }
       localFilter = payload.localFilter as LocalMessageFilter;
     }
     return { url: url.toString(), ...(localFilter ? { localFilter } : {}) };
@@ -159,20 +164,27 @@ function decodePageToken(token: string): PageTokenPayload {
   }
 }
 
-function localMessageFilter(query: EmailQuery): LocalMessageFilter | undefined {
+function localMessageFilter(query: EmailQuery, allMailScope = false): LocalMessageFilter | undefined {
   const filter: LocalMessageFilter = {
     ...(query.unreadOnly ? { unreadOnly: true } : {}),
     ...(query.starredOnly ? { starredOnly: true } : {}),
     ...(query.hasAttachment ? { hasAttachment: true } : {}),
+    ...(allMailScope ? { allMailScope: true } : {}),
   };
   return Object.keys(filter).length ? filter : undefined;
 }
 
-function matchesLocalMessageFilter(message: GraphMessage, filter: LocalMessageFilter | undefined): boolean {
+function matchesLocalMessageFilter(
+  message: GraphMessage,
+  filter: LocalMessageFilter | undefined,
+  allMailExcludedFolderIds: ReadonlySet<string>,
+): boolean {
   if (!filter) return true;
   if (filter.unreadOnly && message.isRead !== false) return false;
   if (filter.starredOnly && message.flag?.flagStatus !== 'flagged') return false;
   if (filter.hasAttachment && message.hasAttachments !== true) return false;
+  if (filter.allMailScope && message.parentFolderId && allMailExcludedFolderIds.has(message.parentFolderId))
+    return false;
   return true;
 }
 
@@ -298,25 +310,39 @@ export class OutlookProvider implements EmailProvider {
     );
 
     const trashFolderId = [...roleById].find(([, role]) => role === 'trash')?.[0];
+    const spamFolderId = [...roleById].find(([, role]) => role === 'spam')?.[0];
     const trashFolderIds = new Set(trashFolderId ? [trashFolderId] : []);
+    const allMailExcludedRootFolderIds = new Set(
+      [trashFolderId, spamFolderId].filter((id): id is string => Boolean(id)),
+    );
+    const allMailExcludedFolderIds = new Set(allMailExcludedRootFolderIds);
     const rawFolders: Array<{ raw: GraphFolder; parentPath: string }> = [];
     const visited = new Set<string>();
-    const walk = async (path: string, parentPath: string, visibleBranch = true, insideTrash = false): Promise<void> => {
+    const walk = async (
+      path: string,
+      parentPath: string,
+      visibleBranch = true,
+      insideTrash = false,
+      insideAllMailExcluded = false,
+    ): Promise<void> => {
       const children = await this.collection<GraphFolder>(path);
       for (const raw of children) {
         if (!raw.id || !raw.displayName || visited.has(raw.id)) continue;
         visited.add(raw.id);
         const folderIsVisible = visibleBranch && !raw.isHidden;
         const folderIsInTrash = insideTrash || raw.id === trashFolderId;
+        const folderIsAllMailExcluded = insideAllMailExcluded || raw.id === trashFolderId || raw.id === spamFolderId;
         if (folderIsVisible) rawFolders.push({ raw, parentPath });
         if (folderIsInTrash) trashFolderIds.add(raw.id);
-        if ((raw.childFolderCount ?? 0) > 0 && (folderIsVisible || folderIsInTrash)) {
+        if (folderIsAllMailExcluded) allMailExcludedFolderIds.add(raw.id);
+        if ((raw.childFolderCount ?? 0) > 0 && (folderIsVisible || folderIsInTrash || folderIsAllMailExcluded)) {
           const childPath = `${parentPath ? `${parentPath}/` : ''}${raw.displayName}`;
           await walk(
             `/me/mailFolders/${encodeURIComponent(raw.id)}/childFolders?includeHiddenFolders=true&$top=100`,
             childPath,
             folderIsVisible,
             folderIsInTrash,
+            folderIsAllMailExcluded,
           );
         }
       }
@@ -335,6 +361,8 @@ export class OutlookProvider implements EmailProvider {
       byId: new Map(folders.map((folder) => [folder.id, folder])),
       byRole: new Map(folders.filter((folder) => folder.role).map((folder) => [folder.role!, folder])),
       trashFolderIds,
+      allMailExcludedRootFolderIds,
+      allMailExcludedFolderIds,
     };
     this.folderCache = { fetchedAt: Date.now(), snapshot };
     return snapshot;
@@ -361,6 +389,10 @@ export class OutlookProvider implements EmailProvider {
     const folder = resolvedFolder?.role === 'all' || starredFolder ? undefined : resolvedFolder;
     const normalizedQuery = { ...query, ...(starredFolder ? { starredOnly: true } : {}), folder: undefined };
     const graphQuery = toGraphQuery(normalizedQuery);
+    const folders = await this.folderSnapshot();
+    const allMailScope = !folder;
+    const excludedRootFolderIds = allMailScope ? [...folders.allMailExcludedRootFolderIds] : [];
+    const allMailFilter = excludedRootFolderIds.map((id) => `parentFolderId ne '${escapeOData(id)}'`).join(' and ');
     let requestUrl: string;
     let localFilter: LocalMessageFilter | undefined;
     if (page.pageToken) {
@@ -374,14 +406,18 @@ export class OutlookProvider implements EmailProvider {
         $select: MESSAGE_LIST_FIELDS,
       });
       if (graphQuery.search) params.set('$search', graphQuery.search);
-      if (graphQuery.search && graphQuery.filter) localFilter = localMessageFilter(normalizedQuery);
-      else if (graphQuery.filter) params.set('$filter', graphQuery.filter);
+      if (graphQuery.search) {
+        localFilter = localMessageFilter(normalizedQuery, allMailScope);
+      } else {
+        const filter = [graphQuery.filter, allMailFilter].filter(Boolean).join(' and ');
+        if (filter) params.set('$filter', filter);
+        if (allMailScope) localFilter = { allMailScope: true };
+      }
       requestUrl = `${base}?${params}`;
     }
     const response = await this.request<GraphCollection<GraphMessage>>(requestUrl);
-    const folders = await this.folderSnapshot();
     const items = (response.value ?? [])
-      .filter((raw) => matchesLocalMessageFilter(raw, localFilter))
+      .filter((raw) => matchesLocalMessageFilter(raw, localFilter, folders.allMailExcludedFolderIds))
       .map((raw) =>
         parseGraphMessage(raw, {
           accountId: this.accountId,

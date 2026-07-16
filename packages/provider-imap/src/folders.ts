@@ -25,6 +25,7 @@ export interface ResolvedFolders {
   paths: Partial<Record<FolderRole, string>>;
   warnings: FolderWarning[];
   selectablePaths: string[];
+  allMailPaths: string[];
 }
 
 function samePath(a: string, b: string): boolean {
@@ -111,5 +112,15 @@ export function resolveFolders(
     } satisfies Folder;
   });
 
-  return { folders, paths, warnings, selectablePaths: selectable.map((entry) => entry.path) };
+  const excludedRoots = [paths.spam, paths.trash].filter((path): path is string => Boolean(path));
+  const allMailPaths = selectable
+    .filter(
+      (entry) =>
+        !excludedRoots.some(
+          (root) => entry.path === root || (entry.delimiter && entry.path.startsWith(`${root}${entry.delimiter}`)),
+        ),
+    )
+    .map((entry) => entry.path);
+
+  return { folders, paths, warnings, selectablePaths: selectable.map((entry) => entry.path), allMailPaths };
 }

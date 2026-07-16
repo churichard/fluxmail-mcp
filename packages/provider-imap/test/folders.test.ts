@@ -60,6 +60,19 @@ describe('resolveFolders', () => {
     expect(resolveFolders([folder('INBOX'), drafts]).paths.drafts).toBeUndefined();
   });
 
+  it('excludes Spam and Trash descendants from the All Mail fallback', () => {
+    expect(
+      resolveFolders([
+        folder('INBOX'),
+        folder('Projects'),
+        folder('Junk', '\\Junk'),
+        folder('Junk/Review'),
+        folder('Trash', '\\Trash'),
+        folder('Trash/Receipts'),
+      ]).allMailPaths,
+    ).toEqual(['INBOX', 'Projects']);
+  });
+
   it('reports every unresolved optional role without making the account unhealthy', () => {
     const result = resolveFolders([folder('INBOX')]);
     expect(result.paths).toEqual({ inbox: 'INBOX' });

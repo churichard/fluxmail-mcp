@@ -40,8 +40,7 @@ export function toGmailQuery(q: EmailQuery, resolveLabelId: (folder: string) => 
     if (role === 'archive') {
       parts.push('in:archive');
     } else if (role === 'all') {
-      parts.push('in:anywhere');
-      out.includeSpamTrash = true;
+      // Gmail's default scope is All Mail, which excludes Spam and Trash.
     } else if (ROLE_TO_LABEL[role]) {
       out.labelIds = [ROLE_TO_LABEL[role]];
       if (role === 'trash' || role === 'spam') out.includeSpamTrash = true;
