@@ -9,7 +9,7 @@ export function fluxmailWorktreeCandidates(worktreeList: string): string[] {
   return worktreeList
     .split('\n')
     .filter((line) => line.startsWith('worktree '))
-    .map((line) => path.join(path.dirname(line.slice('worktree '.length)), 'fluxmail'));
+    .map((line) => path.join(path.dirname(line.slice('worktree '.length)), 'fluxmail-web'));
 }
 
 export function isFluxmailCheckout(directory: string): boolean {

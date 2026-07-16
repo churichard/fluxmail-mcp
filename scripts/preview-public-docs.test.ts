@@ -15,7 +15,7 @@ describe('public documentation preview', () => {
           'branch refs/heads/test',
         ].join('\n'),
       ),
-    ).toEqual(['/Users/example/github/fluxmail', '/Users/example/conductor/workspaces/fluxmail-mcp/fluxmail']);
+    ).toEqual(['/Users/example/github/fluxmail-web', '/Users/example/conductor/workspaces/fluxmail-mcp/fluxmail-web']);
   });
 
   it('removes package-manager argument separators', () => {
