@@ -1,4 +1,4 @@
-name: Request MCP documentation sync
+name: Deploy MCP documentation
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: docs-sync-main
+  group: docs-deploy-main
   cancel-in-progress: true
 
 jobs:
@@ -42,29 +42,34 @@ jobs:
       - name: Validate public documentation
         run: pnpm docs:check
 
-      - name: Resolve immutable source
-        id: source
+      - name: Verify deployment source
         env:
           SOURCE_REF: ${{ github.ref_name }}
         run: |
           if [[ "$SOURCE_REF" != "main" ]]; then
-            echo "Documentation sync only accepts the main branch." >&2
+            echo "Documentation deployment only accepts the main branch." >&2
             exit 1
           fi
-          sha=$(git rev-parse HEAD)
-          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Expected a full 40-character Git commit SHA, found $sha." >&2
-            exit 1
-          fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Dispatch documentation sync workflow
+      - name: Request Fluxmail deployment
         env:
-          GH_TOKEN: ${{ secrets.FLUXMAIL_DOCS_DEPLOY_TOKEN }}
-          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          DEPLOY_HOOK_URL: ${{ secrets.FLUXMAIL_DOCS_DEPLOY_HOOK }}
         run: |
-          jq -n \
-            --arg ref main \
-            --arg sourceSha "$SOURCE_SHA" \
-            '{ref: $ref, inputs: {source_sha: $sourceSha, source_ref: "main"}}' |
-            gh api --method POST repos/churichard/fluxmail/actions/workflows/sync-mcp-docs.yml/dispatches --input -
+          if [[ -z "$DEPLOY_HOOK_URL" ]]; then
+            echo "FLUXMAIL_DOCS_DEPLOY_HOOK is not configured." >&2
+            exit 1
+          fi
+
+          response=$(curl \
+            --fail-with-body \
+            --retry 3 \
+            --silent \
+            --show-error \
+            --request POST \
+            "$DEPLOY_HOOK_URL")
+          job_id=$(jq -r '.job.id // empty' <<<"$response")
+          if [[ -z "$job_id" ]]; then
+            echo "Vercel accepted the request but did not return a deployment job ID." >&2
+            exit 1
+          fi
+          echo "Queued Fluxmail documentation deployment: $job_id"
