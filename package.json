@@ -22,6 +22,7 @@
     "registry:check": "node scripts/check-registry-metadata.mjs",
     "dev": "pnpm --filter fluxmail dev",
     "version:bump": "pnpm --recursive --include-workspace-root version --no-git-tag-version",
+    "release": "node scripts/release.mjs",
     "publish:all": "node scripts/publish.mjs"
   },
   "devDependencies": {

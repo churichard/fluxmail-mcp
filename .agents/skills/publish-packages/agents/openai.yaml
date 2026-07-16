@@ -1,4 +1,0 @@
-interface:
-  display_name: 'Publish Fluxmail Packages'
-  short_description: 'Release Fluxmail packages and GitHub notes'
-  default_prompt: 'Use $publish-packages to prepare, approve, publish, and verify a Fluxmail release.'

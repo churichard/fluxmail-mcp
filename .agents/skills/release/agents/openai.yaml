@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Release Fluxmail'
+  short_description: 'Prepare, publish, and verify Fluxmail releases'
+  default_prompt: 'Use $release to take a Fluxmail release from compatibility audit through verified publication.'

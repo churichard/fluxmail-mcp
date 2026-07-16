@@ -3,6 +3,11 @@
   "version": "0.4.0",
   "description": "IMAP and SMTP adapter for the Fluxmail unified email API",
   "license": "SEE LICENSE IN LICENSE.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/churichard/fluxmail-mcp.git",
+    "directory": "packages/provider-imap"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
