@@ -11,7 +11,7 @@ import {
   replaceGeneratedSection,
 } from './public-docs.js';
 
-const manifest = { schemaVersion: 1, id: 'fluxmail-mcp', category: 'Fluxmail MCP', pages: ['quickstart'] };
+const manifest = { schemaVersion: 1, id: 'fluxmail', category: 'Fluxmail MCP', pages: ['quickstart'] };
 const meta = { title: 'Fluxmail MCP', pages: ['quickstart'] };
 
 describe('public docs bundle validation', () => {
@@ -29,7 +29,7 @@ describe('public docs bundle validation', () => {
   it('derives the compatibility manifest from Fumadocs metadata', () => {
     expect(compatibilityManifest(parseMeta({ ...meta, pages: ['---Getting started---', 'quickstart'] }))).toEqual({
       schemaVersion: 1,
-      id: 'fluxmail-mcp',
+      id: 'fluxmail',
       category: 'Fluxmail MCP',
       pages: ['quickstart'],
     });

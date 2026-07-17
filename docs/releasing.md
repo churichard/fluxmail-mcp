@@ -35,7 +35,7 @@ Configure GitHub Actions as the trusted publisher for these packages:
 
 Use the same settings for each package:
 
-- Repository: `churichard/fluxmail-mcp`
+- Repository: `churichard/fluxmail`
 - Workflow file: `publish-release.yml`
 - Environment: `release`
 - Permission: `npm publish`
@@ -51,7 +51,7 @@ for package in \
   fluxmail
 do
   npx --yes npm@11 trust github "$package" \
-    --repo churichard/fluxmail-mcp \
+    --repo churichard/fluxmail \
     --file publish-release.yml \
     --env release \
     --allow-publish \
@@ -62,9 +62,9 @@ done
 
 ### GHCR Actions access
 
-Connect the `fluxmail-mcp` container package to `churichard/fluxmail-mcp`. A linked package inherits GitHub Actions access from that repository. The Dockerfile's `org.opencontainers.image.source` label keeps future images linked to the repository.
+Connect the `fluxmail` container package to `churichard/fluxmail`. A linked package inherits GitHub Actions access from that repository. The Dockerfile's `org.opencontainers.image.source` label keeps future images linked to the repository.
 
-If preflight reports a mismatch, open the package settings and add `churichard/fluxmail-mcp` under Manage Actions access with write permission.
+If preflight reports a mismatch, open the package settings and add `churichard/fluxmail` under Manage Actions access with write permission.
 
 ## Agent-driven release flow
 

@@ -5,7 +5,7 @@
   "description": "Read, search, draft, send, and organize email through Gmail, Outlook, and IMAP/SMTP mailboxes.",
   "websiteUrl": "https://fluxmail.ai",
   "repository": {
-    "url": "https://github.com/churichard/fluxmail-mcp",
+    "url": "https://github.com/churichard/fluxmail",
     "source": "github",
     "id": "1295539777",
     "subfolder": "packages/server"

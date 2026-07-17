@@ -14,7 +14,7 @@ This restriction does not prevent legitimate work on the licensing system, such 
 # User-facing documentation
 
 - Every README, including the repository README and README files under `packages/`, is for Fluxmail users. Do not put contributor instructions, repository architecture, documentation generation workflows, or other maintainer-only information in README files.
-- Everything under `docs/public/` is for Fluxmail users. Write it for people installing, configuring, or using Fluxmail, not for contributors developing `fluxmail-mcp`.
+- Everything under `docs/public/` is for Fluxmail users. Write it for people installing, configuring, or using Fluxmail, not for contributors developing `fluxmail`.
 - Put developer-facing documentation under `docs/`, outside `docs/public/`, when the repository needs it.
 - README links to public documentation must use the published `https://fluxmail.ai/docs/` URLs, not Markdown files in this repository.
 - Public Fluxmail MCP guides live in `docs/public/`. Keep provider setup, architecture, and licensing explanations hand written.

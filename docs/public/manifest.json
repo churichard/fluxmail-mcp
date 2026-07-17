@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "fluxmail-mcp",
+  "id": "fluxmail",
   "category": "Fluxmail MCP",
   "pages": [
     "overview",

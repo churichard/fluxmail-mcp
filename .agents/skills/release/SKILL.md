@@ -108,7 +108,7 @@ Dispatch the workflow with the exact version, SHA, and npm tag:
 
 ```bash
 gh workflow run publish-release.yml \
-  --repo churichard/fluxmail-mcp \
+  --repo churichard/fluxmail \
   -f version=<version> \
   -f release_sha=<full-main-commit-sha> \
   -f npm_tag=<latest-or-next>

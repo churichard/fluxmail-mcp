@@ -6,16 +6,16 @@ describe('public documentation preview', () => {
     expect(
       fluxmailWorktreeCandidates(
         [
-          'worktree /Users/example/github/fluxmail-mcp',
+          'worktree /Users/example/github/fluxmail',
           'HEAD abc123',
           'branch refs/heads/main',
           '',
-          'worktree /Users/example/conductor/workspaces/fluxmail-mcp/test',
+          'worktree /Users/example/conductor/workspaces/fluxmail/test',
           'HEAD def456',
           'branch refs/heads/test',
         ].join('\n'),
       ),
-    ).toEqual(['/Users/example/github/fluxmail-web', '/Users/example/conductor/workspaces/fluxmail-mcp/fluxmail-web']);
+    ).toEqual(['/Users/example/github/fluxmail-web', '/Users/example/conductor/workspaces/fluxmail/fluxmail-web']);
   });
 
   it('removes package-manager argument separators', () => {
