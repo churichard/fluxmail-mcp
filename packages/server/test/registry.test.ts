@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EmailError } from '@fluxmail/core';
 import { ImapProvider } from '@fluxmail/provider-imap';
 import { AccountRegistry } from '../src/accounts/registry.js';
+import { DEFAULT_GOOGLE_CLIENT_ID, DEFAULT_GOOGLE_CLIENT_SECRET } from '../src/accounts/defaultGoogleOAuth.js';
 import { accountCredentials, accounts, members, oauthTokens, openDb } from '../src/storage/db.js';
 import { addMember } from '../src/storage/members.js';
 import { decryptString, encryptString } from '../src/storage/crypto.js';
@@ -91,7 +92,7 @@ describe('AccountRegistry', () => {
     expect(provider.auth).toMatchObject({ _clientId: 'id', _clientSecret: 'secret' });
   });
 
-  it('adds OAuth client provenance to legacy Gmail credentials', () => {
+  it('leaves legacy Gmail credentials unchanged and uses the configured custom client', () => {
     const config = testConfig();
     const db = openDb(':memory:');
     const registry = new AccountRegistry(db, config);
@@ -102,15 +103,51 @@ describe('AccountRegistry', () => {
       .set({ encryptedCredentials: encryptedLegacyTokens })
       .where(eq(accountCredentials.accountId, account.id))
       .run();
+    db.update(oauthTokens)
+      .set({ encryptedTokens: encryptedLegacyTokens })
+      .where(eq(oauthTokens.accountId, account.id))
+      .run();
 
-    new AccountRegistry(db, config).getProvider(account.id);
+    const provider = new AccountRegistry(db, config).getProvider(account.id) as unknown as {
+      auth: { _clientId?: string; _clientSecret?: string };
+    };
 
-    const stored = JSON.parse(
-      decryptString(config.encryptionKey, db.select().from(accountCredentials).get()!.encryptedCredentials),
+    expect(provider.auth).toMatchObject({ _clientId: 'id', _clientSecret: 'secret' });
+    expect(db.select().from(accountCredentials).get()).toMatchObject({
+      encryptedCredentials: encryptedLegacyTokens,
+    });
+    expect(db.select().from(oauthTokens).get()).toMatchObject({
+      encryptedTokens: encryptedLegacyTokens,
+    });
+  });
+
+  it('rejects legacy Gmail credentials when only the built-in client is configured', () => {
+    const config = {
+      ...testConfig(),
+      google: { clientId: DEFAULT_GOOGLE_CLIENT_ID, clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET },
+    };
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, config);
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
+    const encryptedLegacyTokens = encryptString(config.encryptionKey, JSON.stringify(tokens));
+    db.update(accountCredentials)
+      .set({ encryptedCredentials: encryptedLegacyTokens })
+      .where(eq(accountCredentials.accountId, account.id))
+      .run();
+    db.update(oauthTokens)
+      .set({ encryptedTokens: encryptedLegacyTokens })
+      .where(eq(oauthTokens.accountId, account.id))
+      .run();
+
+    expect(() => new AccountRegistry(db, config).getProvider(account.id)).toThrow(
+      /Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.*or reconnect the account/,
     );
-    expect(stored).toMatchObject({
-      refresh_token: 'rt_secret',
-      fluxmailOAuthClient: { clientId: 'id', clientSecret: 'secret' },
+    expect(db.select().from(accountCredentials).get()).toMatchObject({
+      encryptedCredentials: encryptedLegacyTokens,
+    });
+    expect(db.select().from(oauthTokens).get()).toMatchObject({
+      encryptedTokens: encryptedLegacyTokens,
     });
   });
 
