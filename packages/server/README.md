@@ -29,4 +29,4 @@ Fluxmail supports stdio for local MCP clients. Its HTTP server provides Streamab
 
 ## License
 
-Fluxmail is proprietary, source-available software. Production use is limited to your Fluxmail entitlement. See the [repository license](https://github.com/churichard/fluxmail-mcp/blob/main/LICENSE.md) for the full terms.
+Fluxmail is proprietary, source-available software. Production use is limited to your Fluxmail entitlement. See the [repository license](https://github.com/churichard/fluxmail/blob/main/LICENSE.md) for the full terms.

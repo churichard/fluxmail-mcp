@@ -5,11 +5,11 @@ import { fileURLToPath } from 'node:url';
 export const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export const releaseConfig = Object.freeze({
-  githubRepository: 'churichard/fluxmail-mcp',
-  githubRepositoryUrl: 'git+https://github.com/churichard/fluxmail-mcp.git',
+  githubRepository: 'churichard/fluxmail',
+  githubRepositoryUrl: 'git+https://github.com/churichard/fluxmail.git',
   githubWorkflow: 'publish-release.yml',
   githubEnvironment: 'release',
-  dockerImage: 'ghcr.io/churichard/fluxmail-mcp',
+  dockerImage: 'ghcr.io/churichard/fluxmail',
   registryName: 'io.github.churichard/fluxmail',
   registryUrl: 'https://registry.modelcontextprotocol.io',
 });

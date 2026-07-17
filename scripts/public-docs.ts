@@ -72,7 +72,7 @@ export function parseMeta(value: unknown): PublicDocsMeta {
 export function compatibilityManifest(meta: PublicDocsMeta, pages = meta.pages): PublicDocsManifest {
   return {
     schemaVersion: 1,
-    id: 'fluxmail-mcp',
+    id: 'fluxmail',
     category: meta.title,
     pages: pages.filter((page) => !isPageSeparator(page)),
   };
@@ -96,7 +96,7 @@ export function parseManifest(value: unknown): PublicDocsManifest {
   if (JSON.stringify(keys) !== JSON.stringify(expected))
     throw new Error(`Manifest fields must be: ${expected.join(', ')}.`);
   if (manifest.schemaVersion !== 1) throw new Error('Manifest schemaVersion must be 1.');
-  if (manifest.id !== 'fluxmail-mcp') throw new Error('Manifest id must be fluxmail-mcp.');
+  if (manifest.id !== 'fluxmail') throw new Error('Manifest id must be fluxmail.');
   if (typeof manifest.category !== 'string' || !manifest.category.trim())
     throw new Error('Manifest category is required.');
   validatePagePaths(manifest.pages, 'Manifest');

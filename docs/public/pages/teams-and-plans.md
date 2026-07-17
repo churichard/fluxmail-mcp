@@ -72,4 +72,4 @@ One license activates one instance, and enforcement keeps working offline. If yo
 
 ## Software license
 
-Fluxmail MCP is proprietary, source-available software. You can inspect, test, and privately modify the source. Production use must stay within your Fluxmail entitlement, including the built-in Personal plan. The license does not permit redistribution, hosted resale, competing use, or bypassing plan controls. Read the [full license terms](https://github.com/churichard/fluxmail-mcp/blob/main/LICENSE.md) before using or modifying the software.
+Fluxmail MCP is proprietary, source-available software. You can inspect, test, and privately modify the source. Production use must stay within your Fluxmail entitlement, including the built-in Personal plan. The license does not permit redistribution, hosted resale, competing use, or bypassing plan controls. Read the [full license terms](https://github.com/churichard/fluxmail/blob/main/LICENSE.md) before using or modifying the software.

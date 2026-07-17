@@ -1,7 +1,7 @@
 services:
   fluxmail:
     container_name: fluxmail
-    image: ghcr.io/churichard/fluxmail-mcp:latest
+    image: ghcr.io/churichard/fluxmail:latest
     ports:
       - '8977:8977'
       # Local OAuth callback for Outlook and optional local Gmail setup.

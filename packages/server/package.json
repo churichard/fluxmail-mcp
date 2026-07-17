@@ -4,14 +4,14 @@
   "mcpName": "io.github.churichard/fluxmail",
   "description": "Self-hosted email API with MCP and REST support for Gmail, Outlook, and IMAP/SMTP",
   "license": "SEE LICENSE IN LICENSE.md",
-  "homepage": "https://github.com/churichard/fluxmail-mcp#readme",
+  "homepage": "https://github.com/churichard/fluxmail#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/churichard/fluxmail-mcp.git",
+    "url": "git+https://github.com/churichard/fluxmail.git",
     "directory": "packages/server"
   },
   "bugs": {
-    "url": "https://github.com/churichard/fluxmail-mcp/issues"
+    "url": "https://github.com/churichard/fluxmail/issues"
   },
   "type": "module",
   "main": "./dist/index.js",

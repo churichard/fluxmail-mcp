@@ -221,14 +221,14 @@ If it returns the messages, the connection is working.
 
 ## Docker setup: Streamable HTTP
 
-Use this path for a remote deployment, a shared instance, or any MCP client that connects by URL. The Docker image is published for amd64 and arm64 as [`ghcr.io/churichard/fluxmail-mcp`](https://github.com/churichard/fluxmail-mcp/pkgs/container/fluxmail-mcp).
+Use this path for a remote deployment, a shared instance, or any MCP client that connects by URL. The Docker image is published for amd64 and arm64 as [`ghcr.io/churichard/fluxmail`](https://github.com/churichard/fluxmail/pkgs/container/fluxmail).
 
 ### 1. Download the server config
 
 ```bash
 mkdir fluxmail && cd fluxmail
-curl -fsSLO https://raw.githubusercontent.com/churichard/fluxmail-mcp/main/docker-compose.yml
-curl -fsSL https://raw.githubusercontent.com/churichard/fluxmail-mcp/main/.env.example -o .env
+curl -fsSLO https://raw.githubusercontent.com/churichard/fluxmail/main/docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/churichard/fluxmail/main/.env.example -o .env
 ```
 
 Review the settings in `.env` before continuing. If Docker runs on the same computer as your browser, leave `FLUXMAIL_PUBLIC_URL` unset and Fluxmail will use its local OAuth listener on port 8976. For a remote deployment, expose Fluxmail through a public HTTPS address and set `FLUXMAIL_PUBLIC_URL` to that address, such as `https://mail.example.com`.
