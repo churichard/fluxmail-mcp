@@ -441,6 +441,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .action(async (providerInput: string, opts: AddAccountOptions, command: Command) => {
       const provider = providerInput === 'microsoft' ? 'outlook' : providerInput;
       if (provider !== 'gmail' && provider !== 'outlook' && provider !== 'imap') {
+        finishCliOperation(program, 'error', 'invalid_request');
         console.error(`Provider "${providerInput}" is not supported. Available: gmail, outlook, imap`);
         process.exitCode = 1;
         return;
@@ -629,6 +630,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           );
         }
       } catch (err) {
+        finishCliOperation(program, 'error', isEmailError(err) ? err.code : 'internal');
         console.error(`\nError: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }

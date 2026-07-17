@@ -11,7 +11,13 @@ import type { AccessScope, EmailService } from '../service/emailService.js';
 import { authenticateApiKey, type ApiKeyAuth } from '../storage/apiKeys.js';
 import { buildMcpServer } from '../mcp/buildServer.js';
 import { FULL_PERMISSION_POLICY } from '../permissions.js';
-import { buildAuthUrl, createOAuthClient, exchangeCode } from '../accounts/googleAuth.js';
+import {
+  buildAuthUrl,
+  createOAuthClient,
+  exchangeCode,
+  gmailScopes,
+  requireHostedGoogleConfig,
+} from '../accounts/googleAuth.js';
 import {
   claimGmailConnectionGrant,
   claimOutlookConnectionGrant,
@@ -108,6 +114,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     `<button type="submit">Continue with ${identityProvider}</button></form></body></html>`;
 
   const beginGoogleOAuth = (intent?: GmailConnectionIntent): string => {
+    requireHostedGoogleConfig(config);
     const now = Date.now();
     for (const [state, pending] of googleOauthStates) {
       if (pending.expiresAt < now) googleOauthStates.delete(state);
@@ -115,7 +122,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     const state = randomBytes(16).toString('hex');
     googleOauthStates.set(state, { expiresAt: now + OAUTH_STATE_TTL_MS, ...(intent ? { intent } : {}) });
     const client = createOAuthClient(config, `${config.publicUrl}/auth/google/callback`);
-    return buildAuthUrl(client, state);
+    return buildAuthUrl(client, state, gmailScopes(config));
   };
 
   const beginMicrosoftOAuth = (intent?: GmailConnectionIntent): string => {

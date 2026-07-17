@@ -29,11 +29,11 @@
       "environmentVariables": [
         {
           "name": "GOOGLE_CLIENT_ID",
-          "description": "Google OAuth client ID. Required only when connecting Gmail accounts."
+          "description": "Optional override for Fluxmail's built-in Desktop OAuth client ID."
         },
         {
           "name": "GOOGLE_CLIENT_SECRET",
-          "description": "Google OAuth client secret. Required only when connecting Gmail accounts.",
+          "description": "Client secret paired with a custom Google OAuth client ID.",
           "isSecret": true
         },
         {

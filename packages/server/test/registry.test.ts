@@ -3,13 +3,14 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EmailError } from '@fluxmail/core';
 import { ImapProvider } from '@fluxmail/provider-imap';
 import { AccountRegistry } from '../src/accounts/registry.js';
 import { accountCredentials, accounts, members, oauthTokens, openDb } from '../src/storage/db.js';
 import { addMember } from '../src/storage/members.js';
-import { decryptString } from '../src/storage/crypto.js';
+import { decryptString, encryptString } from '../src/storage/crypto.js';
 import type { FluxmailConfig } from '../src/config.js';
 
 function testConfig(): FluxmailConfig {
@@ -66,8 +67,51 @@ describe('AccountRegistry', () => {
 
     const row = db.select().from(accountCredentials).get();
     expect(row?.encryptedCredentials).not.toContain('rt_secret');
-    expect(JSON.parse(decryptString(config.encryptionKey, row!.encryptedCredentials)).refresh_token).toBe('rt_secret');
+    expect(JSON.parse(decryptString(config.encryptionKey, row!.encryptedCredentials))).toMatchObject({
+      refresh_token: 'rt_secret',
+      fluxmailOAuthClient: { clientId: 'id', clientSecret: 'secret' },
+    });
     expect(db.select().from(oauthTokens).get()?.encryptedTokens).toBe(row?.encryptedCredentials);
+  });
+
+  it('keeps each Gmail account on the OAuth client that issued its refresh token', () => {
+    const config = testConfig();
+    const db = openDb(':memory:');
+    const owner = addMember(db, { name: 'Owner' });
+    const account = new AccountRegistry(db, config).addGmailAccount('me@example.com', tokens, undefined, owner.id);
+
+    const changedConfig = {
+      ...config,
+      google: { clientId: 'replacement-id', clientSecret: 'replacement-secret' },
+    };
+    const provider = new AccountRegistry(db, changedConfig).getProvider(account.id) as unknown as {
+      auth: { _clientId?: string; _clientSecret?: string };
+    };
+
+    expect(provider.auth).toMatchObject({ _clientId: 'id', _clientSecret: 'secret' });
+  });
+
+  it('adds OAuth client provenance to legacy Gmail credentials', () => {
+    const config = testConfig();
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, config);
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
+    const encryptedLegacyTokens = encryptString(config.encryptionKey, JSON.stringify(tokens));
+    db.update(accountCredentials)
+      .set({ encryptedCredentials: encryptedLegacyTokens })
+      .where(eq(accountCredentials.accountId, account.id))
+      .run();
+
+    new AccountRegistry(db, config).getProvider(account.id);
+
+    const stored = JSON.parse(
+      decryptString(config.encryptionKey, db.select().from(accountCredentials).get()!.encryptedCredentials),
+    );
+    expect(stored).toMatchObject({
+      refresh_token: 'rt_secret',
+      fluxmailOAuthClient: { clientId: 'id', clientSecret: 'secret' },
+    });
   });
 
   it('enforces the Personal-plan mailbox limit', () => {

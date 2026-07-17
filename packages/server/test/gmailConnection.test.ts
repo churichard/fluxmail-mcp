@@ -7,6 +7,7 @@ import {
   selectGmailConnectionMode,
   validateAccountConnectionFlags,
 } from '../src/accounts/gmailConnection.js';
+import { DEFAULT_GOOGLE_CLIENT_ID, DEFAULT_GOOGLE_CLIENT_SECRET } from '../src/accounts/defaultGoogleOAuth.js';
 import { gmailConnectionGrants, openDb } from '../src/storage/db.js';
 
 function config(publicUrlConfigured: boolean, publicUrl?: string): FluxmailConfig {
@@ -72,6 +73,29 @@ describe('Gmail connection mode', () => {
     const rawToken = url.searchParams.get('token');
     expect(rawToken).toBeTruthy();
     expect(JSON.stringify(db.select().from(gmailConnectionGrants).get())).not.toContain(rawToken);
+  });
+
+  it('requires a Web client secret for hosted Gmail', () => {
+    const db = openDb(':memory:');
+    const publicClientConfig = config(true);
+    publicClientConfig.google = { clientId: 'desktop-client-id' } as FluxmailConfig['google'];
+
+    expect(() => prepareHostedGmailConnection(db, publicClientConfig, { memberId: 'member_1' })).toThrow(
+      /GOOGLE_CLIENT_SECRET/,
+    );
+  });
+
+  it('does not use the built-in Desktop client for hosted Gmail', () => {
+    const db = openDb(':memory:');
+    const desktopConfig = config(true);
+    desktopConfig.google = {
+      clientId: DEFAULT_GOOGLE_CLIENT_ID,
+      clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET,
+    };
+
+    expect(() => prepareHostedGmailConnection(db, desktopConfig, { memberId: 'member_1' })).toThrow(
+      /custom Google Web application/,
+    );
   });
 
   it('creates a hosted Outlook grant for a confidential Entra app', () => {

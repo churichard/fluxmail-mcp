@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { DEFAULT_GOOGLE_CLIENT_ID, DEFAULT_GOOGLE_CLIENT_SECRET } from './accounts/defaultGoogleOAuth.js';
 import { DEFAULT_LICENSE_SERVER_URL } from './licensing/client.js';
 
 export const DEFAULT_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -22,12 +23,12 @@ export interface ConfigReferenceEntry {
  */
 export const CONFIG_REFERENCE = {
   GOOGLE_CLIENT_ID: {
-    defaultValue: 'required for Gmail',
-    description: 'Google OAuth client ID.',
+    defaultValue: 'Fluxmail Desktop OAuth app',
+    description: 'Override the built-in Google OAuth client ID.',
   },
   GOOGLE_CLIENT_SECRET: {
-    defaultValue: 'required for Gmail',
-    description: 'Google OAuth client secret.',
+    defaultValue: 'Fluxmail Desktop OAuth app',
+    description: 'Override the built-in Google OAuth client secret. Required with GOOGLE_CLIENT_ID.',
     secret: true,
   },
   MICROSOFT_CLIENT_ID: {
@@ -132,6 +133,7 @@ export interface FluxmailConfig {
   licenseServerUrl: string;
   google?: {
     clientId: string;
+    /** Google requires this generated credential for both Desktop and Web token exchanges. */
     clientSecret: string;
   };
   microsoft?: {
@@ -378,11 +380,18 @@ export function loadConfig(): FluxmailConfig {
     config.licenseKeyFromEnvironment = licenseKeyFromEnvironment;
   }
 
-  const clientId = readEnvironment('GOOGLE_CLIENT_ID');
-  const clientSecret = readEnvironment('GOOGLE_CLIENT_SECRET');
-  if (clientId && clientSecret) {
-    config.google = { clientId, clientSecret };
+  const clientId = readEnvironment('GOOGLE_CLIENT_ID')?.trim();
+  const clientSecret = readEnvironment('GOOGLE_CLIENT_SECRET')?.trim();
+  if (!clientId && clientSecret) {
+    throw new Error('GOOGLE_CLIENT_SECRET requires GOOGLE_CLIENT_ID.');
   }
+  if (clientId && !clientSecret) {
+    throw new Error('GOOGLE_CLIENT_ID requires GOOGLE_CLIENT_SECRET.');
+  }
+  config.google =
+    clientId && clientSecret
+      ? { clientId, clientSecret }
+      : { clientId: DEFAULT_GOOGLE_CLIENT_ID, clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET };
   const microsoftClientId = readEnvironment('MICROSOFT_CLIENT_ID')?.trim();
   if (microsoftClientId) {
     const microsoftClientSecret = readEnvironment('MICROSOFT_CLIENT_SECRET')?.trim();
