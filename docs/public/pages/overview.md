@@ -1,24 +1,32 @@
 ---
 title: 'Overview'
-description: 'What Fluxmail MCP does, how it connects AI agents to email, and where to begin.'
+description: 'How Fluxmail connects agents and apps to Gmail, Outlook, and IMAP through MCP, REST API, and CLI.'
 updated: '2026-07-17'
 ---
 
-Fluxmail is a self-hosted MCP server for Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. It gives MCP clients one set of tools for working with email, regardless of the provider behind each account.
+Fluxmail is self-hosted email infrastructure for agents and apps. It connects to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes, then provides one service for working with every connected account.
 
-An agent can use Fluxmail to read and search messages, follow threads, download attachments, create drafts, send or schedule mail, and organize the inbox. The exact tools available to a client depend on the permissions you give that connection.
+## Choose an interface
+
+| Interface | Use it for |
+| --- | --- |
+| MCP | Give AI agents tools to read, search, draft, send, and organize email. |
+| REST API | Add email to apps, internal tools, and backend workflows through a versioned JSON API. |
+| CLI | Install and run Fluxmail, connect mailboxes, manage members and access, and create API keys. |
+
+MCP and REST use the same mailbox operations, permissions, and provider integrations. The CLI configures and runs that service. You do not need a separate Gmail, Microsoft Graph, or IMAP integration for each client.
 
 ## How it works
 
-You run Fluxmail on your computer or on a server you control. Your MCP client connects to it over stdio or Streamable HTTP, and Fluxmail talks to each email provider on the client's behalf.
+You run Fluxmail on your computer or on a server you control. Agents can connect over MCP using stdio or Streamable HTTP. Apps use the REST API, and operators use the CLI on the machine where Fluxmail runs.
 
 ```text
-AI agent -> stdio or Streamable HTTP -> Fluxmail -> Gmail API
-                                                -> Microsoft Graph
-                                                -> IMAP and SMTP
+AI agents       -> MCP      -> Fluxmail -> Gmail API
+Apps and jobs   -> REST API ->          -> Microsoft Graph
+Operators       -> CLI      ->          -> IMAP and SMTP
 ```
 
-Fluxmail stores its SQLite database and encrypted provider credentials on the machine where it runs. It does not copy email content to a service operated by Fluxmail. Your MCP client may send content returned by the server to its model provider, depending on how that client works.
+Fluxmail stores its SQLite database and encrypted provider credentials on the machine where it runs. It does not copy email content to a service operated by Fluxmail. An MCP client may send content returned by Fluxmail to its model provider, depending on how that client works.
 
 ## Supported mailboxes
 
@@ -30,18 +38,21 @@ Fluxmail stores its SQLite database and encrypted provider credentials on the ma
 
 You can connect several mailboxes to one Fluxmail instance. Members and account access rules decide which mailboxes each person can reach. Permission profiles separately control whether a client can only read mail, manage drafts and folders, or send and permanently delete messages.
 
-## Choose a setup
+## Choose where to run it
 
-| Setup | Best for | Transport |
+| Setup | Best for | Available interfaces |
 | --- | --- | --- |
-| Local process | One person using an agent on the same computer | stdio |
-| Docker server | Remote access, shared instances, or several MCP clients | Streamable HTTP |
+| Local process | One person using an agent on the same computer | MCP over stdio, plus the CLI |
+| Local HTTP server | Local apps, scripts, or MCP clients that connect by URL | REST API, MCP over Streamable HTTP, plus the CLI |
+| Docker server | Remote access, shared instances, or several clients | REST API, MCP over Streamable HTTP, plus the CLI |
 
 The [Quickstart](/docs/quickstart) walks through both setups. For provider-specific steps, see [Connect Gmail / Google Workspace](/docs/connect-gmail-to-mcp), [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp), or [Connect IMAP/SMTP](/docs/connect-an-imap-mailbox).
 
 ## Read next
 
-- [Tools](/docs/tools) lists the email operations available to agents.
+- [MCP tools](/docs/tools) lists the email operations available to agents.
+- [Build with REST](/docs/build-with-rest) walks through common app and backend requests.
+- [CLI reference](/docs/cli) covers installation, account setup, access, and server commands.
 - [Permissions](/docs/permissions) explains profiles, custom policies, and mailbox scope.
 - [Configuration](/docs/configuration) covers server settings, storage paths, and telemetry.
 - [Teams and plans](/docs/teams-and-plans) covers members, shared mailboxes, and plan limits.

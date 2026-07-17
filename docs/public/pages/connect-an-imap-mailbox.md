@@ -155,8 +155,8 @@ fluxmail accounts add imap \
 
 Fluxmail uses IMAP to read and organize the mailbox, and SMTP to send messages. The available behavior depends partly on the mail server:
 
-- Each message lives in a folder. Your agent can move messages between folders, but IMAP accounts do not support label actions.
+- Each message lives in a folder. Fluxmail can move messages between folders, but IMAP accounts do not support label actions.
 - Fluxmail builds threads from the standard `References`, `In-Reply-To`, and `Message-ID` headers.
 - Searches run through the IMAP server, so results depend on what that server can index.
 
-Your agent can read and search mail, work with attachments and drafts, send or schedule messages, reply, forward, and organize messages into folders.
+Through MCP or REST, Fluxmail can read and search mail, work with attachments and drafts, send or schedule messages, reply, forward, and organize messages into folders.

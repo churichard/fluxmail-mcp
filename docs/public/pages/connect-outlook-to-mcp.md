@@ -145,4 +145,4 @@ fluxmail accounts add outlook --reauthorize <account-id>
 
 For Docker, prefix the command with `docker compose exec fluxmail`. Choose the Microsoft account that matches the mailbox you are reconnecting. Reauthorization updates the stored tokens without changing the mailbox owner or access rules.
 
-Return to the [Quickstart](/docs/quickstart) to connect Fluxmail to your AI agent.
+Return to the [Quickstart](/docs/quickstart) to use the mailbox through MCP, REST API, or CLI.

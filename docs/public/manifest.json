@@ -1,10 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "fluxmail",
-  "category": "Fluxmail MCP",
+  "category": "Fluxmail",
   "pages": [
     "overview",
     "quickstart",
+    "build-with-rest",
     "connect-gmail-to-mcp",
     "connect-outlook-to-mcp",
     "connect-an-imap-mailbox",

@@ -1,6 +1,6 @@
 # Fluxmail
 
-Fluxmail is a self-hosted email server for Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. It supports MCP clients and a versioned REST API for scripts and applications.
+Fluxmail is self-hosted email infrastructure for agents and apps. It connects to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. Agents use MCP, apps and backend workflows use the versioned REST API, and operators use the CLI to connect accounts, manage access, and run the service.
 
 ## Install
 
@@ -11,12 +11,13 @@ npm install -g fluxmail
 fluxmail members add --name "Your name" --email you@example.com
 ```
 
-Then follow the [quickstart](https://fluxmail.ai/docs/quickstart) to connect a mailbox, choose who can use it, and configure your MCP client.
+Then follow the [quickstart](https://fluxmail.ai/docs/quickstart) to connect a mailbox and choose how you want to use Fluxmail: MCP, REST API, or CLI.
 
 ## Documentation
 
 - [Overview](https://fluxmail.ai/docs/overview)
-- [Tools](https://fluxmail.ai/docs/tools)
+- [MCP tools](https://fluxmail.ai/docs/tools)
+- [Build with REST](https://fluxmail.ai/docs/build-with-rest)
 - [REST API](https://fluxmail.ai/docs/rest-api)
 - [Permissions](https://fluxmail.ai/docs/permissions)
 - [Configuration](https://fluxmail.ai/docs/configuration)

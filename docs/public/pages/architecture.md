@@ -1,7 +1,7 @@
 ---
 title: 'Architecture'
-description: 'Where the self-hosted Fluxmail server keeps your data and how requests move through it.'
-updated: '2026-07-15'
+description: 'Where Fluxmail keeps your data and how MCP, REST, and CLI requests reach each email provider.'
+updated: '2026-07-17'
 ---
 
 ## Where your data lives
@@ -10,7 +10,9 @@ Fluxmail keeps its SQLite database on the machine where it runs. Google and Micr
 
 ## How requests flow
 
-Clients connect to Fluxmail through MCP or REST. Both interfaces send requests through the same service, which selects the mailbox, checks plan limits, and passes the operation to Gmail, Microsoft Graph, or an IMAP/SMTP server. This keeps account routing, replies, forwards, and provider capabilities consistent across MCP and REST.
+Agents connect through MCP, while apps and backend workflows use REST. Both interfaces send email requests through the same service. Fluxmail selects the mailbox, checks access and plan limits, then passes the operation to Gmail, Microsoft Graph, or an IMAP/SMTP server. Account routing, replies, forwards, and provider capabilities stay consistent across MCP and REST.
+
+The CLI is Fluxmail's control interface. It connects mailboxes, manages members and API keys, changes configuration, and starts the MCP and REST services. CLI commands that manage the instance use the same database and provider connections as the running server, but the CLI does not duplicate the MCP and REST mailbox-operation APIs.
 
 Provider differences still affect the available behavior. Outlook uses Microsoft Graph conversations and folders. IMAP has folders instead of labels, uses the mail server's basic search, and has no server-side thread model. Fluxmail reconstructs IMAP threads from standard email headers.
 
