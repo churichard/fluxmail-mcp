@@ -347,9 +347,14 @@ describe('REST email operations', () => {
       service: service as never,
       telemetry: { capture, shutdown: async () => undefined },
     });
+    expect((await app.request('/api/v1')).status).toBe(200);
     expect((await app.request('/api/v1/status', { headers: auth })).status).toBe(200);
     expect(capture).toHaveBeenCalledWith(
-      'rest api called',
+      'operation completed',
+      expect.objectContaining({ product_surface: 'rest', operation: 'getApiInfo', outcome: 'success' }),
+    );
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
       expect.objectContaining({ product_surface: 'rest', operation: 'getStatus', outcome: 'success' }),
     );
     expect(JSON.stringify(capture.mock.calls)).not.toContain('me@example.com');

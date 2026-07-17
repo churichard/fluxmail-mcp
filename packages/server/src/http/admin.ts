@@ -32,6 +32,72 @@ import { findMember } from '../storage/members.js';
 export const ADMIN_BODY_LIMIT = 64 * 1024;
 export const ADMIN_CONNECTION_TIMEOUT_MS = 30_000;
 
+export const adminOperationRoutes = {
+  createConnection: {
+    method: 'post',
+    path: '/api/v1/admin/connections',
+    operationId: 'createAdministrativeConnection',
+  },
+  testImapConnection: {
+    method: 'post',
+    path: '/api/v1/admin/imap/tests',
+    operationId: 'testAdministrativeImapConnection',
+  },
+  updateImapFolders: {
+    method: 'patch',
+    path: '/api/v1/admin/accounts/{accountId}/imap/folders',
+    operationId: 'updateAdministrativeImapFolders',
+  },
+  listApiKeys: {
+    method: 'get',
+    path: '/api/v1/admin/api-keys',
+    operationId: 'listAdministrativeApiKeys',
+  },
+  createApiKey: {
+    method: 'post',
+    path: '/api/v1/admin/api-keys',
+    operationId: 'createAdministrativeApiKey',
+  },
+  updateApiKey: {
+    method: 'patch',
+    path: '/api/v1/admin/api-keys/{keyId}',
+    operationId: 'updateAdministrativeApiKey',
+  },
+  revokeApiKey: {
+    method: 'delete',
+    path: '/api/v1/admin/api-keys/{keyId}',
+    operationId: 'revokeAdministrativeApiKey',
+  },
+  getLicense: {
+    method: 'get',
+    path: '/api/v1/admin/license',
+    operationId: 'getAdministrativeLicense',
+  },
+  activateLicense: {
+    method: 'post',
+    path: '/api/v1/admin/license/activate',
+    operationId: 'activateAdministrativeLicense',
+  },
+} as const;
+
+function matchesAdminRoute(template: string, path: string): boolean {
+  const templateParts = template.split('/');
+  const pathParts = path.split('/');
+  return (
+    templateParts.length === pathParts.length &&
+    templateParts.every((part, index) =>
+      part.startsWith('{') && part.endsWith('}') ? Boolean(pathParts[index]) : part === pathParts[index],
+    )
+  );
+}
+
+export function adminOperationId(method: string, path: string): string | undefined {
+  const normalizedMethod = method.toLowerCase();
+  return Object.values(adminOperationRoutes).find(
+    (route) => route.method === normalizedMethod && matchesAdminRoute(route.path, path),
+  )?.operationId;
+}
+
 export interface AdminConnectionSecurity {
   remoteAddress?: string;
   encrypted?: boolean;
@@ -360,9 +426,7 @@ async function run<T extends Response>(fn: () => Promise<T> | T): Promise<any> {
 
 export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): void {
   const connectionsRoute = createRoute({
-    method: 'post',
-    path: '/api/v1/admin/connections',
-    operationId: 'createAdministrativeConnection',
+    ...adminOperationRoutes.createConnection,
     summary: 'Create or reauthorize a connection',
     description: 'Create or reauthorize a Gmail, Outlook, or IMAP connection. Requires admin.accounts.',
     ...protectedRoute,
@@ -438,9 +502,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
   );
 
   const imapTestRoute = createRoute({
-    method: 'post',
-    path: '/api/v1/admin/imap/tests',
-    operationId: 'testAdministrativeImapConnection',
+    ...adminOperationRoutes.testImapConnection,
     summary: 'Test an IMAP connection',
     description: 'Test IMAP and SMTP settings without saving an account. Requires admin.accounts.',
     ...protectedRoute,
@@ -470,9 +532,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
   );
 
   const folderRoute = createRoute({
-    method: 'patch',
-    path: '/api/v1/admin/accounts/{accountId}/imap/folders',
-    operationId: 'updateAdministrativeImapFolders',
+    ...adminOperationRoutes.updateImapFolders,
     summary: 'Update IMAP folders',
     description: 'Update the folder overrides for an IMAP account. Requires admin.accounts.',
     ...protectedRoute,
@@ -516,9 +576,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
   );
 
   const listKeysRoute = createRoute({
-    method: 'get',
-    path: '/api/v1/admin/api-keys',
-    operationId: 'listAdministrativeApiKeys',
+    ...adminOperationRoutes.listApiKeys,
     summary: 'List API keys',
     description: 'List API key metadata without returning plaintext secrets. Requires admin.api_keys.',
     ...protectedRoute,
@@ -538,9 +596,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
   );
 
   const createKeyRoute = createRoute({
-    method: 'post',
-    path: '/api/v1/admin/api-keys',
-    operationId: 'createAdministrativeApiKey',
+    ...adminOperationRoutes.createApiKey,
     summary: 'Create an API key',
     description: 'Create an API key and return its plaintext secret once. Requires admin.api_keys.',
     ...protectedRoute,
@@ -570,9 +626,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
   );
 
   const patchKeyRoute = createRoute({
-    method: 'patch',
-    path: '/api/v1/admin/api-keys/{keyId}',
-    operationId: 'updateAdministrativeApiKey',
+    ...adminOperationRoutes.updateApiKey,
     summary: 'Update an API key',
     description: 'Update the permissions or mailbox scope of an API key. Requires admin.api_keys.',
     ...protectedRoute,
@@ -622,9 +676,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
   );
 
   const deleteKeyRoute = createRoute({
-    method: 'delete',
-    path: '/api/v1/admin/api-keys/{keyId}',
-    operationId: 'revokeAdministrativeApiKey',
+    ...adminOperationRoutes.revokeApiKey,
     summary: 'Revoke an API key',
     description: 'Revoke an API key. Requires admin.api_keys.',
     ...protectedRoute,
@@ -647,9 +699,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
   );
 
   const licenseRoute = createRoute({
-    method: 'get',
-    path: '/api/v1/admin/license',
-    operationId: 'getAdministrativeLicense',
+    ...adminOperationRoutes.getLicense,
     summary: 'Get license status',
     description: 'Get license status and usage without returning the configured license key. Requires admin.license.',
     ...protectedRoute,
@@ -681,9 +731,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
   );
 
   const activateRoute = createRoute({
-    method: 'post',
-    path: '/api/v1/admin/license/activate',
-    operationId: 'activateAdministrativeLicense',
+    ...adminOperationRoutes.activateLicense,
     summary: 'Activate a license',
     description: 'Validate and activate a Fluxmail license key. Requires admin.license.',
     ...protectedRoute,

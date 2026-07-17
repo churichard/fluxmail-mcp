@@ -22,3 +22,12 @@ This restriction does not prevent legitimate work on the licensing system, such 
 - Changes to MCP tools, CLI commands, configuration, permissions, providers, or licensing must update the corresponding public guide.
 - The generated reference pages under `tools/`, `cli/`, and `rest-api/`, along with generated sections in `configuration.md` and `permissions.md`, come from the implementation. Run `pnpm docs:generate`, then `pnpm docs:check`.
 - Apply the humanizer guidance to all user-facing copy. Do not use em dashes or en dashes in public documentation.
+
+# Anonymous telemetry
+
+- Instrument every new user-visible CLI command, MCP tool, and REST operation with `captureOperation` from `packages/server/src/telemetry.ts`.
+- Use `product_surface` to identify `cli`, `mcp`, or `rest`. Use a stable operation name, `success` or `error` outcome, elapsed milliseconds, and a safe error code when available.
+- A feature added to an existing operation may add an allowlisted boolean or enum-like property when the distinction is useful in PostHog.
+- Never send command arguments, request or response payloads, email data, identifiers, search text, file paths, credentials, configuration values, error messages, stack traces, or provider responses.
+- Add tests for success and error telemetry. Tests must also prove that representative private input is absent from captured properties.
+- Update `docs/telemetry.md` and the public telemetry description when the event schema or collected properties change.

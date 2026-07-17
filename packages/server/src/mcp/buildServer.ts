@@ -21,7 +21,7 @@ import {
   type McpCapability,
   type PermissionPolicy,
 } from '../permissions.js';
-import type { Telemetry, TelemetryProperties } from '../telemetry.js';
+import { captureOperation, type Telemetry, type TelemetryProperties } from '../telemetry.js';
 
 const MAX_BODY_CHARS = 50_000;
 
@@ -213,14 +213,6 @@ function toolFeatureProperties(tool: string, args: unknown): TelemetryProperties
   }
 }
 
-function captureToolTelemetry(options: BuildMcpServerOptions, properties: TelemetryProperties): void {
-  try {
-    options.telemetry?.capture('mcp tool called', { ...properties, product_surface: 'mcp' });
-  } catch {
-    // An injected telemetry client must not affect MCP results.
-  }
-}
-
 function handleResult<A extends unknown[]>(
   tool: string,
   fn: (...args: A) => Promise<CallToolResult>,
@@ -236,22 +228,24 @@ function handleResult<A extends unknown[]>(
       const warning = gate?.();
       const result = await fn(...args);
       if (warning) result.content.push({ type: 'text', text: `Note: ${warning}` });
-      captureToolTelemetry(options, {
-        tool,
-        transport: options.transport ?? 'unknown',
+      captureOperation(options.telemetry, {
+        productSurface: 'mcp',
+        operation: tool,
         outcome: 'success',
-        duration_ms: Math.round(performance.now() - startedAt),
-        ...toolFeatureProperties(tool, args[0]),
+        durationMs: performance.now() - startedAt,
+        transport: options.transport ?? 'unknown',
+        properties: toolFeatureProperties(tool, args[0]),
       });
       return result;
     } catch (err) {
-      captureToolTelemetry(options, {
-        tool,
-        transport: options.transport ?? 'unknown',
+      captureOperation(options.telemetry, {
+        productSurface: 'mcp',
+        operation: tool,
         outcome: 'error',
-        error_code: isEmailError(err) ? err.code : 'internal',
-        duration_ms: Math.round(performance.now() - startedAt),
-        ...toolFeatureProperties(tool, args[0]),
+        errorCode: isEmailError(err) ? err.code : 'internal',
+        durationMs: performance.now() - startedAt,
+        transport: options.transport ?? 'unknown',
+        properties: toolFeatureProperties(tool, args[0]),
       });
       return toolError(err);
     } finally {

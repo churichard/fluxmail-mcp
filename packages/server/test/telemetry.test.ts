@@ -5,6 +5,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  captureOperation,
   createTelemetry,
   installTelemetryStreamEndHandler,
   isTelemetryEnabled,
@@ -14,6 +15,52 @@ import {
 } from '../src/telemetry.js';
 
 describe('telemetry', () => {
+  it('uses one operation event and protects its common properties from overrides', () => {
+    const capture = vi.fn();
+    captureOperation(
+      { capture, shutdown: async () => undefined },
+      {
+        productSurface: 'mcp',
+        operation: 'search_emails',
+        outcome: 'success',
+        durationMs: 1.6,
+        transport: 'stdio',
+        properties: {
+          product_surface: 'private',
+          operation: 'private',
+          outcome: 'error',
+          duration_ms: 9_999,
+          error_code: 'private',
+          transport: 'private',
+          scheduled: false,
+        },
+      },
+    );
+
+    expect(capture).toHaveBeenCalledWith('operation completed', {
+      product_surface: 'mcp',
+      operation: 'search_emails',
+      outcome: 'success',
+      duration_ms: 2,
+      transport: 'stdio',
+      scheduled: false,
+    });
+  });
+
+  it('does not let an injected telemetry client break an operation', () => {
+    expect(() =>
+      captureOperation(
+        {
+          capture: () => {
+            throw new Error('analytics unavailable');
+          },
+          shutdown: async () => undefined,
+        },
+        { productSurface: 'rest', operation: 'getStatus', outcome: 'success', durationMs: 1 },
+      ),
+    ).not.toThrow();
+  });
+
   it('uses the ID published by another process during concurrent initialization', () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
     const file = path.join(dataDir, 'telemetry.id');
