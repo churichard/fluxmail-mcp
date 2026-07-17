@@ -13,10 +13,9 @@ const account = {
   email: 'me@example.com',
   status: 'active' as const,
   capabilities: { labels: true, serverThreads: true, serverSearch: 'rich' as const, snippets: true },
-  ownerId: 'member_1',
-  memberId: 'member_1',
-  sharingMode: 'private' as const,
-  sharedMemberIds: [],
+  ownerMemberId: 'member_1',
+  sharedWithAll: false,
+  grantedMemberIds: [],
 };
 const message: Message = {
   id: 'msg_1',
@@ -31,10 +30,10 @@ const message: Message = {
   flags: { read: false, starred: false, draft: false },
 };
 
-function fixture(authMode: FluxmailConfig['authMode'] = 'apikey') {
+function fixture() {
   const db = openDb(':memory:');
   const member = addMember(db, { id: 'member_1', name: 'Owner', role: 'admin' });
-  const { key } = createApiKey(db, 'test', member.id);
+  const { key, info: keyInfo } = createApiKey(db, 'test', member.id);
   const config: FluxmailConfig = {
     dataDir: ':memory:',
     dbPath: ':memory:',
@@ -44,7 +43,6 @@ function fixture(authMode: FluxmailConfig['authMode'] = 'apikey') {
     publicUrlConfigured: false,
     oauthPort: 8976,
     oauthHost: '127.0.0.1',
-    authMode,
     maxAttachmentBytes: 1024,
     licenseServerUrl: 'https://license.invalid',
   };
@@ -57,7 +55,7 @@ function fixture(authMode: FluxmailConfig['authMode'] = 'apikey') {
     attempts: 0,
   };
   const service = {
-    withScope: vi.fn(),
+    withPrincipal: vi.fn(),
     assertAccountAccess: vi.fn(() => undefined),
     enforceQuota: vi.fn(() => undefined),
     status: vi.fn(async () => ({ accounts: [], providersAvailable: ['gmail'], scheduled: { pending: 0 } })),
@@ -84,10 +82,10 @@ function fixture(authMode: FluxmailConfig['authMode'] = 'apikey') {
       content: Buffer.from('hello'),
     })),
   };
-  service.withScope.mockReturnValue(service);
+  service.withPrincipal.mockReturnValue(service);
   const app = createRestApi({ config, db, service: service as never });
   const auth = { authorization: `Bearer ${key}` };
-  return { app, auth, config, db, key, member, service, scheduled };
+  return { app, auth, config, db, key, keyInfo, member, service, scheduled };
 }
 
 const draftBody = {
@@ -118,6 +116,12 @@ describe('REST API discovery and authentication', () => {
     const document = (await response.json()) as Record<string, any>;
     expect(document.openapi).toBe('3.1.0');
     expect(document.components.securitySchemes.bearerAuth).toMatchObject({ type: 'http', scheme: 'bearer' });
+    expect(document.components.securitySchemes.memberSessionAuth).toMatchObject({
+      type: 'http',
+      scheme: 'bearer',
+    });
+    expect(document.paths['/api/v1/me/password'].put.security).toEqual([{ memberSessionAuth: [] }]);
+    expect(document.paths['/api/v1/me'].get.security).toEqual([{ bearerAuth: [] }]);
     expect(document.components.schemas.ForwardRequest.properties.includeAttachments).toMatchObject({
       type: 'boolean',
       default: true,
@@ -131,7 +135,7 @@ describe('REST API discovery and authentication', () => {
     );
     expect(
       document.paths['/api/v1/admin/connections'].post.requestBody.content['application/json'].schema.example,
-    ).toEqual({ provider: 'gmail', owner: 'you@example.com' });
+    ).toEqual({ provider: 'gmail', ownerMemberId: 'you@example.com' });
     expect(
       document.paths['/api/v1/admin/imap/tests'].post.requestBody.content['application/json'].schema.example,
     ).toMatchObject({ imap: { port: 993 }, smtp: { port: 465 } });
@@ -162,24 +166,27 @@ describe('REST API discovery and authentication', () => {
     expect(missing.status).toBe(401);
     expect(missing.headers.get('www-authenticate')).toBe('Bearer');
     expect(await missing.json()).toEqual({
-      error: { code: 'unauthorized', message: 'Pass an API key as a Bearer token.' },
+      error: { code: 'unauthorized', message: 'Pass a member session or API key as a Bearer token.' },
     });
     expect((await app.request(`/api/v1/status?key=${key}`)).status).toBe(401);
 
     const authorized = await app.request('/api/v1/status', { headers: { authorization: `Bearer ${key}` } });
     expect(authorized.status).toBe(200);
-    expect(service.withScope).toHaveBeenCalledWith({
-      memberId: member.id,
-      role: 'admin',
-      accountIds: null,
-    });
+    expect(service.withPrincipal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'api_key',
+        memberId: member.id,
+        role: 'admin',
+        accountIds: null,
+      }),
+    );
   });
 
-  it('supports the trusted-network authentication mode', async () => {
-    const { app, service } = fixture('none');
-    expect((await app.request('/api/v1/status')).status).toBe(200);
-    expect((await app.request('/api/v1/accounts/acct_1/folders')).status).toBe(200);
-    expect(service.withScope).toHaveBeenCalledWith({ memberId: null });
+  it('never trusts an unauthenticated local network request', async () => {
+    const { app, service } = fixture();
+    expect((await app.request('/api/v1/status')).status).toBe(401);
+    expect((await app.request('/api/v1/accounts/acct_1/folders')).status).toBe(401);
+    expect(service.withPrincipal).not.toHaveBeenCalled();
   });
 });
 
@@ -535,7 +542,7 @@ describe('REST send idempotency', () => {
     expect(service.send).toHaveBeenCalledTimes(2);
 
     const restartedService = { ...service, send: vi.fn() };
-    restartedService.withScope = vi.fn(() => restartedService);
+    restartedService.withPrincipal = vi.fn(() => restartedService);
     const restarted = createRestApi({ config, db, service: restartedService as never });
     const replay = await restarted.request(
       '/api/v1/accounts/acct_1/send',

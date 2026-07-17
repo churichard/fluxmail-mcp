@@ -21,8 +21,8 @@ export interface ApiKeyInfo {
   name: string;
   createdAt: number;
   lastUsedAt: number | null;
-  /** Member the key was issued to; null identifies a migrated system credential. */
-  memberId: string | null;
+  /** Member the key was issued to. */
+  memberId: string;
   permissionProfile: PermissionProfile;
   capabilities: Capability[];
   supplementalCapabilities: AdminCapability[];
@@ -55,20 +55,21 @@ function hashKey(key: string): string {
 export function createApiKey(
   db: FluxmailDb,
   name: string,
-  memberId?: string,
+  memberId: string,
   permissions: PermissionPolicy = FULL_PERMISSION_POLICY,
   accountIds: readonly string[] | null = null,
 ): { key: string; info: ApiKeyInfo } {
-  if (!memberId) {
-    throw new EmailError('invalid_request', 'A member is required when creating an API key.');
-  }
+  if (!memberId) throw new EmailError('invalid_request', 'A member is required when creating an API key.');
   const member = getMember(db, memberId);
+  if (member.status !== 'active') {
+    throw new EmailError('permission_denied', 'API keys can only be issued to active members.');
+  }
   const policy = normalizePermissionPolicy(permissions);
   if (member.role !== 'admin' && policy.capabilities.some((capability) => capability.startsWith('admin.'))) {
     throw new EmailError('permission_denied', 'Administrative capabilities can only be issued to an admin member.');
   }
   const id = `key_${randomBytes(8).toString('hex')}`;
-  const key = `fmk_${randomBytes(24).toString('hex')}`;
+  const key = `fmk_${randomBytes(32).toString('hex')}`;
   const createdAt = Date.now();
   db.insert(apiKeys)
     .values({
@@ -102,17 +103,17 @@ export function createApiKey(
 export interface ApiKeyAuth {
   /** Stable key id used to scope REST idempotency records. */
   keyId: string;
-  /** Member the key was issued to; null for a migrated system credential. */
-  memberId: string | null;
-  /** Current member role. null identifies a migrated management-only system key. */
-  role: MemberRole | null;
+  /** Member the key was issued to. */
+  memberId: string;
+  /** Current member role. */
+  role: MemberRole;
   permissions: PermissionPolicy;
   accountIds: string[] | null;
 }
 
 /**
  * Verify a key, record its use, and return its live member role and mailbox
- * narrowing. Memberless migrated keys authenticate for management only.
+ * narrowing. Suspended and pending members cannot authenticate with API keys.
  */
 export function authenticateApiKey(db: FluxmailDb, key: string): ApiKeyAuth | null {
   const row = db
@@ -129,9 +130,10 @@ export function authenticateApiKey(db: FluxmailDb, key: string): ApiKeyAuth | nu
       row.supplementalCapabilities,
     );
     const accountIds = deserializeAccountIds(row.accountIds);
-    const member = row.memberId ? getMember(db, row.memberId) : null;
+    const member = getMember(db, row.memberId);
+    if (member.status !== 'active') return null;
     db.update(apiKeys).set({ lastUsedAt: Date.now() }).where(eq(apiKeys.id, row.id)).run();
-    return { keyId: row.id, memberId: row.memberId, role: member?.role ?? null, permissions, accountIds };
+    return { keyId: row.id, memberId: row.memberId, role: member.role, permissions, accountIds };
   } catch {
     return null;
   }
@@ -180,8 +182,8 @@ export function updateApiKeyPermissions(db: FluxmailDb, id: string, permissions:
   const policy = normalizePermissionPolicy(permissions);
   const existing = db.select().from(apiKeys).where(eq(apiKeys.id, id)).get();
   if (!existing) return false;
-  const member = existing.memberId ? getMember(db, existing.memberId) : null;
-  if (member && member.role !== 'admin' && policy.capabilities.some((capability) => capability.startsWith('admin.'))) {
+  const member = getMember(db, existing.memberId);
+  if (member.role !== 'admin' && policy.capabilities.some((capability) => capability.startsWith('admin.'))) {
     throw new EmailError('permission_denied', 'Administrative capabilities can only be issued to an admin member.');
   }
   const result = db
@@ -206,8 +208,8 @@ export function updateApiKey(db: FluxmailDb, id: string, update: ApiKeyUpdate): 
   const existing = db.select().from(apiKeys).where(eq(apiKeys.id, id)).get();
   if (!existing) return undefined;
   const policy = update.permissions ? normalizePermissionPolicy(update.permissions) : undefined;
-  const member = existing.memberId ? getMember(db, existing.memberId) : null;
-  if (policy && member && member.role !== 'admin' && policy.capabilities.some((item) => item.startsWith('admin.'))) {
+  const member = getMember(db, existing.memberId);
+  if (policy && member.role !== 'admin' && policy.capabilities.some((item) => item.startsWith('admin.'))) {
     throw new EmailError('permission_denied', 'Administrative capabilities can only be issued to an admin member.');
   }
   db.update(apiKeys)
@@ -236,7 +238,8 @@ export function isUsableRootKey(db: FluxmailDb, id: string): boolean {
       row.supplementalCapabilities,
     );
     if (!hasCapability(permissions, 'admin.api_keys')) return false;
-    return row.memberId === null || getMember(db, row.memberId).role === 'admin';
+    const member = getMember(db, row.memberId);
+    return member.status === 'active' && member.role === 'admin';
   } catch {
     return false;
   }

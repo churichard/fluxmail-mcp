@@ -12,7 +12,7 @@ Return provider and mailbox status for the accounts available to the API key.
 
 ## Authentication
 
-Pass a Fluxmail API key as a bearer token. The key determines the member, mailbox scope, and permissions for the request.
+Pass a Fluxmail member session or API key as a bearer token. API keys apply their mailbox scope and permissions to the request.
 
 ## Request
 
@@ -49,7 +49,9 @@ This endpoint has no parameters or request body.
   "properties": {
     "data": {
       "type": "object",
-      "additionalProperties": {}
+      "additionalProperties": {
+        "nullable": true
+      }
     },
     "warnings": {
       "type": "array",

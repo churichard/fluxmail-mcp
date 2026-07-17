@@ -20,7 +20,6 @@ function config(publicUrlConfigured: boolean, publicUrl?: string): FluxmailConfi
     publicUrlConfigured,
     oauthPort: 8976,
     oauthHost: '127.0.0.1',
-    authMode: 'apikey',
     maxAttachmentBytes: 10 * 1024 * 1024,
     licenseServerUrl: 'https://license.invalid',
     google: { clientId: 'client-id', clientSecret: 'client-secret' },
@@ -66,7 +65,7 @@ describe('Gmail connection mode', () => {
 
   it('creates a grant and returns a URL based on FLUXMAIL_PUBLIC_URL', () => {
     const db = openDb(':memory:');
-    const prepared = prepareHostedGmailConnection(db, config(true), { memberId: 'member_1' });
+    const prepared = prepareHostedGmailConnection(db, config(true), { ownerMemberId: 'member_1' });
     const url = new URL(prepared.connectionUrl);
 
     expect(`${url.origin}${url.pathname}`).toBe('https://mail.example.com/auth/google/connect');

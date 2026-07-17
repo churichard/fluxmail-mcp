@@ -49,6 +49,7 @@
     "@hono/node-server": "^1.14.3",
     "@hono/zod-openapi": "0.19.10",
     "@modelcontextprotocol/sdk": "^1.13.0",
+    "@node-rs/argon2": "2.0.2",
     "better-sqlite3": "^11.10.0",
     "commander": "^13.1.0",
     "drizzle-orm": "^0.45.2",

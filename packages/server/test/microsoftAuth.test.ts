@@ -18,7 +18,6 @@ function config(oauthPort = 8976, clientSecret?: string): FluxmailConfig {
     publicUrlConfigured: false,
     oauthPort,
     oauthHost: '127.0.0.1',
-    authMode: 'apikey',
     maxAttachmentBytes: 10 * 1024 * 1024,
     licenseServerUrl: 'https://license.invalid',
     microsoft: {
@@ -285,9 +284,9 @@ describe('Microsoft OAuth', () => {
     if (!address || typeof address === 'string') throw new Error('Test server did not bind to a TCP port');
 
     try {
-      await expect(runMicrosoftLoopbackFlow(config(address.port), vi.fn())).rejects.toThrow(
-        /docker compose exec fluxmail fluxmail accounts add outlook/,
-      );
+      const flow = expect(runMicrosoftLoopbackFlow(config(address.port), vi.fn())).rejects;
+      await flow.toThrow(/docker compose exec fluxmail fluxmail accounts add outlook/);
+      await flow.not.toThrow(/--owner/);
     } finally {
       await new Promise<void>((resolve, reject) =>
         existingServer.close((error) => (error ? reject(error) : resolve())),

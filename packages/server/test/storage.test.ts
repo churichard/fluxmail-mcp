@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { EmailError } from '@fluxmail/core';
 import { decryptString, encryptString } from '../src/storage/crypto.js';
-import { accounts, apiKeys, gmailConnectionGrants, openDb } from '../src/storage/db.js';
+import { accounts, apiKeys, gmailConnectionGrants, members, openDb } from '../src/storage/db.js';
 import {
   authenticateApiKey,
   createApiKey,
@@ -65,9 +65,9 @@ describe('crypto', () => {
 describe('api keys', () => {
   it('creates, verifies, and revokes', () => {
     const db = openDb(':memory:');
-    const member = addMember(db, { name: 'Alice' });
+    const member = addMember(db, { name: 'Alice', role: 'member' });
     const { key, info } = createApiKey(db, 'test', member.id);
-    expect(key).toMatch(/^fmk_/);
+    expect(key).toMatch(/^fmk_[0-9a-f]{64}$/);
     expect(verifyApiKey(db, key)).toBe(true);
     expect(verifyApiKey(db, 'fmk_wrong')).toBe(false);
     expect(listApiKeys(db)[0]).toMatchObject({ permissionProfile: 'full' });
@@ -77,7 +77,7 @@ describe('api keys', () => {
 
   it('allows multiple keys', () => {
     const db = openDb(':memory:');
-    const member = addMember(db, { name: 'Alice' });
+    const member = addMember(db, { name: 'Alice', role: 'member' });
     createApiKey(db, 'first', member.id);
     createApiKey(db, 'second', member.id);
     expect(listApiKeys(db)).toHaveLength(2);
@@ -85,11 +85,11 @@ describe('api keys', () => {
 
   it('issues a key to a member and revokes it when the member is removed', () => {
     const db = openDb(':memory:');
-    const member = addMember(db, { name: 'Alice' });
+    const member = addMember(db, { name: 'Alice', role: 'member' });
     const { key, info } = createApiKey(db, 'alice-key', member.id);
     expect(info.memberId).toBe(member.id);
     expect(listApiKeys(db)[0]?.memberId).toBe(member.id);
-    expect(authenticateApiKey(db, key)?.role).toBe('admin');
+    expect(authenticateApiKey(db, key)?.role).toBe('member');
 
     removeMember(db, member.id);
     expect(listApiKeys(db)).toHaveLength(0);
@@ -133,6 +133,15 @@ describe('api keys', () => {
     );
     expect(listApiKeys(db)[0]?.supplementalCapabilities).toEqual(['admin.accounts', 'admin.api_keys']);
 
+    db.insert(members)
+      .values({
+        id: 'member_backup_admin',
+        name: 'Backup Admin',
+        role: 'admin',
+        status: 'active',
+        createdAt: Date.now(),
+      })
+      .run();
     setMemberRole(db, member.id, 'member');
     expect(() =>
       createApiKey(db, 'forbidden', member.id, customPermissionPolicy(['mail.read', 'admin.license'])),
@@ -171,8 +180,8 @@ describe('api keys', () => {
         email: 'alice@example.com',
         status: 'active',
         createdAt: Date.now(),
-        memberId: member.id,
-        sharingMode: 'private',
+        ownerMemberId: member.id,
+        sharedWithAll: false,
       })
       .run();
     const { key, info } = createApiKey(db, 'scoped', member.id, undefined, ['acct_1', 'acct_1']);
@@ -194,10 +203,10 @@ describe('Gmail connection grants', () => {
   it('stores a digest of a 256-bit token and preserves its intent', () => {
     const db = openDb(':memory:');
     const created = createGmailConnectionGrant(db, {
-      memberId: 'member_1',
+      ownerMemberId: 'member_1',
       reauthorizeAccountId: 'acct_1',
-      sharingMode: 'selected',
-      sharedMemberIds: ['member_2'],
+      sharedWithAll: false,
+      grantedMemberIds: ['member_2'],
     });
 
     expect(Buffer.from(created.token, 'base64url')).toHaveLength(32);
@@ -210,10 +219,10 @@ describe('Gmail connection grants', () => {
       status: 'claimed',
       grant: {
         expiresAt: created.expiresAt,
-        memberId: 'member_1',
+        ownerMemberId: 'member_1',
         reauthorizeAccountId: 'acct_1',
-        sharingMode: 'selected',
-        sharedMemberIds: ['member_2'],
+        sharedWithAll: false,
+        grantedMemberIds: ['member_2'],
       },
     });
     expect(inspectGmailConnectionGrant(db, created.token)).toBe('used');

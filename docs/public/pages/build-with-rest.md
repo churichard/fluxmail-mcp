@@ -11,9 +11,7 @@ Fluxmail provides one JSON API for Gmail, Outlook, and IMAP/SMTP mailboxes. Your
 Complete the [Quickstart](/docs/quickstart) through mailbox setup, then create an API key for your app:
 
 ```bash
-fluxmail apikey create \
-  --name support-backend \
-  --member you@example.com
+fluxmail apikey create --name support-backend
 
 fluxmail serve
 ```

@@ -12,20 +12,17 @@ Complete the [quickstart](/docs/quickstart), then create an API key and start th
 
 ```bash
 fluxmail apikey create \
-  --name local-mcp \
-  --member you@example.com
+  --name local-mcp
 
 fluxmail serve
 ```
 
 Copy the `fmk_...` key when Fluxmail displays it. The local MCP endpoint is `http://localhost:8977/mcp`. Pass the key as a bearer token when you configure your MCP client.
 
-For a local stdio connection, run `fluxmail stdio` with a member and permission profile:
+For a local stdio connection, select a local instance where the CLI is logged in, then choose a permission profile:
 
 ```bash
-fluxmail stdio \
-  --member you@example.com \
-  --profile full
+fluxmail stdio --profile full
 ```
 
 See [Configuration](/docs/configuration) for HTTP client examples and environment variables.
@@ -34,7 +31,7 @@ See [Configuration](/docs/configuration) for HTTP client examples and environmen
 
 The tools a client receives depend on its [permission profile](/docs/permissions). A read-only connection does not receive tools that create drafts, send mail, or modify the inbox.
 
-For HTTP connections, permissions belong to the API key. For stdio connections, the `--profile` and `--allow` options set permissions for that process.
+For HTTP connections, permissions belong to the API key. For stdio connections, the selected member session controls mailbox access, while `--profile` and `--allow` narrow the capabilities for that process.
 
 ## Tool reference
 

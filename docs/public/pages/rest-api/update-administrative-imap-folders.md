@@ -12,7 +12,7 @@ Update the folder overrides for an IMAP account. Requires admin.accounts.
 
 ## Authentication
 
-Pass a Fluxmail API key as a bearer token. The key owner must be an administrator, and the key must include the administrative capability named in the endpoint description.
+Pass an administrator member session or an API key as a bearer token. An API key must include the administrative capability named in the endpoint description.
 
 Remote administrative requests require HTTPS. Requests from the local computer can use HTTP.
 
@@ -46,42 +46,32 @@ Content type: `application/json`
   "type": "object",
   "properties": {
     "sent": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": "string",
+      "nullable": true,
       "minLength": 1,
       "maxLength": 1024
     },
     "drafts": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": "string",
+      "nullable": true,
       "minLength": 1,
       "maxLength": 1024
     },
     "trash": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": "string",
+      "nullable": true,
       "minLength": 1,
       "maxLength": 1024
     },
     "archive": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": "string",
+      "nullable": true,
       "minLength": 1,
       "maxLength": 1024
     },
     "spam": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": "string",
+      "nullable": true,
       "minLength": 1,
       "maxLength": 1024
     }
@@ -121,7 +111,9 @@ Content type: `application/json`
   "properties": {
     "data": {
       "type": "object",
-      "additionalProperties": {}
+      "additionalProperties": {
+        "nullable": true
+      }
     }
   },
   "required": [

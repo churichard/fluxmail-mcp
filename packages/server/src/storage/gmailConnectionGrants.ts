@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq, gt, isNull, lt } from 'drizzle-orm';
 import { gmailConnectionGrants, type FluxmailDb } from './db.js';
-import type { AccountSharingMode } from '@fluxmail/core';
 
 export const GMAIL_CONNECTION_GRANT_TTL_MS = 10 * 60 * 1000;
 const GMAIL_CONNECTION_SCOPE = 'gmail_connect';
@@ -9,10 +8,10 @@ const OUTLOOK_CONNECTION_SCOPE = 'outlook_connect';
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export interface GmailConnectionIntent {
-  memberId?: string;
+  ownerMemberId?: string;
   reauthorizeAccountId?: string;
-  sharingMode?: AccountSharingMode;
-  sharedMemberIds?: string[];
+  sharedWithAll?: boolean;
+  grantedMemberIds?: string[];
 }
 
 export interface GmailConnectionGrant extends GmailConnectionIntent {
@@ -83,10 +82,10 @@ function createConnectionGrant(
     .values({
       tokenHash: gmailConnectionTokenHash(token),
       scope,
-      memberId: intent.memberId ?? null,
+      ownerMemberId: intent.ownerMemberId ?? null,
       reauthorizeAccountId: intent.reauthorizeAccountId ?? null,
-      sharingMode: intent.sharingMode ?? null,
-      sharedMemberIds: intent.sharedMemberIds ? JSON.stringify(intent.sharedMemberIds) : null,
+      sharedWithAll: intent.sharedWithAll ?? null,
+      grantedMemberIds: intent.grantedMemberIds ? JSON.stringify(intent.grantedMemberIds) : null,
       createdAt: now,
       expiresAt,
       consumedAt: null,
@@ -138,10 +137,10 @@ function claimConnectionGrant(
       status: 'claimed',
       grant: {
         expiresAt: claimed.expiresAt,
-        ...(claimed.memberId ? { memberId: claimed.memberId } : {}),
+        ...(claimed.ownerMemberId ? { ownerMemberId: claimed.ownerMemberId } : {}),
         ...(claimed.reauthorizeAccountId ? { reauthorizeAccountId: claimed.reauthorizeAccountId } : {}),
-        ...(claimed.sharingMode ? { sharingMode: claimed.sharingMode as AccountSharingMode } : {}),
-        ...(claimed.sharedMemberIds ? { sharedMemberIds: JSON.parse(claimed.sharedMemberIds) as string[] } : {}),
+        ...(claimed.sharedWithAll !== null ? { sharedWithAll: claimed.sharedWithAll } : {}),
+        ...(claimed.grantedMemberIds ? { grantedMemberIds: JSON.parse(claimed.grantedMemberIds) as string[] } : {}),
       },
     };
   }

@@ -113,18 +113,19 @@ describe('Google OAuth callback listener', () => {
       publicUrlConfigured: false,
       oauthPort: address.port,
       oauthHost: '127.0.0.1',
-      authMode: 'apikey',
       maxAttachmentBytes: 10 * 1024 * 1024,
       google: { clientId: 'client-id', clientSecret: 'client-secret' },
     };
 
     try {
-      await expect(runLoopbackFlow(config, vi.fn())).rejects.toThrow(
+      const flow = expect(runLoopbackFlow(config, vi.fn())).rejects;
+      await flow.toThrow(
         new RegExp(
           `OAuth callback port ${address.port} is already in use[\\s\\S]*` +
             'docker compose exec fluxmail fluxmail accounts add gmail',
         ),
       );
+      await flow.not.toThrow(/--owner/);
     } finally {
       await new Promise<void>((resolve, reject) => existingServer.close((err) => (err ? reject(err) : resolve())));
     }
@@ -161,7 +162,6 @@ describe('Google OAuth callback listener', () => {
       publicUrlConfigured: false,
       oauthPort: address.port,
       oauthHost: '127.0.0.1',
-      authMode: 'apikey',
       maxAttachmentBytes: 10 * 1024 * 1024,
       google: { clientId: 'client-id', clientSecret: 'client-secret' },
     };

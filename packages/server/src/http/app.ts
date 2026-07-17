@@ -7,10 +7,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { FluxmailConfig } from '../config.js';
 import type { FluxmailDb } from '../storage/db.js';
 import type { AccountRegistry } from '../accounts/registry.js';
-import type { AccessScope, EmailService } from '../service/emailService.js';
-import { authenticateApiKey, type ApiKeyAuth } from '../storage/apiKeys.js';
+import type { EmailService } from '../service/emailService.js';
+import { authenticateBearer, type ApiKeyPrincipal, type Principal } from '../auth.js';
 import { buildMcpServer } from '../mcp/buildServer.js';
-import { FULL_PERMISSION_POLICY } from '../permissions.js';
 import {
   buildAuthUrl,
   createOAuthClient,
@@ -32,7 +31,7 @@ import { VERSION } from '../version.js';
 import type { Telemetry } from '../telemetry.js';
 import { findMember } from '../storage/members.js';
 import { createRestApi } from './rest.js';
-import { hasCapability } from '../permissions.js';
+import { canAdminister, canSeeAccountMetadata } from '../authorization.js';
 import type { LicenseController } from '../licensing/refresher.js';
 import { administrationUsesHttps as administrationRequestUsesHttps, requestBodyExceedsLimit } from './admin.js';
 import { recordAdminAuditEvent } from '../storage/adminAudit.js';
@@ -144,30 +143,31 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     return buildMicrosoftAuthUrl(config, `${config.publicUrl}/auth/microsoft/callback`, state, verifier);
   };
 
-  // Connecting a mailbox requires an admin member or a migrated management key.
-  const adminAuth = (c: { req: { header(name: string): string | undefined } }): ApiKeyAuth | null => {
+  // Legacy connection routes use the same administrator policy as the REST API.
+  const adminAuth = (c: { req: { header(name: string): string | undefined } }): Principal | null => {
     const authorization = c.req.header('authorization');
     const bearer = authorization?.match(/^Bearer\s+([^\s]+)$/i)?.[1];
-    return bearer ? authenticateApiKey(db, bearer) : null;
+    return bearer ? authenticateBearer(db, bearer) : null;
   };
 
-  const canAdministerAccounts = (auth: ApiKeyAuth): boolean =>
-    hasCapability(auth.permissions, 'admin.accounts') && (auth.memberId === null || auth.role === 'admin');
+  const canAdministerAccounts = (auth: Principal): boolean => canAdminister(auth, 'admin.accounts');
 
   const administrationUsesHttps = (c: { req: { raw: Request }; env?: Partial<HttpBindings> }): boolean =>
-    administrationRequestUsesHttps(c.req.raw, {
-      remoteAddress: c.env?.incoming?.socket.remoteAddress,
-      encrypted: Boolean((c.env?.incoming?.socket as { encrypted?: boolean } | undefined)?.encrypted),
-    });
+    administrationRequestUsesHttps(
+      c.req.raw,
+      {
+        remoteAddress: c.env?.incoming?.socket.remoteAddress,
+        encrypted: Boolean((c.env?.incoming?.socket as { encrypted?: boolean } | undefined)?.encrypted),
+      },
+      config.trustProxy,
+    );
 
   // Authenticate an MCP request. The service applies member grants and the key's
   // optional mailbox allowlist before any provider call.
-  const authForRequest = (c: { req: { header(name: string): string | undefined } }): ApiKeyAuth | null => {
-    if (config.authMode === 'none') {
-      return { keyId: 'auth:none', memberId: null, role: null, permissions: FULL_PERMISSION_POLICY, accountIds: null };
-    }
+  const authForRequest = (c: { req: { header(name: string): string | undefined } }): ApiKeyPrincipal | null => {
     const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
-    return bearer ? authenticateApiKey(db, bearer) : null;
+    const principal = bearer ? authenticateBearer(db, bearer) : null;
+    return principal?.kind === 'api_key' ? principal : null;
   };
 
   app.use('/auth/connections', async (c, next) => {
@@ -179,14 +179,15 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
 
   app.post('/auth/connections', async (c) => {
     const auth = adminAuth(c);
-    if (!auth) return c.json({ error: 'An admin API key is required.' }, 401);
+    if (!auth) return c.json({ error: 'An administrator session or API key is required.' }, 401);
 
     const audit = (outcome: 'success' | 'error', errorCode?: string): void => {
       try {
         recordAdminAuditEvent(db, {
           operation: 'post /auth/connections',
           outcome,
-          actorKeyId: auth.keyId,
+          actorKeyId: auth.kind === 'api_key' ? auth.keyId : undefined,
+          actorSessionId: auth.kind === 'session' ? auth.sessionId : undefined,
           actorMemberId: auth.memberId,
           ...(errorCode ? { errorCode } : {}),
         });
@@ -214,10 +215,10 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
 
     let input: {
       provider?: unknown;
-      owner?: unknown;
+      ownerMemberId?: unknown;
       reauthorizeAccountId?: unknown;
-      sharingMode?: unknown;
-      shareWith?: unknown;
+      sharedWithAll?: unknown;
+      grantedMemberIds?: unknown;
     };
     try {
       input = await c.req.json();
@@ -230,35 +231,39 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
       if (input.provider !== 'gmail' && input.provider !== 'outlook') {
         throw new EmailError('invalid_request', 'provider must be "gmail" or "outlook".');
       }
+      if (input.sharedWithAll !== undefined && typeof input.sharedWithAll !== 'boolean') {
+        throw new EmailError('invalid_request', 'sharedWithAll must be a boolean.');
+      }
       const reauthorizeAccountId =
         typeof input.reauthorizeAccountId === 'string' ? input.reauthorizeAccountId.trim() : undefined;
-      const ownerRef = typeof input.owner === 'string' ? input.owner.trim() : undefined;
+      const ownerRef = typeof input.ownerMemberId === 'string' ? input.ownerMemberId.trim() : undefined;
       if ((reauthorizeAccountId?.length ?? 0) > 200 || (ownerRef?.length ?? 0) > 200) {
         throw new EmailError('invalid_request', 'Account and member references are limited to 200 characters.');
       }
-      if (input.shareWith !== undefined && !Array.isArray(input.shareWith)) {
-        throw new EmailError('invalid_request', 'shareWith must be an array of member ids or email addresses.');
+      if (input.grantedMemberIds !== undefined && !Array.isArray(input.grantedMemberIds)) {
+        throw new EmailError('invalid_request', 'grantedMemberIds must be an array of member ids or email addresses.');
       }
-      if ((input.shareWith?.length ?? 0) > 100) {
-        throw new EmailError('invalid_request', 'shareWith is limited to 100 members.');
+      if ((input.grantedMemberIds?.length ?? 0) > 100) {
+        throw new EmailError('invalid_request', 'grantedMemberIds is limited to 100 members.');
       }
-      const shareWith = (input.shareWith ?? []).map((value) => {
+      const grantedMemberIds = (input.grantedMemberIds ?? []).map((value) => {
         if (typeof value !== 'string' || !value.trim() || value.trim().length > 200) {
-          throw new EmailError('invalid_request', 'shareWith must contain member ids or email addresses.');
+          throw new EmailError('invalid_request', 'grantedMemberIds must contain member ids or email addresses.');
         }
         return value.trim();
       });
 
-      if (reauthorizeAccountId && (ownerRef || input.sharingMode !== undefined || shareWith.length)) {
+      if (reauthorizeAccountId && (ownerRef || input.sharedWithAll !== undefined || grantedMemberIds.length)) {
         throw new EmailError(
           'invalid_request',
-          'owner and sharing settings cannot be combined with reauthorizeAccountId.',
+          'ownerMemberId and access settings cannot be combined with reauthorizeAccountId.',
         );
       }
 
       let intent: GmailConnectionIntent;
       if (reauthorizeAccountId) {
         const existing = registry.getAccount(reauthorizeAccountId);
+        if (!canSeeAccountMetadata(auth, existing)) throw new EmailError('not_found', 'Mailbox not found.');
         if (existing.provider !== input.provider) {
           throw new EmailError(
             'invalid_request',
@@ -267,23 +272,16 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
         }
         intent = { reauthorizeAccountId: existing.id };
       } else {
-        if (!ownerRef) throw new EmailError('invalid_request', 'owner is required for a new mailbox.');
+        if (auth.accountIds !== null) {
+          throw new EmailError('permission_denied', 'This API key is limited to existing mailboxes.');
+        }
+        if (!ownerRef) throw new EmailError('invalid_request', 'ownerMemberId is required for a new mailbox.');
         registry.assertCanAddAccount();
         const owner = findMember(db, ownerRef);
-        const sharingMode = input.sharingMode ?? (shareWith.length ? 'selected' : 'private');
-        if (sharingMode !== 'private' && sharingMode !== 'selected' && sharingMode !== 'all') {
-          throw new EmailError('invalid_request', 'sharingMode must be "private", "selected", or "all".');
-        }
-        if (sharingMode === 'selected' && shareWith.length === 0) {
-          throw new EmailError('invalid_request', 'shareWith is required when sharingMode is "selected".');
-        }
-        if (sharingMode !== 'selected' && shareWith.length > 0) {
-          throw new EmailError('invalid_request', 'shareWith can only be used with sharingMode "selected".');
-        }
         intent = {
-          memberId: owner.id,
-          sharingMode,
-          sharedMemberIds: shareWith.map((ref) => findMember(db, ref).id),
+          ownerMemberId: owner.id,
+          sharedWithAll: input.sharedWithAll === true,
+          grantedMemberIds: grantedMemberIds.map((ref) => findMember(db, ref).id),
         };
       }
 
@@ -331,11 +329,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     } catch {
       return c.json({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }, 400);
     }
-    const scope: AccessScope =
-      config.authMode === 'none'
-        ? { memberId: null }
-        : { memberId: auth.memberId, role: auth.role, accountIds: auth.accountIds };
-    const server = buildMcpServer(service.withScope(scope), {
+    const server = buildMcpServer(service.withPrincipal(auth), {
       permissions: auth.permissions,
       maxAttachmentBytes: config.maxAttachmentBytes,
       telemetry,
@@ -374,19 +368,17 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     if (!administrationUsesHttps(c)) return c.text('Administrative routes require HTTPS outside loopback.', 400);
     const auth = adminAuth(c);
     if (!auth) {
-      return c.text('Unauthorized: pass an admin API key as a Bearer token.', 401);
+      return c.text('Unauthorized: pass an administrator session or API key as a Bearer token.', 401);
     }
     if (!canAdministerAccounts(auth)) return c.text('Forbidden.', 403);
+    if (auth.accountIds !== null) return c.text('This API key is limited to existing mailboxes.', 403);
     const ownerRef = c.req.query('owner');
     if (!ownerRef) {
-      return c.text(
-        'Missing owner. Start the hosted connection with "fluxmail accounts add gmail --owner <member>".',
-        400,
-      );
+      return c.text('Missing owner. Start the hosted connection with "fluxmail accounts add gmail".', 400);
     }
     try {
       const owner = findMember(db, ownerRef);
-      return c.redirect(beginGoogleOAuth({ memberId: owner.id, sharingMode: 'private' }));
+      return c.redirect(beginGoogleOAuth({ ownerMemberId: owner.id, sharedWithAll: false }));
     } catch (err) {
       return c.text(err instanceof Error ? err.message : String(err), 400);
     }
@@ -458,9 +450,22 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
             'Try again and choose the matching Google account.',
         );
       }
-      const account = registry.addGmailAccount(email, tokens, displayName, pending.intent?.memberId, {
-        sharingMode: pending.intent?.sharingMode ?? 'private',
-        sharedMemberIds: pending.intent?.sharedMemberIds ?? [],
+      const duplicate = registry
+        .listAccounts()
+        .find((candidate) => candidate.email.toLowerCase() === email.toLowerCase());
+      if (duplicate && !reauthorizeAccount && pending.intent?.ownerMemberId !== duplicate.ownerMemberId) {
+        throw new EmailError('permission_denied', 'This mailbox is already owned by another member.');
+      }
+      const account = registry.addGmailAccount(email, tokens, displayName, pending.intent?.ownerMemberId, {
+        sharedWithAll: pending.intent?.sharedWithAll ?? false,
+        grantedMemberIds: pending.intent?.grantedMemberIds ?? [],
+      });
+      recordAdminAuditEvent(db, {
+        operation: 'account.connection.complete',
+        outcome: 'success',
+        actorMemberId: pending.intent?.ownerMemberId ?? account.ownerMemberId,
+        resourceType: 'account',
+        resourceId: account.id,
       });
       return c.html(
         `<html><body style="font-family: sans-serif"><h2>${escapeHtml(email)} is connected to Fluxmail</h2>` +
@@ -481,19 +486,17 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     if (!administrationUsesHttps(c)) return c.text('Administrative routes require HTTPS outside loopback.', 400);
     const auth = adminAuth(c);
     if (!auth) {
-      return c.text('Unauthorized: pass an admin API key as a Bearer token.', 401);
+      return c.text('Unauthorized: pass an administrator session or API key as a Bearer token.', 401);
     }
     if (!canAdministerAccounts(auth)) return c.text('Forbidden.', 403);
+    if (auth.accountIds !== null) return c.text('This API key is limited to existing mailboxes.', 403);
     const ownerRef = c.req.query('owner');
     if (!ownerRef) {
-      return c.text(
-        'Missing owner. Start the hosted connection with "fluxmail accounts add outlook --owner <member>".',
-        400,
-      );
+      return c.text('Missing owner. Start the hosted connection with "fluxmail accounts add outlook".', 400);
     }
     try {
       const owner = findMember(db, ownerRef);
-      return c.redirect(beginMicrosoftOAuth({ memberId: owner.id, sharingMode: 'private' }));
+      return c.redirect(beginMicrosoftOAuth({ ownerMemberId: owner.id, sharedWithAll: false }));
     } catch (err) {
       return c.text(err instanceof Error ? err.message : String(err), 400);
     }
@@ -570,17 +573,30 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
             'Try again and choose the matching Microsoft account.',
         );
       }
+      const duplicate = registry
+        .listAccounts()
+        .find((candidate) => candidate.email.toLowerCase() === email.toLowerCase());
+      if (duplicate && !reauthorizeAccount && pending.intent?.ownerMemberId !== duplicate.ownerMemberId) {
+        throw new EmailError('permission_denied', 'This mailbox is already owned by another member.');
+      }
       const account = registry.addOutlookAccount(
         email,
         credentials,
         displayName,
-        pending.intent?.memberId,
+        pending.intent?.ownerMemberId,
         pending.intent?.reauthorizeAccountId,
         {
-          sharingMode: pending.intent?.sharingMode ?? 'private',
-          sharedMemberIds: pending.intent?.sharedMemberIds ?? [],
+          sharedWithAll: pending.intent?.sharedWithAll ?? false,
+          grantedMemberIds: pending.intent?.grantedMemberIds ?? [],
         },
       );
+      recordAdminAuditEvent(db, {
+        operation: 'account.connection.complete',
+        outcome: 'success',
+        actorMemberId: pending.intent?.ownerMemberId ?? account.ownerMemberId,
+        resourceType: 'account',
+        resourceId: account.id,
+      });
       return c.html(
         `<html><body style="font-family: sans-serif"><h2>${escapeHtml(email)} is connected to Fluxmail</h2>` +
           `<p>Account id: <code>${escapeHtml(account.id)}</code>. You can close this tab.</p></body></html>`,

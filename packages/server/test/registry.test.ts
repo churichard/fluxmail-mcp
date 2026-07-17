@@ -23,7 +23,6 @@ function testConfig(): FluxmailConfig {
     publicUrlConfigured: false,
     oauthPort: 8976,
     oauthHost: '127.0.0.1',
-    authMode: 'apikey',
     maxAttachmentBytes: 10 * 1024 * 1024,
     licenseServerUrl: 'https://license.invalid',
     google: { clientId: 'id', clientSecret: 'secret' },
@@ -179,7 +178,7 @@ describe('AccountRegistry', () => {
       first.id,
     );
 
-    expect(second).toMatchObject({ id: first.id, ownerId: owner.id, displayName: 'Updated Name' });
+    expect(second).toMatchObject({ id: first.id, ownerMemberId: owner.id, displayName: 'Updated Name' });
     expect(registry.listAccounts()).toHaveLength(1);
   });
 
@@ -259,7 +258,7 @@ describe('AccountRegistry', () => {
 
     const second = registry.addImapAccount('me@example.com', updated, 'New Name', undefined, first.id);
 
-    expect(second).toMatchObject({ id: first.id, memberId: member.id, displayName: 'New Name' });
+    expect(second).toMatchObject({ id: first.id, ownerMemberId: member.id, displayName: 'New Name' });
     expect(registry.loadImapCredentials(first.id)).toEqual(updated);
   });
 
@@ -330,6 +329,7 @@ describe('AccountRegistry', () => {
     sqlite.close();
 
     const db = openDb(dbPath);
+    const owner = addMember(db, { name: 'Owner' });
     expect(new AccountRegistry(db, testConfig()).listAccounts().map((account) => account.id)).toEqual(['acct_gmail']);
     expect(
       db
@@ -347,7 +347,8 @@ describe('AccountRegistry', () => {
           email: 'ME@EXAMPLE.COM',
           status: 'active',
           createdAt: 3,
-          sharingMode: 'all',
+          ownerMemberId: owner.id,
+          sharedWithAll: true,
         })
         .run(),
     ).toThrow(/UNIQUE/);
@@ -372,10 +373,10 @@ describe('AccountRegistry', () => {
     const member = addMember(db, { name: 'Alice', email: 'alice@example.com' });
 
     const account = registry.addGmailAccount('one@example.com', tokens, undefined, member.id);
-    expect(account.memberId).toBe(member.id);
-    expect(account.ownerId).toBe(member.id);
-    expect(account.sharingMode).toBe('private');
-    expect(registry.listAccounts()[0]?.memberId).toBe(member.id);
+    expect(account.ownerMemberId).toBe(member.id);
+    expect(account.sharedWithAll).toBe(false);
+    expect(account.grantedMemberIds).toEqual([]);
+    expect(registry.listAccounts()[0]?.ownerMemberId).toBe(member.id);
   });
 
   it('replaces private, global, and selected mailbox access', () => {
@@ -387,13 +388,13 @@ describe('AccountRegistry', () => {
       .run();
     const account = registry.addGmailAccount('one@example.com', tokens, undefined, owner.id);
 
-    expect(registry.setAccountAccess(account.id, { sharingMode: 'all' }).sharingMode).toBe('all');
+    expect(registry.setAccountAccess(account.id, { sharedWithAll: true }).sharedWithAll).toBe(true);
     expect(
-      registry.setAccountAccess(account.id, { sharingMode: 'selected', sharedMemberIds: ['member_guest'] }),
-    ).toMatchObject({ sharingMode: 'selected', sharedMemberIds: ['member_guest'] });
-    expect(registry.setAccountAccess(account.id, { sharingMode: 'private' })).toMatchObject({
-      sharingMode: 'private',
-      sharedMemberIds: [],
+      registry.setAccountAccess(account.id, { sharedWithAll: false, grantedMemberIds: ['member_guest'] }),
+    ).toMatchObject({ sharedWithAll: false, grantedMemberIds: ['member_guest'] });
+    expect(registry.setAccountAccess(account.id, { sharedWithAll: false })).toMatchObject({
+      sharedWithAll: false,
+      grantedMemberIds: [],
     });
   });
 
@@ -423,8 +424,8 @@ describe('AccountRegistry', () => {
     expect(() => registry.addGmailAccount('one@example.com', tokens)).toThrow(/owner is required/i);
     const account = registry.addGmailAccount('one@example.com', tokens, undefined, member.id);
 
-    expect(registry.assignAccountMember(account.id, member.id).memberId).toBe(member.id);
-    expect(() => registry.assignAccountMember(account.id, null)).toThrow(/must have an owner/i);
+    expect(registry.assignAccountOwner(account.id, member.id).ownerMemberId).toBe(member.id);
+    expect(() => registry.assignAccountOwner(account.id, '')).toThrow(/No member with id/i);
   });
 
   it('re-authenticating keeps the existing owner', () => {
@@ -435,7 +436,7 @@ describe('AccountRegistry', () => {
 
     const second = registry.addGmailAccount('me@example.com', { ...tokens, refresh_token: 'rt_new' });
     expect(second.id).toBe(first.id);
-    expect(second.memberId).toBe(member.id);
+    expect(second.ownerMemberId).toBe(member.id);
   });
 
   it('rolls back the account when storing its tokens fails', () => {

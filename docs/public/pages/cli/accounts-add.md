@@ -27,10 +27,6 @@ fluxmail accounts add <provider> [options]
 | Option | Required | Details | Default |
 | --- | --- | --- | --- |
 | `--reauthorize <account-id>` | No | Reconnect an existing account | None |
-| `--owner <member>` | No | Member (id or email) who owns the new mailbox | None |
-| `--member <member>` | No | Deprecated alias for --owner | None |
-| `--shared` | No | Share the mailbox with every member | None |
-| `--share-with <member>` | No | Share with one member; repeat as needed | None |
 | `--local` | No | Use the local browser callback for OAuth | None |
 | `--hosted` | No | Use FLUXMAIL_PUBLIC_URL for the OAuth callback | None |
 | `--email <address>` | No | Mailbox address (required for IMAP) | None |

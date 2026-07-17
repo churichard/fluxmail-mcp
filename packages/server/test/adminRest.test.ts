@@ -9,13 +9,13 @@ import { EmailService } from '../src/service/emailService.js';
 import { createApp } from '../src/http/app.js';
 import { permissionPolicyForProfile } from '../src/permissions.js';
 import { createApiKey } from '../src/storage/apiKeys.js';
-import { adminAuditEvents, openDb } from '../src/storage/db.js';
+import { adminAuditEvents, members, openDb } from '../src/storage/db.js';
 import { addMember, setMemberRole } from '../src/storage/members.js';
-import { ADMIN_AUDIT_RETENTION, recordAdminAuditEvent } from '../src/storage/adminAudit.js';
-import { administrationUsesHttps } from '../src/http/admin.js';
+import { recordAdminAuditEvent } from '../src/storage/adminAudit.js';
+import { administrationUsesHttps, requestClientAddress } from '../src/http/admin.js';
 import type { Telemetry } from '../src/telemetry.js';
 
-function fixture(authMode: FluxmailConfig['authMode'] = 'apikey', telemetry?: Telemetry) {
+function fixture(telemetry?: Telemetry) {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-admin-rest-'));
   const config: FluxmailConfig = {
     dataDir,
@@ -26,7 +26,6 @@ function fixture(authMode: FluxmailConfig['authMode'] = 'apikey', telemetry?: Te
     publicUrlConfigured: false,
     oauthPort: 8976,
     oauthHost: '127.0.0.1',
-    authMode,
     maxAttachmentBytes: 1024,
     licenseServerUrl: 'https://license.invalid',
     google: { clientId: 'google-client', clientSecret: 'google-secret' },
@@ -71,7 +70,7 @@ describe('administrative REST API', () => {
   it('records successful and failed admin operations without request data', async () => {
     const capture = vi.fn();
     const telemetry = { capture, shutdown: vi.fn().mockResolvedValue(undefined) };
-    const { app, auth } = fixture('apikey', telemetry);
+    const { app, auth } = fixture(telemetry);
 
     expect((await app.request('/api/v1/admin/api-keys', { headers: auth })).status).toBe(200);
     const privateKeyId = 'private@example.com';
@@ -104,10 +103,26 @@ describe('administrative REST API', () => {
     expect(JSON.stringify(capture.mock.calls)).not.toContain(privateKeyId);
   });
 
+  it('records license deactivation as an administrative operation', async () => {
+    const capture = vi.fn();
+    const telemetry = { capture, shutdown: vi.fn().mockResolvedValue(undefined) };
+    const { app, auth } = fixture(telemetry);
+
+    expect((await app.request('/api/v1/admin/license', { method: 'DELETE', headers: auth })).status).toBe(200);
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'deactivateAdministrativeLicense',
+        outcome: 'success',
+      }),
+    );
+  });
+
   it('does not attribute unmatched admin paths to an OpenAPI operation', async () => {
     const capture = vi.fn();
     const telemetry = { capture, shutdown: vi.fn().mockResolvedValue(undefined) };
-    const { app, auth } = fixture('apikey', telemetry);
+    const { app, auth } = fixture(telemetry);
 
     expect((await app.request('/api/v1/admin/api-keys/', { headers: auth })).status).toBe(404);
     expect(capture).not.toHaveBeenCalled();
@@ -116,7 +131,7 @@ describe('administrative REST API', () => {
   it('records admin failures that occur before route handlers run', async () => {
     const capture = vi.fn();
     const telemetry = { capture, shutdown: vi.fn().mockResolvedValue(undefined) };
-    const { app, auth } = fixture('apikey', telemetry);
+    const { app, auth } = fixture(telemetry);
 
     expect((await app.request('/api/v1/admin/api-keys')).status).toBe(401);
     expect(
@@ -162,9 +177,25 @@ describe('administrative REST API', () => {
     expect(JSON.stringify(capture.mock.calls)).not.toContain(privateName);
   });
 
-  it('registers admin routes in OpenAPI and requires a real key even when mail auth is disabled', async () => {
-    const { app, auth, root } = fixture('none');
-    const document = (await (await app.request('/api/v1/openapi.json')).json()) as {
+  it('uses forwarded protocol and client addresses only when proxy trust is enabled', () => {
+    const request = new Request('http://fluxmail:8977/api/v1/admin/api-keys', {
+      headers: {
+        forwarded: 'for=198.51.100.42;proto=https',
+        'x-forwarded-for': '203.0.113.25',
+        'x-forwarded-proto': 'http',
+      },
+    });
+    const connection = { remoteAddress: '172.18.0.2' };
+
+    expect(administrationUsesHttps(request, connection)).toBe(false);
+    expect(requestClientAddress(request, connection)).toBe('172.18.0.2');
+    expect(administrationUsesHttps(request, connection, true)).toBe(true);
+    expect(requestClientAddress(request, connection, true)).toBe('198.51.100.42');
+  });
+
+  it('registers admin routes in OpenAPI and requires a real credential', async () => {
+    const { app, auth, root } = fixture();
+    const document = (await (await app.request('/api/v1/openapi.json', { headers: auth })).json()) as {
       paths: Record<string, unknown>;
       components: { schemas: Record<string, unknown> };
     };
@@ -173,11 +204,15 @@ describe('administrative REST API', () => {
     expect(document.paths).toHaveProperty('/api/v1/admin/license/activate');
     expect(JSON.stringify(document.components.schemas.AdminRestError)).toContain('"data"');
 
-    expect((await app.request('/api/v1/status')).status).toBe(200);
+    expect((await app.request('/api/v1/status')).status).toBe(401);
     expect((await app.request('/api/v1/admin/api-keys')).status).toBe(401);
     expect(
-      (await app.request('/auth/connections', jsonRequest('POST', { provider: 'gmail', owner: 'member_admin' })))
-        .status,
+      (
+        await app.request(
+          '/auth/connections',
+          jsonRequest('POST', { provider: 'gmail', ownerMemberId: 'member_admin' }),
+        )
+      ).status,
     ).toBe(401);
     expect((await app.request(`/api/v1/admin/api-keys?key=${encodeURIComponent(root.key)}`)).status).toBe(401);
     expect((await app.request('/api/v1/admin/api-keys', { headers: auth })).status).toBe(200);
@@ -187,10 +222,19 @@ describe('administrative REST API', () => {
     const { app, auth, db, member } = fixture();
     expect((await app.request('/api/v1/admin/api-keys', { headers: auth })).status).toBe(200);
 
+    db.insert(members)
+      .values({
+        id: 'member_backup_admin',
+        name: 'Backup Admin',
+        role: 'admin',
+        status: 'active',
+        createdAt: Date.now(),
+      })
+      .run();
     setMemberRole(db, member.id, 'member');
     const demoted = await app.request('/api/v1/admin/api-keys', { headers: auth });
     expect(demoted.status).toBe(403);
-    await expect(demoted.json()).resolves.toMatchObject({ error: { code: 'admin_role_required' } });
+    await expect(demoted.json()).resolves.toMatchObject({ error: { code: 'permission_denied' } });
 
     setMemberRole(db, member.id, 'admin');
     const accountOnly = createApiKey(
@@ -207,7 +251,7 @@ describe('administrative REST API', () => {
   });
 
   it('applies strict JSON, body limit, security headers, and no CORS', async () => {
-    const { app, auth, db } = fixture();
+    const { app, auth, config, db } = fixture();
     const wrongType = await app.request('/api/v1/admin/api-keys', {
       method: 'POST',
       headers: { ...auth, 'content-type': 'text/plain' },
@@ -257,9 +301,19 @@ describe('administrative REST API', () => {
     } as unknown as HttpBindings);
     expect(insecure.status).toBe(400);
     await expect(insecure.json()).resolves.toMatchObject({ error: { code: 'https_required' } });
+
+    config.trustProxy = true;
+    const trustedProxy = await app.request(
+      '/api/v1/admin/api-keys',
+      { headers: { ...auth, 'x-forwarded-for': '198.51.100.42', 'x-forwarded-proto': 'https' } },
+      {
+        incoming: { socket: { remoteAddress: '172.18.0.2' } },
+      } as unknown as HttpBindings,
+    );
+    expect(trustedProxy.status).toBe(200);
   });
 
-  it('creates, scopes, updates, and revokes keys while preserving a usable root', async () => {
+  it('creates, scopes, updates, and revokes keys while sessions remain the recovery authority', async () => {
     const { app, auth, db, member, root } = fixture();
     const createdResponse = await app.request(
       '/api/v1/admin/api-keys',
@@ -303,12 +357,15 @@ describe('administrative REST API', () => {
         .status,
     ).toBe(200);
 
-    const blocked = await app.request(
+    const reduced = await app.request(
       `/api/v1/admin/api-keys/${created.data.id}`,
       jsonRequest('PATCH', { supplementalCapabilities: [] }, { authorization: `Bearer ${created.data.key}` }),
     );
-    expect(blocked.status).toBe(409);
-    await expect(blocked.json()).resolves.toMatchObject({ error: { code: 'last_root_key' } });
+    expect(reduced.status).toBe(200);
+    expect(
+      (await app.request('/api/v1/admin/api-keys', { headers: { authorization: `Bearer ${created.data.key}` } }))
+        .status,
+    ).toBe(403);
     expect(db.select().from(adminAuditEvents).all().length).toBeGreaterThanOrEqual(4);
   });
 
@@ -316,7 +373,7 @@ describe('administrative REST API', () => {
     const { app, auth, db, member } = fixture();
     const response = await app.request(
       '/api/v1/admin/connections',
-      jsonRequest('POST', { provider: 'gmail', owner: member.id }, auth),
+      jsonRequest('POST', { provider: 'gmail', ownerMemberId: member.id }, auth),
     );
     expect(response.status).toBe(201);
     const body = (await response.json()) as { data: { connectionUrl: string } };
@@ -351,12 +408,47 @@ describe('administrative REST API', () => {
     expect(JSON.stringify(unknownAudit)).not.toContain(unknownPath);
   });
 
+  it('applies an admin API key mailbox allowlist to metadata management', async () => {
+    const { app, db, member, registry } = fixture();
+    const account = registry.addGmailAccount('private@example.com', {}, undefined, member.id, {
+      sharedWithAll: false,
+    });
+    const restricted = createApiKey(
+      db,
+      'restricted-admin',
+      member.id,
+      permissionPolicyForProfile('read-only', ['admin.accounts']),
+      [],
+    );
+    const restrictedAuth = { authorization: `Bearer ${restricted.key}` };
+
+    const list = await app.request('/api/v1/admin/accounts', { headers: restrictedAuth });
+    expect(list.status).toBe(200);
+    await expect(list.json()).resolves.toEqual({ data: [] });
+    expect(
+      (
+        await app.request(`/api/v1/admin/accounts/${account.id}`, {
+          method: 'DELETE',
+          headers: restrictedAuth,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await app.request(
+          '/api/v1/admin/connections',
+          jsonRequest('POST', { provider: 'gmail', ownerMemberId: member.id }, restrictedAuth),
+        )
+      ).status,
+    ).toBe(403);
+  });
+
   it('tests and saves IMAP settings without returning secrets, and validates folder patches atomically', async () => {
     const { app, auth, member, registry } = fixture();
     const test = vi.spyOn(registry, 'testImapCredentials').mockResolvedValue([]);
     const settings = {
       provider: 'imap' as const,
-      owner: member.id,
+      ownerMemberId: member.id,
       email: 'admin@example.com',
       imap: {
         host: 'imap.example.com',
@@ -392,7 +484,7 @@ describe('administrative REST API', () => {
         'POST',
         {
           ...settings,
-          owner: undefined,
+          ownerMemberId: undefined,
           reauthorizeAccountId: accountId,
           imap: { ...settings.imap, password: 'new-imap-secret' },
           smtp: { ...settings.smtp, password: 'new-smtp-secret' },
@@ -428,21 +520,17 @@ describe('administrative REST API', () => {
     expect(registry.loadImapCredentials(accountId).folderOverrides).toEqual({ sent: 'Sent Items', drafts: 'Drafts' });
   });
 
-  it('retains only the newest 10,000 sanitized audit events', () => {
+  it('appends sanitized audit events without changing earlier rows', () => {
     const { db, member, root } = fixture();
-    for (let offset = 0; offset < ADMIN_AUDIT_RETENTION; offset += 100) {
-      db.insert(adminAuditEvents)
-        .values(
-          Array.from({ length: 100 }, (_, index) => ({
-            timestamp: offset + index,
-            operation: 'test',
-            outcome: 'success',
-            actorKeyId: root.info.id,
-            actorMemberId: member.id,
-          })),
-        )
-        .run();
-    }
+    db.insert(adminAuditEvents)
+      .values({
+        timestamp: 1,
+        operation: 'test',
+        outcome: 'success',
+        actorKeyId: root.info.id,
+        actorMemberId: member.id,
+      })
+      .run();
     recordAdminAuditEvent(db, {
       operation: 'post /api/v1/admin/api-keys',
       outcome: 'error',
@@ -451,9 +539,11 @@ describe('administrative REST API', () => {
       errorCode: 'invalid_request',
     });
     const rows = db.select().from(adminAuditEvents).all();
-    expect(rows).toHaveLength(ADMIN_AUDIT_RETENTION);
-    expect(rows.some((row) => row.timestamp === 0)).toBe(false);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ timestamp: 1, operation: 'test', outcome: 'success' });
     expect(rows.at(-1)).toMatchObject({ errorCode: 'invalid_request' });
+    expect(() => db.update(adminAuditEvents).set({ outcome: 'error' }).run()).toThrow(/append-only/);
+    expect(() => db.delete(adminAuditEvents).run()).toThrow(/append-only/);
   });
 
   it('returns license status without the key and maps activation outcomes', async () => {
@@ -477,5 +567,11 @@ describe('administrative REST API', () => {
     );
     expect(invalid.status).toBe(400);
     await expect(invalid.json()).resolves.toMatchObject({ error: { code: 'invalid_license_key' } });
+
+    const deactivated = await app.request('/api/v1/admin/license', { method: 'DELETE', headers: auth });
+    expect(deactivated.status).toBe(200);
+    await expect(deactivated.json()).resolves.toEqual({
+      data: { deactivated: true, released: false, removedStoredKey: true },
+    });
   });
 });

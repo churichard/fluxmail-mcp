@@ -1,7 +1,7 @@
 ---
 title: 'Permissions'
 description: 'Give each MCP or REST connection only the Fluxmail email permissions it needs.'
-updated: '2026-07-15'
+updated: '2026-07-17'
 ---
 
 Fluxmail can limit the email actions available to each MCP or REST connection. Give a research client read-only access, or let an inbox organizer manage messages without granting send or permanent-delete access.
@@ -27,7 +27,7 @@ Fluxmail uses `full` when you do not choose a profile. Set a narrower profile fo
 Pass a profile when your MCP client launches Fluxmail:
 
 ```bash
-fluxmail stdio --member you@example.com --profile read-only
+fluxmail stdio --profile read-only
 ```
 
 For a client config file, put the profile in the argument list:
@@ -39,8 +39,6 @@ For a client config file, put the profile in the argument list:
       "command": "fluxmail",
       "args": [
         "stdio",
-        "--member",
-        "you@example.com",
         "--profile",
         "read-only"
       ]
@@ -56,11 +54,9 @@ HTTP permissions belong to the API key. Each key also belongs to a member. Creat
 ```bash
 fluxmail apikey create \
   --name research-agent \
-  --member you@example.com \
   --profile read-only
 fluxmail apikey create \
   --name inbox-agent \
-  --member you@example.com \
   --profile read-write
 ```
 
@@ -72,9 +68,7 @@ Change an existing key by its ID:
 fluxmail apikey permissions <key-id> --profile read-only
 ```
 
-Existing keys and keys created without permission options use `full`. When `FLUXMAIL_AUTH=none`, the HTTP endpoint also uses `full` because there is no API key to identify the client. Only disable authentication behind a network boundary you control.
-
-`FLUXMAIL_AUTH=none` does not apply to `/api/v1/admin` or the compatible `/auth/connections` endpoint. Those routes always require an administrative bearer key.
+Existing keys and keys created without permission options use `full`. HTTP MCP requests always require an API key. REST accepts either a member session or an API key, except for its public login, enrollment, reset redemption, discovery, and health routes.
 
 ## Administrative capabilities
 
@@ -83,24 +77,25 @@ Administrative access is separate from mail access:
 | Capability | What it allows |
 | --- | --- |
 | `admin.accounts` | Connect and reauthorize mailboxes, test IMAP and SMTP settings, and update IMAP folder mappings. |
+| `admin.members` | Invite, suspend, activate, promote, demote, and remove members. It also permits session revocation. |
 | `admin.api_keys` | Create, update, list, and revoke API keys. |
-| `admin.license` | Read license status and activate a license. |
+| `admin.license` | Read, activate, and deactivate the instance license. |
+| `admin.audit` | Read security audit events. |
 
 Add administrative capabilities to a named mail profile with repeated `--admin` options:
 
 ```bash
 fluxmail apikey create \
   --name account-operator \
-  --member you@example.com \
   --profile read-only \
   --admin admin.accounts
 ```
 
 When changing an existing key, `--admin` keeps its current named mail profile and replaces its administrative capabilities. A custom policy has no separate administrative list, so pass every allowed capability with `--allow` instead.
 
-For a custom policy, put both mail and administrative capabilities in repeated `--allow` options. Fluxmail rejects administrative capabilities for non-admin members. It also checks the member's current role at request time. Migrated memberless management keys rely on their capabilities because they have no member role.
+For a custom policy, put both mail and administrative capabilities in repeated `--allow` options. Fluxmail rejects administrative capabilities for non-admin members. It also checks the owner's current role and mailbox grants on every request.
 
-Treat `admin.api_keys` as root authority. The REST API will not revoke the last usable root key or remove its `admin.api_keys` capability. Create another root key before rotating the current one.
+Treat `admin.api_keys` as sensitive authority. Administrator sessions remain the recovery path if an administrative key is revoked or narrowed.
 
 ## Build a custom policy
 
@@ -128,7 +123,6 @@ Create a custom HTTP key like this:
 ```bash
 fluxmail apikey create \
   --name drafting-agent \
-  --member you@example.com \
   --allow mail.read \
   --allow mail.drafts
 ```
@@ -137,7 +131,6 @@ The same options work with stdio:
 
 ```bash
 fluxmail stdio \
-  --member you@example.com \
   --allow mail.read \
   --allow mail.organize
 ```

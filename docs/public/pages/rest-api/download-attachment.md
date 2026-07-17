@@ -12,7 +12,7 @@ Download one attachment as raw bytes.
 
 ## Authentication
 
-Pass a Fluxmail API key as a bearer token. The key determines the member, mailbox scope, and permissions for the request.
+Pass a Fluxmail member session or API key as a bearer token. API keys apply their mailbox scope and permissions to the request.
 
 ## Request
 

@@ -20,7 +20,6 @@ function hostedDeps(): AppDeps {
     publicUrlConfigured: true,
     oauthPort: 8976,
     oauthHost: '127.0.0.1',
-    authMode: 'apikey',
     maxAttachmentBytes: 10 * 1024 * 1024,
     licenseServerUrl: 'https://license.invalid',
     microsoft: {
@@ -108,7 +107,7 @@ describe('hosted Outlook OAuth flow', () => {
     const linkResponse = await app.request('/auth/connections', {
       method: 'POST',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: 'outlook', owner: owner.id }),
+      body: JSON.stringify({ provider: 'outlook', ownerMemberId: owner.id }),
     });
     expect(linkResponse.status).toBe(201);
     const { connectionUrl } = (await linkResponse.json()) as { connectionUrl: string };
@@ -138,8 +137,8 @@ describe('hosted Outlook OAuth flow', () => {
       provider: 'outlook',
       email: 'owner@outlook.com',
       displayName: 'Outlook Owner',
-      memberId: owner.id,
-      sharingMode: 'private',
+      ownerMemberId: owner.id,
+      sharedWithAll: false,
     });
 
     const storedBeforeRefresh = deps.db

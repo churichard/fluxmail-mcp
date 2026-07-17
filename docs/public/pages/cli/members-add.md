@@ -21,5 +21,5 @@ fluxmail members add [options]
 | Option | Required | Details | Default |
 | --- | --- | --- | --- |
 | `--name <name>` | Yes | Member name | None |
-| `--email <email>` | No | Member email, usable as a shorthand in --member flags | None |
+| `--email <email>` | Yes | Member login email | None |
 | `--role <role>` | No | Member role: admin or member | None |

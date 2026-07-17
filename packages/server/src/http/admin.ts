@@ -1,13 +1,14 @@
 import { createRoute, type OpenAPIHono, z } from '@hono/zod-openapi';
-import { EmailError, isEmailError, type AccountSharingMode } from '@fluxmail/core';
+import { isIP } from 'node:net';
+import { EmailError, isEmailError } from '@fluxmail/core';
 import type { ImapCredentials } from '@fluxmail/provider-imap';
 import type { AccountRegistry } from '../accounts/registry.js';
 import { prepareHostedGmailConnection, prepareHostedOutlookConnection } from '../accounts/gmailConnection.js';
-import type { FluxmailConfig } from '../config.js';
-import { LICENSE_KEY_PATTERN } from '../licensing/client.js';
+import { unsetStoredConfig, type FluxmailConfig } from '../config.js';
+import { LICENSE_KEY_PATTERN, releaseLicense } from '../licensing/client.js';
 import { activateLicense } from '../licensing/activation.js';
-import { checkLicenseState, readLeaseRow } from '../licensing/entitlements.js';
-import type { LicenseController } from '../licensing/refresher.js';
+import { checkLicenseState, clearLease, readLeaseRow } from '../licensing/entitlements.js';
+import { loadInstanceId, type LicenseController } from '../licensing/refresher.js';
 import {
   ADMIN_CAPABILITIES,
   MCP_CAPABILITIES,
@@ -17,17 +18,12 @@ import {
   type AdminCapability,
   type PermissionPolicy,
 } from '../permissions.js';
-import {
-  countUsableRootKeys,
-  createApiKey,
-  isUsableRootKey,
-  listApiKeys,
-  revokeApiKey,
-  updateApiKey,
-  type ApiKeyAuth,
-} from '../storage/apiKeys.js';
+import { createApiKey, listApiKeys, revokeApiKey, updateApiKey } from '../storage/apiKeys.js';
 import type { FluxmailDb } from '../storage/db.js';
 import { findMember } from '../storage/members.js';
+import type { Principal } from '../auth.js';
+import { canAdminister, canSeeAccountMetadata } from '../authorization.js';
+import { operationIdForRequest } from './operationRoutes.js';
 
 export const ADMIN_BODY_LIMIT = 64 * 1024;
 export const ADMIN_CONNECTION_TIMEOUT_MS = 30_000;
@@ -78,29 +74,54 @@ export const adminOperationRoutes = {
     path: '/api/v1/admin/license/activate',
     operationId: 'activateAdministrativeLicense',
   },
+  deactivateLicense: {
+    method: 'delete',
+    path: '/api/v1/admin/license',
+    operationId: 'deactivateAdministrativeLicense',
+  },
 } as const;
 
-function matchesAdminRoute(template: string, path: string): boolean {
-  const templateParts = template.split('/');
-  const pathParts = path.split('/');
-  return (
-    templateParts.length === pathParts.length &&
-    templateParts.every((part, index) =>
-      part.startsWith('{') && part.endsWith('}') ? Boolean(pathParts[index]) : part === pathParts[index],
-    )
-  );
-}
-
 export function adminOperationId(method: string, path: string): string | undefined {
-  const normalizedMethod = method.toLowerCase();
-  return Object.values(adminOperationRoutes).find(
-    (route) => route.method === normalizedMethod && matchesAdminRoute(route.path, path),
-  )?.operationId;
+  return operationIdForRequest(Object.values(adminOperationRoutes), method, path);
 }
 
 export interface AdminConnectionSecurity {
   remoteAddress?: string;
   encrypted?: boolean;
+}
+
+function firstForwardedElement(value: string | null): string | undefined {
+  return value?.split(',', 1)[0]?.trim() || undefined;
+}
+
+function forwardedParameter(request: Request, name: 'for' | 'proto'): string | undefined {
+  const first = firstForwardedElement(request.headers.get('forwarded'));
+  if (!first) return undefined;
+  for (const parameter of first.split(';')) {
+    const [key, ...parts] = parameter.split('=');
+    if (key?.trim().toLowerCase() !== name) continue;
+    return parts.join('=').trim().replace(/^"|"$/g, '');
+  }
+  return undefined;
+}
+
+function forwardedProtocol(request: Request): string | undefined {
+  return (
+    forwardedParameter(request, 'proto') ?? firstForwardedElement(request.headers.get('x-forwarded-proto'))
+  )?.toLowerCase();
+}
+
+function forwardedAddress(request: Request): string | undefined {
+  const value = forwardedParameter(request, 'for') ?? firstForwardedElement(request.headers.get('x-forwarded-for'));
+  if (!value || value.toLowerCase() === 'unknown' || value.startsWith('_')) return undefined;
+  if (value.startsWith('[')) {
+    const closingBracket = value.indexOf(']');
+    const address = closingBracket > 0 ? value.slice(1, closingBracket) : '';
+    return isIP(address) ? address : undefined;
+  }
+  if (isIP(value)) return value;
+  const ipv4WithPort = value.match(/^(.*):(\d+)$/)?.[1];
+  return ipv4WithPort && isIP(ipv4WithPort) === 4 ? ipv4WithPort : undefined;
 }
 
 function isLoopbackAddress(value: string): boolean {
@@ -115,15 +136,33 @@ function isLoopbackHostname(value: string): boolean {
   return value.toLowerCase() === 'localhost' || isLoopbackAddress(value);
 }
 
-export function administrationUsesHttps(request: Request, connection?: AdminConnectionSecurity): boolean {
+export function administrationUsesHttps(
+  request: Request,
+  connection?: AdminConnectionSecurity,
+  trustProxy = false,
+): boolean {
   if (connection?.encrypted) return true;
-  if (connection?.remoteAddress !== undefined) return isLoopbackAddress(connection.remoteAddress);
+  if (connection?.remoteAddress !== undefined && isLoopbackAddress(connection.remoteAddress)) return true;
+  if (trustProxy && forwardedProtocol(request) === 'https') return true;
+  if (connection?.remoteAddress !== undefined) return false;
 
   const requestUrl = new URL(request.url);
   // No socket is available in Hono's in-memory helper or in non-Node adapters.
   // These paths use the request URL itself. Node requests must pass the peer
   // and TLS state above so headers and configuration cannot bless plaintext.
   return requestUrl.protocol === 'https:' || isLoopbackHostname(requestUrl.hostname);
+}
+
+export function requestClientAddress(
+  request: Request,
+  connection?: AdminConnectionSecurity,
+  trustProxy = false,
+): string {
+  if (trustProxy) {
+    const forwarded = forwardedAddress(request);
+    if (forwarded) return forwarded;
+  }
+  return connection?.remoteAddress ?? 'unknown';
 }
 
 export async function requestBodyExceedsLimit(request: Request, limit = ADMIN_BODY_LIMIT): Promise<boolean> {
@@ -166,7 +205,6 @@ const username = z.string().min(1).max(320);
 const password = z.string().min(1).max(4096);
 const folderPath = z.string().min(1).max(1024);
 const security = z.enum(['tls', 'starttls']);
-const sharingMode = z.enum(['private', 'selected', 'all']);
 const folderRoles = ['sent', 'drafts', 'trash', 'archive', 'spam'] as const;
 
 const FolderOverridesSchema = z
@@ -222,10 +260,10 @@ const ImapSettingsSchema = z
     },
   });
 const SharingSchema = {
-  owner: identifier.optional(),
+  ownerMemberId: identifier.optional(),
   reauthorizeAccountId: identifier.optional(),
-  sharingMode: sharingMode.optional(),
-  shareWith: z.array(identifier).max(100).optional(),
+  sharedWithAll: z.boolean().optional(),
+  grantedMemberIds: z.array(identifier).max(100).optional(),
 };
 const ConnectionSchema = z
   .discriminatedUnion('provider', [
@@ -233,7 +271,7 @@ const ConnectionSchema = z
     z.object({ provider: z.literal('outlook'), ...SharingSchema }).strict(),
     z.object({ provider: z.literal('imap'), ...SharingSchema, ...ImapSettingsSchema.shape }).strict(),
   ])
-  .openapi({ example: { provider: 'gmail', owner: 'you@example.com' } });
+  .openapi({ example: { provider: 'gmail', ownerMemberId: 'you@example.com' } });
 
 const CapabilitySchema = z.enum([...MCP_CAPABILITIES, ...ADMIN_CAPABILITIES]);
 const AdminCapabilitySchema = z.enum(ADMIN_CAPABILITIES);
@@ -299,7 +337,7 @@ const ApiKeySchema = z
     name: z.string(),
     createdAt: z.string(),
     lastUsedAt: z.string().nullable(),
-    memberId: z.string().nullable(),
+    memberId: z.string(),
     permissionProfile: z.enum([...NAMED_PERMISSION_PROFILES, 'custom']),
     capabilities: z.array(CapabilitySchema),
     supplementalCapabilities: z.array(AdminCapabilitySchema),
@@ -354,12 +392,21 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function requireAdmin(auth: ApiKeyAuth, capability: AdminCapability): void {
-  if (!auth.permissions.capabilities.includes(capability)) {
-    throw new AdminFailure('permission_denied', `This API key does not allow ${capability}.`, 403);
+function requireAdmin(auth: Principal, capability: AdminCapability): void {
+  if (!canAdminister(auth, capability)) {
+    throw new AdminFailure('permission_denied', `This credential does not allow ${capability}.`, 403);
   }
-  if (auth.memberId !== null && auth.role !== 'admin') {
-    throw new AdminFailure('admin_role_required', 'The API key owner is not an admin member.', 403);
+}
+
+function requireAdminAccount(auth: Principal, account: ReturnType<AccountRegistry['getAccount']>): void {
+  if (!canSeeAccountMetadata(auth, account)) {
+    throw new EmailError('not_found', 'Mailbox not found.');
+  }
+}
+
+function requireUnscopedAccountCreation(auth: Principal): void {
+  if (auth.accountIds !== null) {
+    throw new EmailError('permission_denied', 'This API key is limited to existing mailboxes.');
   }
 }
 
@@ -370,10 +417,18 @@ function registry(deps: AdminApiDeps): AccountRegistry {
 
 function resolveSharing(
   deps: AdminApiDeps,
-  input: { owner?: string; reauthorizeAccountId?: string; sharingMode?: AccountSharingMode; shareWith?: string[] },
-): { memberId?: string; reauthorizeAccountId?: string; sharingMode?: AccountSharingMode; sharedMemberIds?: string[] } {
-  const shareWith = input.shareWith ?? [];
-  if (input.reauthorizeAccountId && (input.owner || input.sharingMode || shareWith.length)) {
+  input: {
+    ownerMemberId?: string;
+    reauthorizeAccountId?: string;
+    sharedWithAll?: boolean;
+    grantedMemberIds?: string[];
+  },
+): { ownerMemberId?: string; reauthorizeAccountId?: string; sharedWithAll?: boolean; grantedMemberIds?: string[] } {
+  const grantedMemberIds = input.grantedMemberIds ?? [];
+  if (
+    input.reauthorizeAccountId &&
+    (input.ownerMemberId || input.sharedWithAll !== undefined || grantedMemberIds.length)
+  ) {
     throw new EmailError(
       'invalid_request',
       'Ownership and sharing settings cannot be combined with reauthorizeAccountId.',
@@ -381,16 +436,12 @@ function resolveSharing(
   }
   if (input.reauthorizeAccountId)
     return { reauthorizeAccountId: registry(deps).getAccount(input.reauthorizeAccountId).id };
-  if (!input.owner) throw new EmailError('invalid_request', 'owner is required for a new mailbox.');
-  const memberId = findMember(deps.db, input.owner).id;
-  const mode = input.sharingMode ?? (shareWith.length ? 'selected' : 'private');
-  if (mode === 'selected' && !shareWith.length) {
-    throw new EmailError('invalid_request', 'shareWith is required when sharingMode is "selected".');
-  }
-  if (mode !== 'selected' && shareWith.length) {
-    throw new EmailError('invalid_request', 'shareWith can only be used when sharingMode is "selected".');
-  }
-  return { memberId, sharingMode: mode, sharedMemberIds: shareWith.map((ref) => findMember(deps.db, ref).id) };
+  if (!input.ownerMemberId) throw new EmailError('invalid_request', 'ownerMemberId is required for a new mailbox.');
+  return {
+    ownerMemberId: findMember(deps.db, input.ownerMemberId).id,
+    sharedWithAll: input.sharedWithAll ?? false,
+    grantedMemberIds: grantedMemberIds.map((ref) => findMember(deps.db, ref).id),
+  };
 }
 
 function permissions(input: {
@@ -441,9 +492,15 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
   });
   app.openapi(connectionsRoute, (c) =>
     run(async () => {
-      requireAdmin(c.get('restAuth'), 'admin.accounts');
+      const auth = c.get('restAuth') as Principal;
+      requireAdmin(auth, 'admin.accounts');
       const input = c.req.valid('json');
       const access = resolveSharing(deps, input);
+      if (access.reauthorizeAccountId) {
+        requireAdminAccount(auth, registry(deps).getAccount(access.reauthorizeAccountId));
+      } else {
+        requireUnscopedAccountCreation(auth);
+      }
       if (input.provider === 'gmail' || input.provider === 'outlook') {
         if (!access.reauthorizeAccountId) registry(deps).assertCanAddAccount();
         if (access.reauthorizeAccountId) {
@@ -493,9 +550,11 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
         input.email,
         credentials,
         input.displayName,
-        access.memberId,
+        access.ownerMemberId,
         access.reauthorizeAccountId,
-        access.sharingMode ? { sharingMode: access.sharingMode, sharedMemberIds: access.sharedMemberIds } : undefined,
+        access.ownerMemberId
+          ? { sharedWithAll: access.sharedWithAll ?? false, grantedMemberIds: access.grantedMemberIds }
+          : undefined,
       );
       return json({ data: { account: connected, warnings } }, 201);
     }),
@@ -547,10 +606,12 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
   });
   app.openapi(folderRoute, (c) =>
     run(async () => {
-      requireAdmin(c.get('restAuth'), 'admin.accounts');
+      const auth = c.get('restAuth') as Principal;
+      requireAdmin(auth, 'admin.accounts');
       const { accountId } = c.req.valid('param');
       const patch = c.req.valid('json');
       const account = registry(deps).getAccount(accountId);
+      requireAdminAccount(auth, account);
       const current = registry(deps).loadImapCredentials(account.id);
       const nextOverrides = { ...current.folderOverrides };
       for (const role of folderRoles) {
@@ -659,14 +720,6 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
         }
         nextPermissions = permissionPolicyForProfile(existing.permissionProfile, input.supplementalCapabilities);
       }
-      if (
-        isUsableRootKey(deps.db, keyId) &&
-        nextPermissions &&
-        !nextPermissions.capabilities.includes('admin.api_keys') &&
-        countUsableRootKeys(deps.db, keyId) === 0
-      ) {
-        throw new AdminFailure('last_root_key', 'Another usable admin.api_keys credential is required first.', 409);
-      }
       const updated = updateApiKey(deps.db, keyId, {
         ...(nextPermissions ? { permissions: nextPermissions } : {}),
         ...(input.accounts !== undefined ? { accountIds: accountIds(deps, input.accounts) } : {}),
@@ -690,9 +743,6 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     run(() => {
       requireAdmin(c.get('restAuth'), 'admin.api_keys');
       const { keyId } = c.req.valid('param');
-      if (isUsableRootKey(deps.db, keyId) && countUsableRootKeys(deps.db, keyId) === 0) {
-        throw new AdminFailure('last_root_key', 'Another usable admin.api_keys credential is required first.', 409);
-      }
       if (!revokeApiKey(deps.db, keyId)) throw new EmailError('not_found', `No API key with id "${keyId}".`);
       return json({ data: { id: keyId, revoked: true } });
     }),
@@ -777,6 +827,43 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
       }
       const status = result.outcome === 'in_use' ? 409 : result.outcome === 'inactive' ? 403 : 400;
       throw new AdminFailure(`license_${result.outcome}`, result.message, status);
+    }),
+  );
+
+  const deactivateRoute = createRoute({
+    method: 'delete',
+    path: '/api/v1/admin/license',
+    operationId: 'deactivateAdministrativeLicense',
+    summary: 'Deactivate a license',
+    description: 'Release the stored license and return this instance to Personal limits. Requires admin.license.',
+    ...protectedRoute,
+    responses: {
+      200: { content: { 'application/json': { schema: GenericDataSchema } }, description: 'License deactivated' },
+      ...errors,
+    },
+  });
+  app.openapi(deactivateRoute, (c) =>
+    run(async () => {
+      requireAdmin(c.get('restAuth'), 'admin.license');
+      if (deps.config.licenseKeyFromEnvironment) {
+        throw new AdminFailure(
+          'license_from_environment',
+          'REST cannot remove FLUXMAIL_LICENSE_KEY from the environment.',
+          409,
+        );
+      }
+      const licenseKey = deps.licenseController?.configuredKey() ?? deps.config.licenseKey;
+      const released = licenseKey
+        ? await releaseLicense({
+            serverUrl: deps.config.licenseServerUrl,
+            licenseKey,
+            instanceId: loadInstanceId(deps.config.dataDir),
+          })
+        : false;
+      const removed = unsetStoredConfig(deps.config.dataDir, 'FLUXMAIL_LICENSE_KEY');
+      clearLease(deps.db);
+      deps.licenseController?.wake();
+      return json({ data: { deactivated: true, released, removedStoredKey: removed } });
     }),
   );
 }

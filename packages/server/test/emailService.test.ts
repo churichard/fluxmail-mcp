@@ -3,6 +3,7 @@ import { EmailError, type Message } from '@fluxmail/core';
 import { buildForwardBody, EmailService, resolveSendAt } from '../src/service/emailService.js';
 import { accounts, members, openDb, type FluxmailDb } from '../src/storage/db.js';
 import { createScheduledSend } from '../src/storage/scheduledSends.js';
+import { FULL_PERMISSION_POLICY, permissionPolicyForProfile, type PermissionPolicy } from '../src/permissions.js';
 
 function testDb(): FluxmailDb {
   const db = openDb(':memory:');
@@ -141,6 +142,9 @@ describe('EmailService member scope', () => {
     email: 'shared@example.com',
     status: 'active',
     capabilities: {},
+    ownerMemberId: 'member_bob',
+    sharedWithAll: true,
+    grantedMemberIds: [],
   };
   const ann = {
     id: 'acct_ann',
@@ -148,7 +152,9 @@ describe('EmailService member scope', () => {
     email: 'ann@example.com',
     status: 'active',
     capabilities: {},
-    memberId: 'member_ann',
+    ownerMemberId: 'member_ann',
+    sharedWithAll: false,
+    grantedMemberIds: [],
   };
   const bob = {
     id: 'acct_bob',
@@ -156,7 +162,9 @@ describe('EmailService member scope', () => {
     email: 'bob@example.com',
     status: 'active',
     capabilities: {},
-    memberId: 'member_bob',
+    ownerMemberId: 'member_bob',
+    sharedWithAll: false,
+    grantedMemberIds: [],
   };
   const selected = {
     id: 'acct_selected',
@@ -164,11 +172,27 @@ describe('EmailService member scope', () => {
     email: 'selected@example.com',
     status: 'active',
     capabilities: {},
-    ownerId: 'member_bob',
-    memberId: 'member_bob',
-    sharingMode: 'selected',
-    sharedMemberIds: ['member_ann'],
+    ownerMemberId: 'member_bob',
+    sharedWithAll: false,
+    grantedMemberIds: ['member_ann'],
   };
+
+  function apiPrincipal(
+    memberId: string,
+    role: 'admin' | 'member' = 'member',
+    accountIds: string[] | null = null,
+    permissions: PermissionPolicy = FULL_PERMISSION_POLICY,
+  ) {
+    return {
+      kind: 'api_key' as const,
+      principalId: 'key_test',
+      keyId: 'key_test',
+      memberId,
+      role,
+      permissions,
+      accountIds,
+    };
+  }
 
   function scopedRegistry(all: Array<Record<string, unknown>>, listFolders = vi.fn().mockResolvedValue([])) {
     const byId = new Map(all.map((a) => [a.id as string, a]));
@@ -194,14 +218,14 @@ describe('EmailService member scope', () => {
 
   it('lists only shared and owned mailboxes for a member key', () => {
     const { registry } = scopedRegistry([shared, ann, bob]);
-    const service = new EmailService(registry as never, testDb()).withScope({ memberId: 'member_ann' });
+    const service = new EmailService(registry as never, testDb()).withPrincipal(apiPrincipal('member_ann'));
 
     expect(service.listAccounts().map((a) => a.id)).toEqual(['acct_shared', 'acct_ann']);
   });
 
   it("reaches shared and owned mailboxes but hides another member's as not_found", async () => {
     const { registry, listFolders } = scopedRegistry([shared, ann, bob]);
-    const service = new EmailService(registry as never, testDb()).withScope({ memberId: 'member_ann' });
+    const service = new EmailService(registry as never, testDb()).withPrincipal(apiPrincipal('member_ann'));
 
     await expect(service.listFolders('acct_shared')).resolves.toEqual([]);
     await expect(service.listFolders('acct_ann')).resolves.toEqual([]);
@@ -215,19 +239,19 @@ describe('EmailService member scope', () => {
 
   it('defaults a member key to its sole accessible mailbox', async () => {
     const { registry } = scopedRegistry([bob, ann]);
-    const service = new EmailService(registry as never, testDb()).withScope({ memberId: 'member_ann' });
+    const service = new EmailService(registry as never, testDb()).withPrincipal(apiPrincipal('member_ann'));
 
     await expect(service.listFolders()).resolves.toEqual([]);
   });
 
   it('requires an explicit accountId when a member can reach more than one mailbox', async () => {
     const { registry } = scopedRegistry([shared, ann]);
-    const service = new EmailService(registry as never, testDb()).withScope({ memberId: 'member_ann' });
+    const service = new EmailService(registry as never, testDb()).withPrincipal(apiPrincipal('member_ann'));
 
     await expect(service.listFolders()).rejects.toMatchObject({ code: 'invalid_request' });
   });
 
-  it('keeps full access for an unscoped admin key', () => {
+  it('keeps full access for the internal background service', () => {
     const { registry } = scopedRegistry([shared, ann, bob]);
     const service = new EmailService(registry as never, testDb());
 
@@ -236,11 +260,9 @@ describe('EmailService member scope', () => {
 
   it('grants selected sharing and intersects it with a connection allowlist', async () => {
     const { registry, listFolders } = scopedRegistry([ann, bob, selected]);
-    const service = new EmailService(registry as never, testDb()).withScope({
-      memberId: 'member_ann',
-      role: 'member',
-      accountIds: ['acct_selected'],
-    });
+    const service = new EmailService(registry as never, testDb()).withPrincipal(
+      apiPrincipal('member_ann', 'member', ['acct_selected']),
+    );
 
     expect(service.listAccounts().map((account) => account.id)).toEqual(['acct_selected']);
     await expect(service.listFolders('acct_selected')).resolves.toEqual([]);
@@ -250,11 +272,9 @@ describe('EmailService member scope', () => {
 
   it('lets admins view mailbox metadata without granting private mailbox content', async () => {
     const { registry, listFolders } = scopedRegistry([ann, bob]);
-    const service = new EmailService(registry as never, testDb()).withScope({
-      memberId: 'member_ann',
-      role: 'admin',
-      accountIds: null,
-    });
+    const service = new EmailService(registry as never, testDb()).withPrincipal(
+      apiPrincipal('member_ann', 'admin', null, permissionPolicyForProfile('full', ['admin.accounts'])),
+    );
 
     expect(service.listAccounts().map((account) => account.id)).toEqual(['acct_ann', 'acct_bob']);
     await expect(service.listFolders('acct_bob')).rejects.toMatchObject({ code: 'not_found' });
@@ -263,29 +283,14 @@ describe('EmailService member scope', () => {
 
   it('intersects admin metadata views with a connection allowlist', async () => {
     const { registry, listFolders } = scopedRegistry([ann, bob]);
-    const service = new EmailService(registry as never, testDb()).withScope({
-      memberId: 'member_ann',
-      role: 'admin',
-      accountIds: ['acct_bob'],
-    });
+    const service = new EmailService(registry as never, testDb()).withPrincipal(
+      apiPrincipal('member_ann', 'admin', ['acct_bob'], permissionPolicyForProfile('full', ['admin.accounts'])),
+    );
 
     expect(service.listAccounts().map((account) => account.id)).toEqual(['acct_bob']);
     const status = await service.status();
     expect(status.accounts.map((account) => account.id)).toEqual(['acct_bob']);
     await expect(service.listFolders('acct_bob')).rejects.toMatchObject({ code: 'not_found' });
-    expect(listFolders).not.toHaveBeenCalled();
-  });
-
-  it('keeps migrated memberless credentials management-only', async () => {
-    const { registry, listFolders } = scopedRegistry([ann, bob]);
-    const service = new EmailService(registry as never, testDb()).withScope({
-      memberId: null,
-      role: null,
-      accountIds: null,
-    });
-
-    expect(service.listAccounts().map((account) => account.id)).toEqual(['acct_ann', 'acct_bob']);
-    await expect(service.listFolders('acct_ann')).rejects.toMatchObject({ code: 'not_found' });
     expect(listFolders).not.toHaveBeenCalled();
   });
 
@@ -305,7 +310,7 @@ describe('EmailService member scope', () => {
           email: 'ann@example.com',
           status: 'active',
           createdAt: Date.now(),
-          memberId: 'member_ann',
+          ownerMemberId: 'member_ann',
         },
         {
           id: 'acct_bob',
@@ -313,7 +318,7 @@ describe('EmailService member scope', () => {
           email: 'bob@example.com',
           status: 'active',
           createdAt: Date.now(),
-          memberId: 'member_bob',
+          ownerMemberId: 'member_bob',
         },
       ])
       .run();
@@ -329,7 +334,7 @@ describe('EmailService member scope', () => {
     });
 
     const { registry } = scopedRegistry([ann, bob]);
-    const service = new EmailService(registry as never, db).withScope({ memberId: 'member_ann' });
+    const service = new EmailService(registry as never, db).withPrincipal(apiPrincipal('member_ann'));
 
     expect(service.listScheduled().map((s) => s.scheduleId)).toEqual([annSchedule.id]);
     expect(() => service.cancelScheduled(bobSchedule.id)).toThrow(/No scheduled send/);
@@ -352,7 +357,7 @@ describe('EmailService member scope', () => {
           email: 'ann@example.com',
           status: 'active',
           createdAt: Date.now(),
-          memberId: 'member_ann',
+          ownerMemberId: 'member_ann',
         },
         {
           id: 'acct_bob',
@@ -360,7 +365,7 @@ describe('EmailService member scope', () => {
           email: 'bob@example.com',
           status: 'active',
           createdAt: Date.now(),
-          memberId: 'member_bob',
+          ownerMemberId: 'member_bob',
         },
       ])
       .run();
@@ -369,11 +374,30 @@ describe('EmailService member scope', () => {
     createScheduledSend(db, { accountId: 'acct_bob', draftId: 'draft_bob', sendAt: Date.now() + 3_600_000 });
 
     const { registry } = scopedRegistry([ann, bob]);
-    const service = new EmailService(registry as never, db).withScope({ memberId: 'member_ann' });
+    const service = new EmailService(registry as never, db).withPrincipal(apiPrincipal('member_ann'));
     const status = await service.status();
 
     expect(status.accounts.map((account) => account.id)).toEqual(['acct_ann']);
     expect(status.scheduled).toEqual({ pending: 1, nextSendAt: new Date(annSendAt).toISOString() });
+    expect(status).not.toHaveProperty('members');
+    expect(status).not.toHaveProperty('entitlements');
+    expect(status).not.toHaveProperty('licenseWarning');
+  });
+
+  it('keeps instance-wide status details out of administrator keys without matching capabilities', async () => {
+    const db = openDb(':memory:');
+    db.insert(members)
+      .values([
+        { id: 'member_ann', name: 'Ann', email: null, role: 'admin', createdAt: Date.now() },
+        { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
+      ])
+      .run();
+    const { registry } = scopedRegistry([ann, bob]);
+    const service = new EmailService(registry as never, db).withPrincipal(apiPrincipal('member_ann', 'admin'));
+
+    const status = await service.status();
+
+    expect(status.accounts.map((account) => account.id)).toEqual(['acct_ann']);
     expect(status).not.toHaveProperty('members');
     expect(status).not.toHaveProperty('entitlements');
     expect(status).not.toHaveProperty('licenseWarning');
@@ -388,7 +412,23 @@ describe('EmailService member scope', () => {
       ])
       .run();
     const { registry } = scopedRegistry([ann, bob]);
-    const service = new EmailService(registry as never, db).withScope({ memberId: 'member_ann' });
+    const service = new EmailService(registry as never, db).withPrincipal(apiPrincipal('member_ann'));
+
+    expect(() => service.enforceQuota()).toThrow(
+      'This Fluxmail instance is over its plan limits. Ask an administrator to renew the license or reduce usage.',
+    );
+  });
+
+  it('does not expose instance usage to administrator keys without admin.license', () => {
+    const db = openDb(':memory:');
+    db.insert(members)
+      .values([
+        { id: 'member_ann', name: 'Ann', email: null, role: 'admin', createdAt: Date.now() },
+        { id: 'member_bob', name: 'Bob', email: null, createdAt: Date.now() },
+      ])
+      .run();
+    const { registry } = scopedRegistry([ann, bob]);
+    const service = new EmailService(registry as never, db).withPrincipal(apiPrincipal('member_ann', 'admin'));
 
     expect(() => service.enforceQuota()).toThrow(
       'This Fluxmail instance is over its plan limits. Ask an administrator to renew the license or reduce usage.',

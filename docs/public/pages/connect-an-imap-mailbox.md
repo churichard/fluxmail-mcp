@@ -16,10 +16,10 @@ Fluxmail defaults to IMAP over TLS on port 993 and SMTP with STARTTLS on port 58
 
 Choose the setup that matches how you run Fluxmail.
 
-Create the member who will own the mailbox if they do not exist yet:
+For a fresh local instance, create the first administrator and log in:
 
 ```bash
-fluxmail members add --name "Your name" --email you@example.com
+fluxmail setup --name "Your name" --email you@example.com
 ```
 
 ### Local terminal
@@ -28,7 +28,6 @@ Run:
 
 ```bash
 fluxmail accounts add imap \
-  --owner you@example.com \
   --email you@example.com \
   --imap-host imap.example.com \
   --smtp-host smtp.example.com
@@ -40,7 +39,6 @@ If your provider uses different settings, pass the matching options:
 
 ```bash
 fluxmail accounts add imap \
-  --owner you@example.com \
   --email you@example.com \
   --display-name 'Your Name' \
   --imap-host imap.example.com \
@@ -66,7 +64,7 @@ curl "$FLUXMAIL_PUBLIC_URL/api/v1/admin/connections" \
   -H "Content-Type: application/json" \
   --data '{
     "provider": "imap",
-    "owner": "you@example.com",
+    "ownerMemberId": "you@example.com",
     "email": "you@example.com",
     "imap": {
       "host": "imap.example.com",
@@ -88,7 +86,7 @@ curl "$FLUXMAIL_PUBLIC_URL/api/v1/admin/connections" \
 
 Fluxmail tests IMAP and SMTP within 30 seconds before it writes the account. The response does not echo either password. Reauthorization keeps the existing `saveSent` value and folder overrides when those fields are omitted.
 
-Update folder mappings with `PATCH /api/v1/admin/accounts/:accountId/imap/folders`. A string sets a folder path. `null` removes an override and restores automatic detection. Fluxmail validates every requested path before saving any of them.
+Mailbox owners can update folder mappings with `PATCH /api/v1/accounts/:accountId/imap/folders`. Administrators can use `PATCH /api/v1/admin/accounts/:accountId/imap/folders` for any mailbox. A string sets a folder path. `null` removes an override and restores automatic detection. Fluxmail validates every requested path before saving any of them.
 
 ### Docker or another non-interactive environment
 
@@ -97,7 +95,6 @@ An interactive terminal is not always available in Docker, CI, or a script. Put 
 ```bash
 IMAP_PASSWORD='your-app-password' \
   fluxmail accounts add imap \
-  --owner you@example.com \
   --email you@example.com \
   --imap-host imap.example.com \
   --smtp-host smtp.example.com \
@@ -112,7 +109,6 @@ For Docker, make the variable available inside the container:
 export IMAP_PASSWORD='your-app-password'
 docker compose exec -e IMAP_PASSWORD fluxmail \
   fluxmail accounts add imap \
-  --owner you@example.com \
   --email you@example.com \
   --imap-host imap.example.com \
   --smtp-host smtp.example.com \
@@ -144,7 +140,6 @@ Fluxmail normally saves an SMTP submission in the resolved Sent folder. Some mai
 
 ```bash
 fluxmail accounts add imap \
-  --owner you@example.com \
   --email you@example.com \
   --imap-host imap.example.com \
   --smtp-host smtp.example.com \

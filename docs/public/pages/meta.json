@@ -4,6 +4,7 @@
     "---Getting started---",
     "overview",
     "quickstart",
+    "authentication-and-instances",
     "build-with-rest",
     "---Connect an account---",
     "connect-gmail-to-mcp",
@@ -17,6 +18,7 @@
     "permissions",
     "configuration",
     "teams-and-plans",
+    "authentication-migration",
     "architecture"
   ]
 }

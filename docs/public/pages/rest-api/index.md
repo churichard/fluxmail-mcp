@@ -12,8 +12,7 @@ Complete the [quickstart](/docs/quickstart), then create an API key and start th
 
 ```bash
 fluxmail apikey create \
-  --name local-script \
-  --member you@example.com
+  --name local-script
 
 fluxmail serve
 ```
@@ -29,37 +28,69 @@ curl http://localhost:8977/api/v1/accounts \
   -H "Authorization: Bearer $FLUXMAIL_API_KEY"
 ```
 
-Use the returned account ID in mailbox routes. If you expose the HTTP server outside your computer, protect it with a firewall or reverse proxy and keep `FLUXMAIL_AUTH=apikey` enabled.
+Use the returned account ID in mailbox routes. If you expose the HTTP server outside your computer, protect it with HTTPS and a firewall or reverse proxy.
 
 ## Administrative access
 
-Routes under `/api/v1/admin` always require a bearer key, even when `FLUXMAIL_AUTH=none` allows unauthenticated mail requests. The key owner must be an administrator, and the key needs the capability for the requested operation:
+Routes under `/api/v1/admin` accept a member session or API key. A session must belong to a current administrator. An API key must belong to a current administrator and include the capability for the requested operation:
 
 | Capability | Access |
 | --- | --- |
 | `admin.accounts` | Connect or reauthorize mailboxes and update IMAP settings. |
 | `admin.api_keys` | List, create, update, and revoke API keys. |
+| `admin.members` | Manage members, invitations, roles, statuses, and sessions. |
+| `admin.audit` | Read security audit events. |
 | `admin.license` | Read license status and activate a license key. |
 
-The first member is the initial administrator. Create an administrative key from a local terminal:
+The first member is the initial administrator. Administrators can use their CLI session directly. Create an administrative API key only when automation needs these routes:
 
 ```bash
 fluxmail apikey create \
   --name instance-admin \
-  --member you@example.com \
   --profile full \
   --admin admin.accounts \
   --admin admin.api_keys \
+  --admin admin.members \
+  --admin admin.audit \
   --admin admin.license
 ```
 
 Remote administrative requests require HTTPS. Requests from the local computer can use HTTP.
+
+If a reverse proxy terminates TLS and connects to Fluxmail from a non-loopback address, set `FLUXMAIL_TRUST_PROXY=1`. Enable it only when the proxy overwrites forwarded headers and prevents clients from reaching Fluxmail directly.
 
 ## Endpoint reference
 
 <!-- BEGIN GENERATED:rest-api-endpoints -->
 | Endpoint | Description |
 | --- | --- |
+| [Log in with a member email and password](/docs/rest-api/login) | Log in with a member email and password |
+| [Enroll a member](/docs/rest-api/enroll-member) | Enroll a member |
+| [Redeem a password reset](/docs/rest-api/reset-password) | Redeem a password reset |
+| [Get the authenticated member](/docs/rest-api/get-current-member) | Get the authenticated member |
+| [Update the current member profile](/docs/rest-api/update-current-member) | Update the current member profile |
+| [Revoke the current member session](/docs/rest-api/logout) | Revoke the current member session |
+| [Change the current member password](/docs/rest-api/change-password) | Change the current member password |
+| [List current member sessions](/docs/rest-api/list-sessions) | List current member sessions |
+| [Revoke a member session](/docs/rest-api/revoke-session) | Revoke a member session |
+| [List API keys owned by the current member](/docs/rest-api/list-own-api-keys) | List API keys owned by the current member |
+| [Create an API key for the current member](/docs/rest-api/create-own-api-key) | Create an API key for the current member |
+| [Revoke an API key owned by the current member](/docs/rest-api/revoke-own-api-key) | Revoke an API key owned by the current member |
+| [Connect or reauthorize a mailbox account](/docs/rest-api/connect-own-account) | Connect or reauthorize a mailbox account |
+| [Remove a mailbox account owned by the current member](/docs/rest-api/remove-own-account) | Remove a mailbox account owned by the current member |
+| [Update folder settings for an owned IMAP mailbox](/docs/rest-api/update-owned-imap-folders) | Update folder settings for an owned IMAP mailbox |
+| [List members](/docs/rest-api/list-members) | List members |
+| [Create and invite a member](/docs/rest-api/create-member) | Create and invite a member |
+| [Update a member](/docs/rest-api/update-member) | Update a member |
+| [Remove a member](/docs/rest-api/delete-member) | Remove a member |
+| [Issue a member invitation](/docs/rest-api/invite-member) | Issue a member invitation |
+| [Issue a member password reset](/docs/rest-api/create-member-password-reset) | Issue a member password reset |
+| [List a member's sessions](/docs/rest-api/list-member-sessions) | List a member's sessions |
+| [Revoke a member's session](/docs/rest-api/revoke-member-session) | Revoke a member's session |
+| [List all mailbox account metadata](/docs/rest-api/list-admin-accounts) | List all mailbox account metadata |
+| [Update mailbox ownership and access](/docs/rest-api/update-account-access) | Update mailbox ownership and access |
+| [Remove a mailbox account](/docs/rest-api/delete-admin-account) | Remove a mailbox account |
+| [List security audit events](/docs/rest-api/list-audit-events) | List security audit events |
 | [Create or reauthorize a connection](/docs/rest-api/create-administrative-connection) | Create or reauthorize a Gmail, Outlook, or IMAP connection. Requires admin.accounts. |
 | [Test an IMAP connection](/docs/rest-api/test-administrative-imap-connection) | Test IMAP and SMTP settings without saving an account. Requires admin.accounts. |
 | [Update IMAP folders](/docs/rest-api/update-administrative-imap-folders) | Update the folder overrides for an IMAP account. Requires admin.accounts. |
@@ -68,6 +99,7 @@ Remote administrative requests require HTTPS. Requests from the local computer c
 | [Update an API key](/docs/rest-api/update-administrative-api-key) | Update the permissions or mailbox scope of an API key. Requires admin.api_keys. |
 | [Revoke an API key](/docs/rest-api/revoke-administrative-api-key) | Revoke an API key. Requires admin.api_keys. |
 | [Get license status](/docs/rest-api/get-administrative-license) | Get license status and usage without returning the configured license key. Requires admin.license. |
+| [Deactivate a license](/docs/rest-api/deactivate-administrative-license) | Release the stored license and return this instance to Personal limits. Requires admin.license. |
 | [Activate a license](/docs/rest-api/activate-administrative-license) | Validate and activate a Fluxmail license key. Requires admin.license. |
 | [Get API information](/docs/rest-api/get-api-info) | Return the Fluxmail version and the URL of the OpenAPI document. |
 | [Get server status](/docs/rest-api/get-status) | Return provider and mailbox status for the accounts available to the API key. |
@@ -96,10 +128,11 @@ Remote administrative requests require HTTPS. Requests from the local computer c
 
 ## OpenAPI schema
 
-The OpenAPI 3.1 schema is available without authentication:
+The OpenAPI 3.1 schema is public:
 
 ```text
-http://localhost:8977/api/v1/openapi.json
+curl http://localhost:8977/api/v1/openapi.json \
+  -H "Authorization: Bearer $FLUXMAIL_API_KEY"
 ```
 
 Use the schema or the endpoint pages for request parameters, JSON bodies, and response details.

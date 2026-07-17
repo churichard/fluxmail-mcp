@@ -14,10 +14,10 @@ Fluxmail's built-in app requests Google's `gmail.modify` permission. You can rea
 
 Choose the setup that matches how you run Fluxmail.
 
-Create the member who will own the mailbox if they do not exist yet:
+For a fresh local instance, create the first administrator and log in:
 
 ```bash
-fluxmail members add --name "Your name" --email you@example.com
+fluxmail setup --name "Your name" --email you@example.com
 ```
 
 ### Local stdio
@@ -25,7 +25,7 @@ fluxmail members add --name "Your name" --email you@example.com
 Start the browser consent flow:
 
 ```bash
-fluxmail accounts add gmail --owner you@example.com
+fluxmail accounts add gmail
 ```
 
 ### Docker or a remote server
@@ -45,14 +45,14 @@ Start or recreate the container, then run the same account command inside it:
 ```bash
 docker compose up -d
 docker compose exec fluxmail \
-  fluxmail members add --name "Your name" --email you@example.com
+  fluxmail setup --name "Your name" --email you@example.com
 docker compose exec fluxmail \
-  fluxmail accounts add gmail --owner you@example.com
+  fluxmail accounts add gmail
 ```
 
 On local Docker, the command prints a Google consent URL and waits for the callback on `127.0.0.1:8976`. On a remote deployment with `FLUXMAIL_PUBLIC_URL` set, it prints a one-time connection link instead. Open the link in your browser, choose the Google account, and approve access. Hosted links expire after 10 minutes and do not require an admin API key.
 
-Fluxmail uses the hosted flow whenever `FLUXMAIL_PUBLIC_URL` is set. Without it, `fluxmail accounts add gmail --owner you@example.com` uses the local callback at `http://127.0.0.1:8976/oauth/callback`. For troubleshooting, pass `--hosted` or `--local` to choose a flow explicitly.
+Fluxmail uses the hosted flow whenever `FLUXMAIL_PUBLIC_URL` is set. Without it, `fluxmail accounts add gmail` uses the local callback at `http://127.0.0.1:8976/oauth/callback`. For troubleshooting, pass `--hosted` or `--local` to choose a flow explicitly.
 
 ## Use your own Google OAuth app
 
@@ -110,12 +110,10 @@ A product backend can create a hosted connection link without running the CLI. T
 curl -X POST "$FLUXMAIL_PUBLIC_URL/api/v1/admin/connections" \
   -H "Authorization: Bearer $FLUXMAIL_ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"provider":"gmail","owner":"you@example.com"}'
+  -d '{"provider":"gmail","ownerMemberId":"you@example.com"}'
 ```
 
-The response contains `data.connectionUrl` and `data.expiresAt`. Send the URL to the user, but keep the admin API key on your backend. To reconnect an existing mailbox, send `reauthorizeAccountId` instead of `owner`. The endpoint also accepts `provider: "outlook"`.
-
-`POST /auth/connections` remains available for existing integrations. It has the same authentication requirement and no longer bypasses authentication under `FLUXMAIL_AUTH=none`.
+The response contains `data.connectionUrl` and `data.expiresAt`. Send the URL to the user, but keep the admin API key on your backend. To reconnect an existing mailbox, send `reauthorizeAccountId` instead of `ownerMemberId`. The endpoint also accepts `provider: "outlook"`.
 
 ## Avoid seven-day token expiration with a custom app
 

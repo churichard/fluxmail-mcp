@@ -1,12 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { OAuth2Client, type Credentials } from 'google-auth-library';
-import { EmailError, type Account, type AccountSharingMode, type EmailProvider, type Provider } from '@fluxmail/core';
+import { EmailError, type Account, type EmailProvider, type Provider } from '@fluxmail/core';
 import { GmailProvider, GMAIL_CAPABILITIES } from '@fluxmail/provider-gmail';
 import { ImapProvider, IMAP_CAPABILITIES, type FolderWarning, type ImapCredentials } from '@fluxmail/provider-imap';
 import { OutlookProvider, OUTLOOK_CAPABILITIES } from '@fluxmail/provider-outlook';
 import type { FluxmailConfig } from '../config.js';
-import { accountCredentials, accountMemberShares, accounts, oauthTokens, type FluxmailDb } from '../storage/db.js';
+import { accountCredentials, accountMemberGrants, accounts, oauthTokens, type FluxmailDb } from '../storage/db.js';
 import { decryptString, encryptString } from '../storage/crypto.js';
 import { assertAccountLimit, getEntitlements } from '../licensing/entitlements.js';
 import { getMember } from '../storage/members.js';
@@ -15,8 +15,8 @@ import { SqliteImapStateStore } from '../storage/imapState.js';
 import { refreshMicrosoftCredentials, requireMicrosoftConfig, type MicrosoftCredentials } from './microsoftAuth.js';
 
 export interface AccountAccessInput {
-  sharingMode: AccountSharingMode;
-  sharedMemberIds?: readonly string[];
+  sharedWithAll: boolean;
+  grantedMemberIds?: readonly string[];
 }
 
 interface StoredGmailCredentials extends Credentials {
@@ -41,32 +41,40 @@ export class AccountRegistry {
   }
 
   listAccounts(): Account[] {
-    const shares = new Map<string, string[]>();
-    for (const row of this.db.select().from(accountMemberShares).all()) {
-      const memberIds = shares.get(row.accountId) ?? [];
+    const grants = new Map<string, string[]>();
+    for (const row of this.db.select().from(accountMemberGrants).all()) {
+      const memberIds = grants.get(row.accountId) ?? [];
       memberIds.push(row.memberId);
-      shares.set(row.accountId, memberIds);
+      grants.set(row.accountId, memberIds);
     }
     return this.db
       .select()
       .from(accounts)
       .all()
-      .map((row) => ({
-        id: row.id,
-        provider: row.provider as Provider,
-        email: row.email,
-        ...(row.displayName ? { displayName: row.displayName } : {}),
-        status: row.status as Account['status'],
-        capabilities:
-          row.provider === 'imap'
-            ? IMAP_CAPABILITIES
-            : row.provider === 'outlook'
-              ? OUTLOOK_CAPABILITIES
-              : GMAIL_CAPABILITIES,
-        sharingMode: row.sharingMode as AccountSharingMode,
-        sharedMemberIds: shares.get(row.id) ?? [],
-        ...(row.memberId ? { ownerId: row.memberId, memberId: row.memberId } : {}),
-      }));
+      .map((row) => {
+        if (!row.ownerMemberId) {
+          throw new EmailError(
+            'invalid_request',
+            'This instance must finish administrator setup before mailboxes can be used.',
+          );
+        }
+        return {
+          id: row.id,
+          provider: row.provider as Provider,
+          email: row.email,
+          ...(row.displayName ? { displayName: row.displayName } : {}),
+          status: row.status as Account['status'],
+          capabilities:
+            row.provider === 'imap'
+              ? IMAP_CAPABILITIES
+              : row.provider === 'outlook'
+                ? OUTLOOK_CAPABILITIES
+                : GMAIL_CAPABILITIES,
+          ownerMemberId: row.ownerMemberId,
+          sharedWithAll: row.sharedWithAll,
+          grantedMemberIds: grants.get(row.id) ?? [],
+        };
+      });
   }
 
   getAccount(accountId: string): Account {
@@ -87,25 +95,24 @@ export class AccountRegistry {
     return account;
   }
 
-  private normalizeAccess(ownerId: string | undefined, access?: AccountAccessInput): Required<AccountAccessInput> {
-    const sharingMode = access?.sharingMode ?? (ownerId ? 'private' : 'all');
-    const sharedMemberIds = sharingMode === 'selected' ? [...new Set(access?.sharedMemberIds ?? [])] : [];
-    for (const memberId of sharedMemberIds) getMember(this.db, memberId);
-    return { sharingMode, sharedMemberIds };
+  private normalizeAccess(access?: AccountAccessInput): Required<AccountAccessInput> {
+    const sharedWithAll = access?.sharedWithAll ?? false;
+    const grantedMemberIds = sharedWithAll ? [] : [...new Set(access?.grantedMemberIds ?? [])];
+    for (const memberId of grantedMemberIds) getMember(this.db, memberId);
+    return { sharedWithAll, grantedMemberIds };
   }
 
   private writeAccess(
     db: Pick<FluxmailDb, 'update' | 'delete' | 'insert'>,
     accountId: string,
-    ownerId: string | undefined,
     access?: AccountAccessInput,
   ): void {
-    const normalized = this.normalizeAccess(ownerId, access);
-    db.update(accounts).set({ sharingMode: normalized.sharingMode }).where(eq(accounts.id, accountId)).run();
-    db.delete(accountMemberShares).where(eq(accountMemberShares.accountId, accountId)).run();
-    if (normalized.sharingMode === 'selected' && normalized.sharedMemberIds.length) {
-      db.insert(accountMemberShares)
-        .values(normalized.sharedMemberIds.map((memberId) => ({ accountId, memberId })))
+    const normalized = this.normalizeAccess(access);
+    db.update(accounts).set({ sharedWithAll: normalized.sharedWithAll }).where(eq(accounts.id, accountId)).run();
+    db.delete(accountMemberGrants).where(eq(accountMemberGrants.accountId, accountId)).run();
+    if (normalized.grantedMemberIds.length) {
+      db.insert(accountMemberGrants)
+        .values(normalized.grantedMemberIds.map((memberId) => ({ accountId, memberId })))
         .run();
     }
   }
@@ -132,7 +139,7 @@ export class AccountRegistry {
     if (all.length === 0) {
       throw new EmailError(
         'invalid_request',
-        'No email accounts are connected yet. Run "fluxmail accounts add gmail --owner <member>", "fluxmail accounts add outlook --owner <member>", or the IMAP equivalent.',
+        'No email accounts are connected yet. Run "fluxmail accounts add gmail", "fluxmail accounts add outlook", or the IMAP equivalent.',
       );
     }
     if (all.length > 1) {
@@ -315,7 +322,7 @@ export class AccountRegistry {
         );
       }
       // Re-authenticating an existing account: refresh tokens, clear error
-      // state. Ownership is untouched; reassign with assignAccountMember.
+      // state. Ownership is untouched; reassign with assignAccountOwner.
       this.db.transaction((tx) => {
         this.writeTokens(tx, duplicate.id, this.gmailCredentials(tokens));
         tx.update(accounts)
@@ -342,12 +349,12 @@ export class AccountRegistry {
           displayName: displayName ?? null,
           status: 'active',
           createdAt: Date.now(),
-          memberId: memberId ?? null,
-          sharingMode: this.normalizeAccess(memberId, access).sharingMode,
+          ownerMemberId: memberId,
+          sharedWithAll: this.normalizeAccess(access).sharedWithAll,
         })
         .run();
       this.writeTokens(tx, id, this.gmailCredentials(tokens));
-      this.writeAccess(tx, id, memberId, access);
+      this.writeAccess(tx, id, access);
     });
     return this.getAccount(id);
   }
@@ -399,12 +406,12 @@ export class AccountRegistry {
           displayName: displayName ?? null,
           status: 'active',
           createdAt: Date.now(),
-          memberId,
-          sharingMode: this.normalizeAccess(memberId, access).sharingMode,
+          ownerMemberId: memberId,
+          sharedWithAll: this.normalizeAccess(access).sharedWithAll,
         })
         .run();
       this.writeTokens(tx, id, credentials);
-      this.writeAccess(tx, id, memberId, access);
+      this.writeAccess(tx, id, access);
     });
     return this.getAccount(id);
   }
@@ -519,12 +526,12 @@ export class AccountRegistry {
           displayName: displayName ?? null,
           status: 'active',
           createdAt: Date.now(),
-          memberId: memberId ?? null,
-          sharingMode: this.normalizeAccess(memberId, access).sharingMode,
+          ownerMemberId: memberId,
+          sharedWithAll: this.normalizeAccess(access).sharedWithAll,
         })
         .run();
       this.writeCredentials(tx, id, credentials);
-      this.writeAccess(tx, id, memberId, access);
+      this.writeAccess(tx, id, access);
     });
     return this.getAccount(id);
   }
@@ -543,22 +550,16 @@ export class AccountRegistry {
     this.evictProvider(accountId);
   }
 
-  /** Deprecated storage alias for assignAccountOwner. */
-  assignAccountMember(accountId: string, memberId: string | null): Account {
+  assignAccountOwner(accountId: string, memberId: string): Account {
     this.getAccount(accountId);
-    if (!memberId) throw new EmailError('invalid_request', 'A mailbox must have an owner.');
     getMember(this.db, memberId);
-    this.db.update(accounts).set({ memberId }).where(eq(accounts.id, accountId)).run();
+    this.db.update(accounts).set({ ownerMemberId: memberId }).where(eq(accounts.id, accountId)).run();
     return this.getAccount(accountId);
   }
 
-  assignAccountOwner(accountId: string, memberId: string): Account {
-    return this.assignAccountMember(accountId, memberId);
-  }
-
   setAccountAccess(accountId: string, access: AccountAccessInput): Account {
-    const account = this.getAccount(accountId);
-    this.db.transaction((tx) => this.writeAccess(tx, accountId, account.ownerId, access));
+    this.getAccount(accountId);
+    this.db.transaction((tx) => this.writeAccess(tx, accountId, access));
     return this.getAccount(accountId);
   }
 

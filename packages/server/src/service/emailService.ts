@@ -21,7 +21,9 @@ import {
 import type { AccountRegistry } from '../accounts/registry.js';
 import { assertWithinQuota, checkLicenseState, type Entitlements } from '../licensing/entitlements.js';
 import type { FluxmailDb } from '../storage/db.js';
-import { listMembers, type MemberRole } from '../storage/members.js';
+import { listMembers } from '../storage/members.js';
+import type { Principal } from '../auth.js';
+import { canAccessAccount, canAdminister, canSeeAccountMetadata } from '../authorization.js';
 import {
   cancelScheduledSend,
   countPending,
@@ -39,17 +41,6 @@ export interface SendInput extends DraftInput {
   replyAll?: boolean;
 }
 
-export interface AccessScope {
-  /** null identifies a trusted local caller or a migrated system credential. */
-  memberId: string | null;
-  /** Omitted for trusted local callers; null for management-only system credentials. */
-  role?: MemberRole | null;
-  /** Optional extra narrowing applied after member mailbox grants. */
-  accountIds?: string[] | null;
-}
-
-const ADMIN_SCOPE: AccessScope = { memberId: null };
-
 export interface ForwardInput {
   messageId: string;
   to: EmailAddress[];
@@ -61,7 +52,7 @@ export interface ForwardInput {
 
 export interface ServiceStatus {
   accounts: Array<
-    Pick<Account, 'id' | 'provider' | 'email' | 'status' | 'ownerId' | 'memberId'> & {
+    Pick<Account, 'id' | 'provider' | 'email' | 'status' | 'ownerMemberId'> & {
       error?: { code: string; message: string };
       warnings?: string[];
     }
@@ -137,41 +128,26 @@ export class EmailService {
   constructor(
     private readonly registry: AccountRegistry,
     private readonly db: FluxmailDb,
-    private readonly scope: AccessScope = ADMIN_SCOPE,
+    private readonly principal?: Principal,
   ) {}
 
   /**
    * A view restricted to a member's mailbox grants and optional connection
-   * allowlist. Trusted local callers use the default service instead.
+   * allowlist. Internal background workers use the default service instead.
    */
-  withScope(scope: AccessScope): EmailService {
-    const scoped = new EmailService(this.registry, this.db, scope);
+  withPrincipal(principal: Principal): EmailService {
+    const scoped = new EmailService(this.registry, this.db, principal);
     scoped.onScheduleChanged = () => this.onScheduleChanged();
     return scoped;
   }
 
-  private isTrustedLocal(): boolean {
-    return this.scope.memberId === null && this.scope.role === undefined;
-  }
-
-  private isAdministrator(): boolean {
-    return (
-      this.isTrustedLocal() || this.scope.role === 'admin' || (this.scope.memberId === null && this.scope.role === null)
-    );
+  /** Internal background work only. HTTP, MCP, and CLI requests always use withPrincipal(). */
+  private isInternal(): boolean {
+    return this.principal === undefined;
   }
 
   private canAccess(account: Account): boolean {
-    const memberId = this.scope.memberId;
-    const granted =
-      this.isTrustedLocal() ||
-      (memberId !== null &&
-        (account.ownerId === memberId ||
-          account.memberId === memberId ||
-          (account.sharingMode === undefined && account.ownerId === undefined && account.memberId === undefined) ||
-          account.sharingMode === 'all' ||
-          (account.sharingMode === 'selected' && account.sharedMemberIds.includes(memberId))));
-    const allowlist = this.scope.accountIds;
-    return granted && (allowlist == null || allowlist.includes(account.id));
+    return this.principal ? canAccessAccount(this.principal, account) : true;
   }
 
   private accessibleAccounts(): Account[] {
@@ -180,10 +156,9 @@ export class EmailService {
   }
 
   private metadataAccounts(): Account[] {
-    if (!this.isAdministrator()) return this.accessibleAccounts();
-    const all = this.registry.listAccounts();
-    const allowlist = this.scope.accountIds;
-    return allowlist == null ? all : all.filter((account) => allowlist.includes(account.id));
+    return this.principal
+      ? this.registry.listAccounts().filter((account) => canSeeAccountMetadata(this.principal!, account))
+      : this.registry.listAccounts();
   }
 
   /**
@@ -199,7 +174,7 @@ export class EmailService {
       }
       return account.id;
     }
-    if (this.isTrustedLocal()) return this.registry.resolveAccountId();
+    if (this.isInternal()) return this.registry.resolveAccountId();
     const accessible = this.accessibleAccounts();
     if (accessible.length === 0) {
       throw new EmailError('invalid_request', 'No email accounts are available for this member.');
@@ -282,25 +257,25 @@ export class EmailService {
         }),
     );
 
-    const admin = this.isAdministrator();
-    const license = admin ? checkLicenseState(this.db) : undefined;
+    const canReadMembers = this.principal === undefined || canAdminister(this.principal, 'admin.members');
+    const canReadLicense = this.principal === undefined || canAdminister(this.principal, 'admin.license');
+    const license = canReadLicense ? checkLicenseState(this.db) : undefined;
     return {
       // Re-read so statuses reflect any markStatus writes from the live checks above.
-      accounts: this.metadataAccounts().map(({ id, provider, email, status, ownerId, memberId }) => ({
+      accounts: this.metadataAccounts().map(({ id, provider, email, status, ownerMemberId }) => ({
         id,
         provider,
         email,
         status,
-        ...(ownerId ? { ownerId } : {}),
-        ...(memberId ? { memberId } : {}),
+        ownerMemberId,
         ...(errors.has(id) ? { error: errors.get(id)! } : {}),
         ...(warnings.has(id) ? { warnings: warnings.get(id)! } : {}),
       })),
-      ...(admin
+      ...(canReadMembers ? { members: { count: listMembers(this.db).length } } : {}),
+      ...(license
         ? {
-            members: { count: listMembers(this.db).length },
-            entitlements: license!.entitlements,
-            ...(license!.warning ? { licenseWarning: license!.warning } : {}),
+            entitlements: license.entitlements,
+            ...(license.warning ? { licenseWarning: license.warning } : {}),
           }
         : {}),
       providersAvailable: ['gmail', 'outlook', 'imap'],
@@ -314,7 +289,7 @@ export class EmailService {
    * while the license is in its grace period or has lapsed.
    */
   enforceQuota(): string | undefined {
-    if (!this.isAdministrator()) {
+    if (!this.isInternal() && (!this.principal || !canAdminister(this.principal, 'admin.license'))) {
       const state = checkLicenseState(this.db);
       if (state.overQuota) {
         throw new EmailError(
@@ -329,7 +304,7 @@ export class EmailService {
   }
 
   private scheduledStatus(): ServiceStatus['scheduled'] {
-    if (this.isTrustedLocal()) {
+    if (this.isInternal()) {
       const { pending, nextSendAt } = countPending(this.db);
       return {
         pending,
@@ -438,7 +413,7 @@ export class EmailService {
     }
     // Listing must work across accounts, but a member key only sees its own mailboxes'.
     const rows = listScheduledSends(this.db);
-    if (this.isTrustedLocal()) return rows.map(toScheduledInfo);
+    if (this.isInternal()) return rows.map(toScheduledInfo);
     const accessible = new Set(this.accessibleAccounts().map((a) => a.id));
     return rows.filter((r) => accessible.has(r.accountId)).map(toScheduledInfo);
   }

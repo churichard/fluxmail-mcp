@@ -1,6 +1,6 @@
 ---
 title: 'fluxmail status'
-description: 'Show accounts, members, entitlements, and provider availability'
+description: 'Show mailbox and provider status for the selected instance'
 updated: '2026-07-15'
 ---
 
@@ -8,7 +8,7 @@ updated: '2026-07-15'
 
 `fluxmail status`
 
-Show accounts, members, entitlements, and provider availability
+Show mailbox and provider status for the selected instance
 
 ## Usage
 
