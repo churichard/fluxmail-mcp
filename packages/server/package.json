@@ -1,6 +1,6 @@
 {
   "name": "fluxmail",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "mcpName": "io.github.churichard/fluxmail",
   "description": "Self-hosted email API with MCP and REST support for Gmail, Outlook, and IMAP/SMTP",
   "license": "SEE LICENSE IN LICENSE.md",

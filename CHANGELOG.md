@@ -4,6 +4,12 @@ Fluxmail records user-facing changes in this file. The format follows [Common Ch
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-17
+
+### Changed
+
+- Point package and registry metadata at `churichard/fluxmail`, with container images at `ghcr.io/churichard/fluxmail` ([#53](https://github.com/churichard/fluxmail/pull/53))
+
 ## [0.4.0] - 2026-07-16
 
 ### Changed
@@ -30,5 +36,6 @@ Fluxmail records user-facing changes in this file. The format follows [Common Ch
 - Prevent hosted Microsoft OAuth responses from forwarding connection credentials through the HTTP referrer ([#43](https://github.com/churichard/fluxmail/pull/43))
 - Stop a pending IMAP connection immediately when its provider closes during setup ([#49](https://github.com/churichard/fluxmail/pull/49))
 
-[Unreleased]: https://github.com/churichard/fluxmail/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/churichard/fluxmail/compare/v0.4.1...HEAD
 [0.4.0]: https://github.com/churichard/fluxmail/compare/v0.3.0...v0.4.0
+[0.4.1]: https://github.com/churichard/fluxmail/compare/v0.4.0...v0.4.1
