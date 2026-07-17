@@ -32,7 +32,7 @@ Fluxmail stores its SQLite database and encrypted provider credentials on the ma
 
 | Provider | Connection method | Notes |
 | --- | --- | --- |
-| Gmail and Google Workspace | Gmail API with OAuth | You create and control the Google Cloud OAuth app. |
+| Gmail and Google Workspace | Gmail API with OAuth | Fluxmail includes an OAuth app for local connections. Hosted connections need your own Google Cloud app. |
 | Microsoft 365 and Outlook.com | Microsoft Graph with OAuth | You create and control the Microsoft Entra app registration. |
 | Other email providers | IMAP for reading and SMTP for sending | The provider must allow IMAP and SMTP access. Some providers require an app password. |
 

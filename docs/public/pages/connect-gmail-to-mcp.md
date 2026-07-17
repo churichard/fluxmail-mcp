@@ -1,43 +1,16 @@
 ---
 title: 'Connect Gmail / Google Workspace'
-description: 'Create a Google OAuth app, connect Gmail or Google Workspace, and reconnect an expired token.'
-updated: '2026-07-15'
+description: 'Connect Gmail or Google Workspace with Fluxmail, optionally use your own Google OAuth app, and reconnect an expired token.'
+updated: '2026-07-17'
 ---
 
-Fluxmail connects to Gmail through a Google Cloud OAuth app that you own. Your Google credentials and OAuth tokens stay with the Fluxmail server you run.
+Fluxmail includes a Google Desktop OAuth client, so you can connect Gmail locally without creating Google Cloud credentials. The local flow uses PKCE, and your OAuth tokens stay with the Fluxmail server you run.
 
 This setup works with personal Gmail accounts and Google Workspace accounts.
 
-## 1. Create a Google Cloud project
+Fluxmail's built-in app requests Google's `gmail.modify` permission. You can read, draft, send, and organize mail, including moving messages to Trash. Gmail does not allow immediate permanent deletion with this permission.
 
-1. Open [Google Cloud Console](https://console.cloud.google.com) and create or select a project.
-2. Go to **APIs & Services → Library** and enable the **Gmail API**.
-3. Open the Google Auth Platform setup and configure the OAuth consent screen.
-4. Choose an **External** audience unless the app is restricted to people in your Google Workspace organization.
-5. If the app is in Testing, add every Google account that will connect to Fluxmail as a test user.
-
-[Google allows up to 100 test users](https://support.google.com/cloud/answer/15549945) while an app has a Testing publishing status. Users see an unverified-app warning during authorization.
-
-## 2. Create OAuth credentials
-
-Go to **APIs & Services → Credentials → Create credentials → OAuth client ID**, then choose **Web application**.
-
-Add the redirect URI for each way you plan to run Fluxmail:
-
-| Setup                       | Authorized redirect URI                           |
-| --------------------------- | ------------------------------------------------- |
-| Local stdio or local Docker | `http://localhost:8976/oauth/callback`            |
-| Remote server               | `<your FLUXMAIL_PUBLIC_URL>/auth/google/callback` |
-
-For example, a server available at `https://mail.example.com` uses:
-
-```text
-https://mail.example.com/auth/google/callback
-```
-
-Copy the client ID and client secret after Google creates them.
-
-## 3. Connect Gmail
+## Connect Gmail
 
 Choose the setup that matches how you run Fluxmail.
 
@@ -49,28 +22,17 @@ fluxmail members add --name "Your name" --email you@example.com
 
 ### Local stdio
 
-Store the Google credentials in Fluxmail's local config, then start the browser consent flow:
+Start the browser consent flow:
 
 ```bash
-fluxmail config set GOOGLE_CLIENT_ID <your-client-id>.apps.googleusercontent.com
-fluxmail config set GOOGLE_CLIENT_SECRET <your-client-secret>
 fluxmail accounts add gmail --owner you@example.com
 ```
 
-The credentials are saved in `~/.fluxmail/config.env`. `fluxmail config list` shows stored settings with secret values masked.
-
 ### Docker or a remote server
 
-Add the Google credentials to the server's `.env` file:
+If Docker runs on the same computer as your browser, leave `FLUXMAIL_PUBLIC_URL` unset. Docker Compose publishes the local callback at `http://127.0.0.1:8976/oauth/callback`.
 
-```dotenv
-GOOGLE_CLIENT_ID=<your-client-id>.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=<your-client-secret>
-```
-
-If Docker runs on the same computer as your browser, leave `FLUXMAIL_PUBLIC_URL` unset. Docker Compose publishes the local callback at `http://localhost:8976/oauth/callback`.
-
-For a remote deployment, expose Fluxmail through a public HTTPS address and add it to `.env`:
+For a remote deployment, expose Fluxmail through a public HTTPS address. You must also [use your own Google OAuth app](#use-your-own-google-oauth-app), because Google requires each hosted callback address to be registered. Add the public address to `.env`:
 
 ```dotenv
 FLUXMAIL_PUBLIC_URL=https://mail.example.com
@@ -88,9 +50,57 @@ docker compose exec fluxmail \
   fluxmail accounts add gmail --owner you@example.com
 ```
 
-On local Docker, the command prints a Google consent URL and waits for the callback on `localhost:8976`. On a remote deployment with `FLUXMAIL_PUBLIC_URL` set, it prints a one-time connection link instead. Open the link in your browser, choose the Google account, and approve access. Hosted links expire after 10 minutes and do not require an admin API key.
+On local Docker, the command prints a Google consent URL and waits for the callback on `127.0.0.1:8976`. On a remote deployment with `FLUXMAIL_PUBLIC_URL` set, it prints a one-time connection link instead. Open the link in your browser, choose the Google account, and approve access. Hosted links expire after 10 minutes and do not require an admin API key.
 
-Fluxmail uses the hosted flow whenever `FLUXMAIL_PUBLIC_URL` is set. Without it, `fluxmail accounts add gmail --owner you@example.com` uses the local callback at `http://localhost:8976/oauth/callback`. For troubleshooting, pass `--hosted` or `--local` to choose a flow explicitly.
+Fluxmail uses the hosted flow whenever `FLUXMAIL_PUBLIC_URL` is set. Without it, `fluxmail accounts add gmail --owner you@example.com` uses the local callback at `http://127.0.0.1:8976/oauth/callback`. For troubleshooting, pass `--hosted` or `--local` to choose a flow explicitly.
+
+## Use your own Google OAuth app
+
+Use a custom Google client if you prefer to manage the OAuth consent screen yourself. A remote server with `FLUXMAIL_PUBLIC_URL` needs a Web client because Google's Desktop clients only support callbacks on the computer running the CLI.
+
+Fluxmail requests the full `https://mail.google.com/` scope when you configure a custom client. This preserves the permanent-delete action. Your Google OAuth app must be approved for that restricted scope before you make it available to other users.
+
+### Create a Google Cloud project
+
+1. Open [Google Cloud Console](https://console.cloud.google.com) and create or select a project.
+2. Go to **APIs & Services → Library** and enable the **Gmail API**.
+3. Open the Google Auth Platform setup and configure the OAuth consent screen.
+4. Choose an **External** audience unless the app is restricted to people in your Google Workspace organization.
+5. If the app is in Testing, add every Google account that will connect to Fluxmail as a test user.
+
+[Google allows up to 100 test users](https://support.google.com/cloud/answer/15549945) while an app has a Testing publishing status. Users see an unverified-app warning during authorization.
+
+### Create OAuth credentials for a local connection
+
+Go to **Google Auth Platform → Clients → Create client**, then choose **Desktop app**. Download the OAuth client JSON after Google creates it. Desktop apps cannot keep this credential confidential, but Google's token endpoint still requires the generated client secret.
+
+Save both values from the JSON in Fluxmail's config:
+
+```bash
+fluxmail config set GOOGLE_CLIENT_ID <your-client-id>.apps.googleusercontent.com
+fluxmail config set GOOGLE_CLIENT_SECRET <your-client-secret>
+```
+
+Fluxmail uses PKCE when it exchanges the local authorization code.
+
+### Create OAuth credentials for a hosted connection
+
+Go to **Google Auth Platform → Clients → Create client**, then choose **Web application**. Add `<your FLUXMAIL_PUBLIC_URL>/auth/google/callback` as an authorized redirect URI.
+
+For example, a server available at `https://mail.example.com` uses:
+
+```text
+https://mail.example.com/auth/google/callback
+```
+
+Copy the client ID and client secret, then add both values to the server's `.env`:
+
+```dotenv
+GOOGLE_CLIENT_ID=<your-client-id>.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=<your-client-secret>
+```
+
+Restart Fluxmail after changing environment variables. `fluxmail config list` shows stored secrets in masked form.
 
 ### Create a hosted link through the API
 
@@ -107,7 +117,7 @@ The response contains `data.connectionUrl` and `data.expiresAt`. Send the URL to
 
 `POST /auth/connections` remains available for existing integrations. It has the same authentication requirement and no longer bypasses authentication under `FLUXMAIL_AUTH=none`.
 
-## Optional: avoid seven-day token expiration
+## Avoid seven-day token expiration with a custom app
 
 For an External app with a Testing publishing status, [Google expires the authorization after seven days](https://developers.google.com/identity/protocols/oauth2#expiration). Move the app to **In production** in Google Auth Platform if you want a longer-lived connection.
 

@@ -1,7 +1,7 @@
 import { chmodSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   configFilePath,
   expandHome,
@@ -11,6 +11,7 @@ import {
   setStoredConfig,
   unsetStoredConfig,
 } from '../src/config.js';
+import { DEFAULT_GOOGLE_CLIENT_ID, DEFAULT_GOOGLE_CLIENT_SECRET } from '../src/accounts/defaultGoogleOAuth.js';
 import { isTelemetryEnabled, telemetryDisabled, withStoredTelemetrySetting } from '../src/telemetry.js';
 
 const ENV_KEYS = [
@@ -32,7 +33,11 @@ const ENV_KEYS = [
 const saved: Record<string, string | undefined> = {};
 
 for (const k of ENV_KEYS) saved[k] = process.env[k];
+beforeEach(() => {
+  vi.spyOn(process, 'cwd').mockReturnValue(tempDataDir());
+});
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const k of ENV_KEYS) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
@@ -44,6 +49,41 @@ function tempDataDir(): string {
 }
 
 describe('stored config', () => {
+  it('uses the built-in Google OAuth app by default', () => {
+    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
+    delete process.env.GOOGLE_CLIENT_ID;
+    delete process.env.GOOGLE_CLIENT_SECRET;
+
+    const google = loadConfig().google;
+
+    expect(google).toEqual({
+      clientId: DEFAULT_GOOGLE_CLIENT_ID,
+      clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET,
+    });
+  });
+
+  it('requires both values for a custom Google OAuth client', () => {
+    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
+    process.env.GOOGLE_CLIENT_ID = 'custom-client-id';
+    delete process.env.GOOGLE_CLIENT_SECRET;
+
+    expect(() => loadConfig()).toThrow(/GOOGLE_CLIENT_ID requires GOOGLE_CLIENT_SECRET/);
+
+    process.env.GOOGLE_CLIENT_SECRET = 'custom-client-secret';
+    expect(loadConfig().google).toEqual({
+      clientId: 'custom-client-id',
+      clientSecret: 'custom-client-secret',
+    });
+  });
+
+  it('rejects a Google OAuth client secret without a client ID', () => {
+    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
+
+    delete process.env.GOOGLE_CLIENT_ID;
+    process.env.GOOGLE_CLIENT_SECRET = 'custom-client-secret';
+    expect(() => loadConfig()).toThrow(/GOOGLE_CLIENT_SECRET requires GOOGLE_CLIENT_ID/);
+  });
+
   it('set, read, unset round-trip', () => {
     const dir = tempDataDir();
     setStoredConfig(dir, 'GOOGLE_CLIENT_ID', 'abc.apps.googleusercontent.com');

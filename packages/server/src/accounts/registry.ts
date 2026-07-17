@@ -19,6 +19,13 @@ export interface AccountAccessInput {
   sharedMemberIds?: readonly string[];
 }
 
+interface StoredGmailCredentials extends Credentials {
+  fluxmailOAuthClient?: {
+    clientId: string;
+    clientSecret: string;
+  };
+}
+
 export class AccountRegistry {
   private readonly providers = new Map<string, { provider: EmailProvider; encryptedCredentials: string }>();
 
@@ -145,10 +152,16 @@ export class AccountRegistry {
     const cached = this.providers.get(accountId);
     if (cached?.encryptedCredentials === credentialRow.encryptedCredentials) return cached.provider;
 
-    const stored = JSON.parse(decryptString(this.config.encryptionKey, credentialRow.encryptedCredentials)) as unknown;
+    let encryptedCredentials = credentialRow.encryptedCredentials;
+    let stored = JSON.parse(decryptString(this.config.encryptionKey, encryptedCredentials)) as unknown;
+    if (account.provider === 'gmail') {
+      const migrated = this.ensureGmailOAuthClient(accountId, stored as StoredGmailCredentials);
+      stored = migrated.credentials;
+      encryptedCredentials = migrated.encryptedCredentials;
+    }
     const provider =
       account.provider === 'gmail'
-        ? this.buildGmailProvider(accountId, account.email, stored as Credentials, account.displayName)
+        ? this.buildGmailProvider(accountId, account.email, stored as StoredGmailCredentials, account.displayName)
         : account.provider === 'outlook'
           ? this.buildOutlookProvider(accountId, stored as MicrosoftCredentials)
           : account.provider === 'imap'
@@ -162,7 +175,7 @@ export class AccountRegistry {
             : undefined;
     if (!provider)
       throw new EmailError('unsupported_capability', `Provider "${account.provider}" is not supported yet`);
-    this.providers.set(accountId, { provider, encryptedCredentials: credentialRow.encryptedCredentials });
+    this.providers.set(accountId, { provider, encryptedCredentials });
     return provider;
   }
 
@@ -193,6 +206,25 @@ export class AccountRegistry {
     return this.writeTokens(this.db, accountId, tokens);
   }
 
+  private gmailCredentials(tokens: Credentials): StoredGmailCredentials {
+    const { clientId, clientSecret } = requireGoogleConfig(this.config);
+    return { ...tokens, fluxmailOAuthClient: { clientId, clientSecret } };
+  }
+
+  private ensureGmailOAuthClient(
+    accountId: string,
+    stored: StoredGmailCredentials,
+  ): { credentials: StoredGmailCredentials; encryptedCredentials: string } {
+    if (stored.fluxmailOAuthClient?.clientId && stored.fluxmailOAuthClient.clientSecret) {
+      return {
+        credentials: stored,
+        encryptedCredentials: this.loadCredentialRow(accountId).encryptedCredentials,
+      };
+    }
+    const credentials = this.gmailCredentials(stored);
+    return { credentials, encryptedCredentials: this.writeTokens(this.db, accountId, credentials) };
+  }
+
   private writeTokens(db: Pick<FluxmailDb, 'insert'>, accountId: string, tokens: unknown): string {
     const encrypted = this.writeCredentials(db, accountId, tokens);
     const updatedAt = Date.now();
@@ -209,12 +241,14 @@ export class AccountRegistry {
   private buildGmailProvider(
     accountId: string,
     email: string,
-    stored: Credentials,
+    stored: StoredGmailCredentials,
     displayName?: string,
   ): EmailProvider {
-    const { clientId, clientSecret } = requireGoogleConfig(this.config);
+    const { clientId, clientSecret } = stored.fluxmailOAuthClient ?? requireGoogleConfig(this.config);
     const auth = new OAuth2Client({ clientId, clientSecret });
-    auth.setCredentials(stored);
+    const tokens = { ...stored };
+    delete tokens.fluxmailOAuthClient;
+    auth.setCredentials(tokens);
     const provider = new GmailProvider({
       accountId,
       email,
@@ -224,7 +258,10 @@ export class AccountRegistry {
     // google-auth-library refreshes access tokens transparently; persist them so
     // restarts don't need a refresh round-trip (and rotated refresh tokens survive).
     auth.on('tokens', (fresh) => {
-      const encryptedCredentials = this.saveTokens(accountId, { ...this.loadTokens(accountId), ...fresh });
+      const encryptedCredentials = this.saveTokens(accountId, {
+        ...(this.loadTokens(accountId) as StoredGmailCredentials),
+        ...fresh,
+      });
       const cached = this.providers.get(accountId);
       if (cached?.provider === provider) cached.encryptedCredentials = encryptedCredentials;
     });
@@ -280,7 +317,7 @@ export class AccountRegistry {
       // Re-authenticating an existing account: refresh tokens, clear error
       // state. Ownership is untouched; reassign with assignAccountMember.
       this.db.transaction((tx) => {
-        this.writeTokens(tx, duplicate.id, tokens);
+        this.writeTokens(tx, duplicate.id, this.gmailCredentials(tokens));
         tx.update(accounts)
           .set({ status: 'active', ...(displayName ? { displayName } : {}) })
           .where(eq(accounts.id, duplicate.id))
@@ -309,7 +346,7 @@ export class AccountRegistry {
           sharingMode: this.normalizeAccess(memberId, access).sharingMode,
         })
         .run();
-      this.writeTokens(tx, id, tokens);
+      this.writeTokens(tx, id, this.gmailCredentials(tokens));
       this.writeAccess(tx, id, memberId, access);
     });
     return this.getAccount(id);

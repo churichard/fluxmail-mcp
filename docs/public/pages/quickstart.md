@@ -6,7 +6,7 @@ updated: '2026-07-17'
 
 Fluxmail is self-hosted email infrastructure for agents and apps. It connects to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes and runs on a machine you control.
 
-This guide covers installation and mailbox setup, then shows how to connect an MCP client, call the REST API, or manage the service through the CLI. Gmail uses a Google OAuth app that you own. Microsoft mail uses your Microsoft Entra app registration, and generic IMAP accounts use credentials from your email provider.
+This guide covers installation and mailbox setup, then shows how to connect an MCP client, call the REST API, or manage the service through the CLI. Fluxmail includes a Google Desktop OAuth client for local Gmail connections. Microsoft mail uses your Microsoft Entra app registration, and generic IMAP accounts use credentials from your email provider.
 
 ## Choose how to run Fluxmail
 
@@ -57,15 +57,13 @@ Choose one provider:
 
 #### Option A: Gmail or Google Workspace
 
-Gmail requires a Google Cloud OAuth app that you own. Before continuing, complete the **Create a Google Cloud project** and **Create OAuth credentials** sections of [Connect Gmail / Google Workspace](/docs/connect-gmail-to-mcp).
-
-Store the Google credentials once, then start the browser consent flow:
+Start the browser consent flow:
 
 ```bash
-fluxmail config set GOOGLE_CLIENT_ID <your-client-id>.apps.googleusercontent.com
-fluxmail config set GOOGLE_CLIENT_SECRET <your-client-secret>
 fluxmail accounts add gmail --owner you@example.com
 ```
+
+Fluxmail uses its built-in Google Desktop client with PKCE unless you [configure your own app](/docs/connect-gmail-to-mcp#use-your-own-google-oauth-app).
 
 #### Option B: Microsoft 365 or Outlook.com
 
@@ -276,7 +274,7 @@ Choose one provider:
 
 #### Option A: Gmail or Google Workspace
 
-Gmail requires a Google Cloud OAuth app that you own. Complete the **Create a Google Cloud project** and **Create OAuth credentials** sections of [Connect Gmail / Google Workspace](/docs/connect-gmail-to-mcp), then add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to `.env`.
+Fluxmail uses its built-in Google Desktop client for a local Docker setup. If you set `FLUXMAIL_PUBLIC_URL` for a remote server, [configure a Google Web client](/docs/connect-gmail-to-mcp#use-your-own-google-oauth-app) with that server's callback URL.
 
 ```bash
 docker compose up -d
@@ -286,7 +284,7 @@ docker compose exec fluxmail \
   fluxmail accounts add gmail --owner you@example.com
 ```
 
-On local Docker, the command prints a Google consent URL and waits for the callback on `localhost:8976`. On a remote deployment with `FLUXMAIL_PUBLIC_URL` set, it prints a one-time connection link instead. Open the link in your browser, choose the Google account, and approve access. Hosted links expire after 10 minutes and do not require an API key.
+On local Docker, the command prints a Google consent URL and waits for the callback on `127.0.0.1:8976`. On a remote deployment with `FLUXMAIL_PUBLIC_URL` set, it prints a one-time connection link instead. Open the link in your browser, choose the Google account, and approve access. Hosted links expire after 10 minutes and do not require an API key.
 
 #### Option B: Microsoft 365 or Outlook.com
 

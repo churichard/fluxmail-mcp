@@ -30,7 +30,7 @@ import {
   parseGmailMessageWithParts,
 } from './parse.js';
 import { buildRawMessage, type ThreadingHeaders } from './mime.js';
-import { isRetryableForNonIdempotentRequest, withRetry } from './errors.js';
+import { isInsufficientScope, isRetryableForNonIdempotentRequest, withRetry } from './errors.js';
 
 const LABEL_TO_ROLE: Record<string, FolderRole> = {
   INBOX: 'inbox',
@@ -495,11 +495,25 @@ export class GmailProvider implements EmailProvider {
   async modify(ids: string[], action: ModifyAction): Promise<void> {
     if (!ids.length) return;
 
-    if (action === 'trash' || action === 'untrash' || action === 'delete') {
+    if (action === 'delete') {
+      for (const id of ids) {
+        try {
+          await withRetry(() => this.gmail.users.messages.delete({ userId: 'me', id }));
+        } catch (err) {
+          if (!isInsufficientScope(err)) throw err;
+          throw new EmailError(
+            'unsupported_capability',
+            "This Gmail account's OAuth permission does not allow permanent deletion. Use the trash action instead.",
+          );
+        }
+      }
+      return;
+    }
+
+    if (action === 'trash' || action === 'untrash') {
       for (const id of ids) {
         if (action === 'trash') await withRetry(() => this.gmail.users.messages.trash({ userId: 'me', id }));
-        else if (action === 'untrash') await withRetry(() => this.gmail.users.messages.untrash({ userId: 'me', id }));
-        else await withRetry(() => this.gmail.users.messages.delete({ userId: 'me', id }));
+        else await withRetry(() => this.gmail.users.messages.untrash({ userId: 'me', id }));
       }
       return;
     }

@@ -71,6 +71,35 @@ describe('CLI telemetry', () => {
     }
   });
 
+  it('records a safe error code when account setup rejects a provider', async () => {
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { capture, telemetry } = telemetrySpy();
+
+    try {
+      await createCliProgram({ telemetry }).parseAsync([
+        'node',
+        'fluxmail',
+        'accounts',
+        'add',
+        'private-provider-value',
+      ]);
+
+      expect(capture).toHaveBeenCalledWith('operation completed', {
+        product_surface: 'cli',
+        operation: 'accounts add',
+        outcome: 'error',
+        error_code: 'invalid_request',
+        duration_ms: expect.any(Number),
+      });
+      expect(JSON.stringify(capture.mock.calls)).not.toContain('private-provider-value');
+      expect(error).toHaveBeenCalled();
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
+
   it('does not record the telemetry disable command', async () => {
     vi.stubEnv('FLUXMAIL_DATA_DIR', mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-telemetry-')));
     vi.spyOn(console, 'log').mockImplementation(() => {});
