@@ -16,11 +16,47 @@ const POSTHOG_SHUTDOWN_TIMEOUT_MS = 1_000;
 
 export type TelemetryProperties = Record<string, boolean | number | string | undefined>;
 
+export const OPERATION_TELEMETRY_EVENT = 'operation completed';
+
+export type ProductSurface = 'cli' | 'mcp' | 'rest';
+export type OperationOutcome = 'success' | 'error';
+
+export interface OperationTelemetry {
+  productSurface: ProductSurface;
+  operation: string;
+  outcome: OperationOutcome;
+  durationMs: number;
+  errorCode?: string;
+  transport?: string;
+  properties?: TelemetryProperties;
+}
+
 export interface Telemetry {
   capture(event: string, properties?: TelemetryProperties): void;
   /** Keep shutdown open until an in-flight operation records its final event. */
   beginActivity?(): () => void;
   shutdown(): Promise<void>;
+}
+
+/** Capture one user-visible operation without accepting request or response payloads. */
+export function captureOperation(telemetry: Telemetry | undefined, operation: OperationTelemetry): void {
+  const properties = { ...operation.properties };
+  for (const key of ['product_surface', 'operation', 'outcome', 'duration_ms', 'error_code', 'transport']) {
+    delete properties[key];
+  }
+  try {
+    telemetry?.capture(OPERATION_TELEMETRY_EVENT, {
+      ...properties,
+      product_surface: operation.productSurface,
+      operation: operation.operation,
+      outcome: operation.outcome,
+      duration_ms: Math.max(0, Math.round(operation.durationMs)),
+      ...(operation.errorCode ? { error_code: operation.errorCode } : {}),
+      ...(operation.transport ? { transport: operation.transport } : {}),
+    });
+  } catch {
+    // An injected telemetry client must not affect the operation.
+  }
 }
 
 interface PostHogClient {

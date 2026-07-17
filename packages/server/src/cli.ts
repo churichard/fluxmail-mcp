@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 import { serve } from '@hono/node-server';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { EmailError, type AccountSharingMode } from '@fluxmail/core';
+import { EmailError, isEmailError, type AccountSharingMode } from '@fluxmail/core';
 import { createContext } from './context.js';
 import {
   configFilePath,
@@ -60,11 +60,13 @@ import {
   type PermissionPolicy,
 } from './permissions.js';
 import {
+  captureOperation,
   getTelemetry,
   installTelemetryStreamEndHandler,
   isTelemetryEnabled,
   setTelemetryEnabled,
   shutdownTelemetry,
+  type Telemetry,
 } from './telemetry.js';
 
 interface AddAccountOptions {
@@ -226,8 +228,49 @@ function warnLicense(db: FluxmailDb, log: (line: string) => void = console.error
   if (warning) log(`Warning: ${warning}`);
 }
 
+export interface CliProgramOptions {
+  telemetry?: Telemetry;
+}
+
+interface ActiveCliOperation {
+  telemetry: Telemetry;
+  operation: string;
+  startedAt: number;
+  initialExitCode: number | string | null | undefined;
+}
+
+const activeCliOperations = new WeakMap<Command, ActiveCliOperation>();
+
+function finishCliOperation(program: Command, outcome: 'success' | 'error', errorCode?: string): void {
+  const active = activeCliOperations.get(program);
+  if (!active) return;
+  activeCliOperations.delete(program);
+  captureOperation(active.telemetry, {
+    productSurface: 'cli',
+    operation: active.operation,
+    outcome,
+    durationMs: performance.now() - active.startedAt,
+    errorCode,
+  });
+}
+
+export function waitForServerListening(server: ReturnType<typeof serve>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error): void => {
+      server.off('listening', onListening);
+      reject(error);
+    };
+    const onListening = (): void => {
+      server.off('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+  });
+}
+
 /** Build the command tree without parsing arguments or running command actions. */
-export function createCliProgram(): Command {
+export function createCliProgram(options: CliProgramOptions = {}): Command {
   const program = new Command();
   program
     .name('fluxmail')
@@ -278,26 +321,36 @@ export function createCliProgram(): Command {
     const command = commandPath(actionCommand);
     // Respect the opt-out before creating a telemetry client or recording this command.
     if (command === 'telemetry disable') return;
-    const dataDir = resolveDataDir();
-    getTelemetry(dataDir).capture('cli command used', {
-      product_surface: 'cli',
-      command,
+    activeCliOperations.set(program, {
+      telemetry: options.telemetry ?? getTelemetry(resolveDataDir()),
+      operation: command,
+      startedAt: performance.now(),
+      initialExitCode: process.exitCode,
     });
   });
 
   program.hook('postAction', async (_command, actionCommand) => {
-    if (actionCommand.name() !== 'serve' && actionCommand.name() !== 'stdio') await shutdownTelemetry();
+    const active = activeCliOperations.get(program);
+    const failed =
+      active !== undefined &&
+      process.exitCode !== active.initialExitCode &&
+      process.exitCode !== undefined &&
+      process.exitCode !== 0;
+    finishCliOperation(program, failed ? 'error' : 'success', failed ? 'command_failed' : undefined);
+    if (!options.telemetry && actionCommand.name() !== 'serve' && actionCommand.name() !== 'stdio') {
+      await shutdownTelemetry();
+    }
   });
 
   program
     .command('serve')
     .description('Run the HTTP server (MCP at /mcp and REST at /api/v1)')
-    .action(() => {
+    .action(async () => {
       installTelemetrySignalHandlers();
       const ctx = createContext();
       const app = createApp(ctx);
       ctx.scheduler.start();
-      serve({ fetch: app.fetch, port: ctx.config.port }, () => {
+      const server = serve({ fetch: app.fetch, port: ctx.config.port }, () => {
         ctx.telemetry.capture('mcp server started', { product_surface: 'mcp', transport: 'http' });
         console.log(`Fluxmail listening on ${ctx.config.publicUrl}`);
         console.log(`  MCP endpoint:   ${ctx.config.publicUrl}/mcp`);
@@ -319,6 +372,7 @@ export function createCliProgram(): Command {
         warnLicense(ctx.db, console.log);
         ctx.licenseController.start(console.log);
       });
+      await waitForServerListening(server);
     });
 
   program
@@ -1168,9 +1222,11 @@ export function createCliProgram(): Command {
 }
 
 export async function runCli(argv: readonly string[] = process.argv): Promise<void> {
+  const program = createCliProgram();
   try {
-    await createCliProgram().parseAsync([...argv]);
+    await program.parseAsync([...argv]);
   } catch (err) {
+    finishCliOperation(program, 'error', isEmailError(err) ? err.code : 'internal');
     console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
     await shutdownTelemetry();

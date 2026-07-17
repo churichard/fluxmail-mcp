@@ -68,10 +68,15 @@ export {
   type LicenseControllerOptions,
 } from './licensing/refresher.js';
 export {
+  captureOperation,
   createTelemetry,
   isTelemetryEnabled,
+  OPERATION_TELEMETRY_EVENT,
   setTelemetryEnabled,
   telemetryDisabled,
+  type OperationOutcome,
+  type OperationTelemetry,
+  type ProductSurface,
   type Telemetry,
   type TelemetryProperties,
 } from './telemetry.js';

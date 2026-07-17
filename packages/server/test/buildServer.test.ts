@@ -404,9 +404,9 @@ describe('tool telemetry', () => {
       },
     });
 
-    expect(capture).toHaveBeenCalledWith('mcp tool called', {
+    expect(capture).toHaveBeenCalledWith('operation completed', {
       product_surface: 'mcp',
-      tool: 'send_email',
+      operation: 'send_email',
       transport: 'http',
       outcome: 'success',
       duration_ms: expect.any(Number),
@@ -434,10 +434,10 @@ describe('tool telemetry', () => {
     await client.callTool({ name: 'list_accounts', arguments: {} });
 
     expect(capture).toHaveBeenCalledWith(
-      'mcp tool called',
+      'operation completed',
       expect.objectContaining({
         product_surface: 'mcp',
-        tool: 'list_accounts',
+        operation: 'list_accounts',
         transport: 'stdio',
         outcome: 'error',
         error_code: 'provider_unavailable',

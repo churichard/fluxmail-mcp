@@ -13,8 +13,9 @@ import { adminAuditEvents, openDb } from '../src/storage/db.js';
 import { addMember, setMemberRole } from '../src/storage/members.js';
 import { ADMIN_AUDIT_RETENTION, recordAdminAuditEvent } from '../src/storage/adminAudit.js';
 import { administrationUsesHttps } from '../src/http/admin.js';
+import type { Telemetry } from '../src/telemetry.js';
 
-function fixture(authMode: FluxmailConfig['authMode'] = 'apikey') {
+function fixture(authMode: FluxmailConfig['authMode'] = 'apikey', telemetry?: Telemetry) {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-admin-rest-'));
   const config: FluxmailConfig = {
     dataDir,
@@ -40,7 +41,7 @@ function fixture(authMode: FluxmailConfig['authMode'] = 'apikey') {
     permissionPolicyForProfile('full', ['admin.accounts', 'admin.api_keys', 'admin.license']),
   );
   const registry = new AccountRegistry(db, config);
-  const app = createApp({ config, db, registry, service: new EmailService(registry, db) });
+  const app = createApp({ config, db, registry, service: new EmailService(registry, db), telemetry });
   const auth = { authorization: `Bearer ${root.key}` };
   return { app, auth, config, db, member, registry, root };
 }
@@ -65,6 +66,100 @@ describe('administrative REST API', () => {
     expect(administrationUsesHttps(request, { remoteAddress: '203.0.113.10' })).toBe(false);
     expect(administrationUsesHttps(request, { remoteAddress: '203.0.113.10', encrypted: true })).toBe(true);
     expect(administrationUsesHttps(new Request('https://mail.example.com/api/v1/admin/api-keys'))).toBe(true);
+  });
+
+  it('records successful and failed admin operations without request data', async () => {
+    const capture = vi.fn();
+    const telemetry = { capture, shutdown: vi.fn().mockResolvedValue(undefined) };
+    const { app, auth } = fixture('apikey', telemetry);
+
+    expect((await app.request('/api/v1/admin/api-keys', { headers: auth })).status).toBe(200);
+    const privateKeyId = 'private@example.com';
+    expect(
+      (
+        await app.request(`/api/v1/admin/api-keys/${privateKeyId}`, {
+          method: 'DELETE',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'listAdministrativeApiKeys',
+        outcome: 'success',
+      }),
+    );
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'revokeAdministrativeApiKey',
+        outcome: 'error',
+        error_code: 'not_found',
+      }),
+    );
+    expect(JSON.stringify(capture.mock.calls)).not.toContain(privateKeyId);
+  });
+
+  it('does not attribute unmatched admin paths to an OpenAPI operation', async () => {
+    const capture = vi.fn();
+    const telemetry = { capture, shutdown: vi.fn().mockResolvedValue(undefined) };
+    const { app, auth } = fixture('apikey', telemetry);
+
+    expect((await app.request('/api/v1/admin/api-keys/', { headers: auth })).status).toBe(404);
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('records admin failures that occur before route handlers run', async () => {
+    const capture = vi.fn();
+    const telemetry = { capture, shutdown: vi.fn().mockResolvedValue(undefined) };
+    const { app, auth } = fixture('apikey', telemetry);
+
+    expect((await app.request('/api/v1/admin/api-keys')).status).toBe(401);
+    expect(
+      (
+        await app.request('/api/v1/admin/api-keys', {
+          method: 'POST',
+          headers: auth,
+        })
+      ).status,
+    ).toBe(415);
+    const privateName = 'private api key name';
+    expect((await app.request('/api/v1/admin/api-keys', jsonRequest('POST', { name: privateName }, auth))).status).toBe(
+      400,
+    );
+
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'listAdministrativeApiKeys',
+        outcome: 'error',
+        error_code: 'unauthorized',
+      }),
+    );
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'createAdministrativeApiKey',
+        outcome: 'error',
+        error_code: 'unsupported_media_type',
+      }),
+    );
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'createAdministrativeApiKey',
+        outcome: 'error',
+        error_code: 'invalid_request',
+      }),
+    );
+    expect(JSON.stringify(capture.mock.calls)).not.toContain(privateName);
   });
 
   it('registers admin routes in OpenAPI and requires a real key even when mail auth is disabled', async () => {

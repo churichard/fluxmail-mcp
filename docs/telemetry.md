@@ -6,12 +6,12 @@ Fluxmail uses PostHog to count active installations and understand which CLI, MC
 
 Every event contains a random installation ID, the Fluxmail version, the Node.js version, operating system, and architecture. The ID lives at `<data dir>/telemetry.id`. It is separate from the licensing instance ID and is not derived from an email address, license key, hostname, IP address, or machine identifier.
 
-| Event                | `product_surface` | Other properties                                                           |
-| -------------------- | ----------------- | -------------------------------------------------------------------------- |
-| `cli command used`   | `cli`             | Command name, such as `accounts add` or `status`                           |
-| `mcp server started` | `mcp`             | Transport: `stdio` or `http`                                               |
-| `mcp tool called`    | `mcp`             | Tool, transport, outcome, error code, duration, and selected feature modes |
-| `rest api called`    | `rest`            | Operation, outcome, error code, duration, and idempotency status           |
+| Event                 | `product_surface`    | Other properties                                                                    |
+| --------------------- | -------------------- | ----------------------------------------------------------------------------------- |
+| `operation completed` | `cli`, `mcp`, `rest` | Operation, outcome, duration, and safe properties such as transport or feature mode |
+| `mcp server started`  | `mcp`                | Transport: `stdio` or `http`                                                        |
+
+The `operation` property contains the CLI command path, MCP tool name, or REST OpenAPI operation ID. This keeps the event schema consistent while preserving the name used by each interface.
 
 Use the same `product_surface` property in the other Fluxmail products. Set it to `landing_page` on the marketing site and `mail_app` in Fluxmail Mail. PostHog can then filter or compare all four products in one project.
 
@@ -52,11 +52,11 @@ You can also set `FLUXMAIL_TELEMETRY=0` or `DO_NOT_TRACK=1` in the process envir
 
 Use unique installation IDs rather than total event counts when measuring adoption.
 
-- Active installations: unique users for `mcp tool called`, `rest api called`, or `cli command used`
-- Product usage: relevant events, broken down by `product_surface`
-- MCP feature adoption: `mcp tool called`, broken down by `tool`
-- REST feature adoption: `rest api called`, broken down by `operation`
-- CLI feature adoption: `cli command used`, broken down by `command`
+- Active installations: unique users for `operation completed`
+- Product usage: `operation completed`, broken down by `product_surface`
+- MCP feature adoption: `operation completed` filtered to `product_surface = mcp`, broken down by `operation`
+- REST feature adoption: `operation completed` filtered to `product_surface = rest`, broken down by `operation`
+- CLI feature adoption: `operation completed` filtered to `product_surface = cli`, broken down by `operation`
 - Transport adoption: `mcp server started`, broken down by `transport`
-- Reliability: MCP and REST calls, broken down by `outcome` and then `error_code`
-- Scheduled sending: `mcp tool called` filtered to `tool = send_email`, broken down by `scheduled`
+- Reliability: `operation completed`, broken down by `product_surface`, `outcome`, and `error_code`
+- Scheduled sending: `operation completed` filtered to `operation = send_email` or `sendMessage`, broken down by `scheduled`

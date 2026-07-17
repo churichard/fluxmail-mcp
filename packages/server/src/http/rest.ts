@@ -12,9 +12,9 @@ import type { FluxmailDb } from '../storage/db.js';
 import { authenticateApiKey, type ApiKeyAuth } from '../storage/apiKeys.js';
 import { completeIdempotencyKey, reserveIdempotencyKey } from '../storage/restIdempotency.js';
 import { FULL_PERMISSION_POLICY, hasCapability, type McpCapability } from '../permissions.js';
-import type { Telemetry, TelemetryProperties } from '../telemetry.js';
+import { captureOperation, type OperationOutcome, type Telemetry, type TelemetryProperties } from '../telemetry.js';
 import { VERSION } from '../version.js';
-import { administrationUsesHttps, registerAdminRoutes, requestBodyExceedsLimit } from './admin.js';
+import { administrationUsesHttps, adminOperationId, registerAdminRoutes, requestBodyExceedsLimit } from './admin.js';
 import { recordAdminAuditEvent } from '../storage/adminAudit.js';
 
 interface RestVariables {
@@ -431,14 +431,6 @@ function safeAttachmentFilename(filename: string): string {
   return safe || 'attachment';
 }
 
-function captureRestTelemetry(telemetry: Telemetry | undefined, properties: TelemetryProperties): void {
-  try {
-    telemetry?.capture('rest api called', { product_surface: 'rest', ...properties });
-  } catch {
-    // Telemetry must not affect API responses.
-  }
-}
-
 interface JsonResult {
   data: unknown;
   meta?: Record<string, unknown>;
@@ -461,7 +453,7 @@ async function runJson(
 ): Promise<never> {
   const finishActivity = deps.telemetry?.beginActivity?.();
   const startedAt = performance.now();
-  let outcome = 'error';
+  let outcome: OperationOutcome = 'error';
   let errorCode: string | undefined;
   let idempotencyStatus: string | undefined;
   let reservation: { principalId: string; idempotencyKey: string; requestHash: string } | undefined;
@@ -575,13 +567,16 @@ async function runJson(
       failure.retryAfter ? { 'retry-after': failure.retryAfter } : {},
     ) as never;
   } finally {
-    captureRestTelemetry(deps.telemetry, {
+    captureOperation(deps.telemetry, {
+      productSurface: 'rest',
       operation: options.operation,
       outcome,
-      duration_ms: Math.round(performance.now() - startedAt),
-      ...(errorCode ? { error_code: errorCode } : {}),
-      ...(idempotencyStatus ? { idempotency_status: idempotencyStatus } : {}),
-      ...options.telemetry,
+      durationMs: performance.now() - startedAt,
+      errorCode,
+      properties: {
+        ...(idempotencyStatus ? { idempotency_status: idempotencyStatus } : {}),
+        ...options.telemetry,
+      },
     });
     finishActivity?.();
   }
@@ -596,7 +591,7 @@ async function runAttachment(
 ): Promise<never> {
   const finishActivity = deps.telemetry?.beginActivity?.();
   const startedAt = performance.now();
-  let outcome = 'error';
+  let outcome: OperationOutcome = 'error';
   let errorCode: string | undefined;
   try {
     const auth = c.get('restAuth');
@@ -638,11 +633,12 @@ async function runAttachment(
     errorCode = failure.payload.error.code;
     return jsonResponse(failure.payload, failure.status) as never;
   } finally {
-    captureRestTelemetry(deps.telemetry, {
+    captureOperation(deps.telemetry, {
+      productSurface: 'rest',
       operation: 'downloadAttachment',
       outcome,
-      duration_ms: Math.round(performance.now() - startedAt),
-      ...(errorCode ? { error_code: errorCode } : {}),
+      durationMs: performance.now() - startedAt,
+      errorCode,
     });
     finishActivity?.();
   }
@@ -732,12 +728,10 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
   });
 
   app.use('/api/v1/admin/*', async (c, next) => {
+    const telemetryOperation = adminOperationId(c.req.method, c.req.path);
+    const finishActivity = telemetryOperation ? deps.telemetry?.beginActivity?.() : undefined;
+    const startedAt = performance.now();
     await next();
-    if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(c.req.method)) return;
-    const auth = c.get('restAuth');
-    if (!auth) return;
-    const resource = c.req.path.match(/\/(api-keys|accounts)\/((?:key|acct)_[^/]+)/);
-    const operation = `${c.req.method.toLowerCase()} ${adminAuditPath(c.req.path)}`;
     let errorCode: string | undefined;
     if (c.res.status >= 400) {
       try {
@@ -747,6 +741,21 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
         errorCode = 'internal';
       }
     }
+    if (telemetryOperation) {
+      captureOperation(deps.telemetry, {
+        productSurface: 'rest',
+        operation: telemetryOperation,
+        outcome: c.res.status < 400 ? 'success' : 'error',
+        durationMs: performance.now() - startedAt,
+        errorCode,
+      });
+      finishActivity?.();
+    }
+    if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(c.req.method)) return;
+    const auth = c.get('restAuth');
+    if (!auth) return;
+    const resource = c.req.path.match(/\/(api-keys|accounts)\/((?:key|acct)_[^/]+)/);
+    const operation = `${c.req.method.toLowerCase()} ${adminAuditPath(c.req.path)}`;
     try {
       recordAdminAuditEvent(deps.db, {
         operation,
@@ -846,9 +855,20 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
       },
     },
   });
-  app.openapi(discoveryRoute, (c) =>
-    c.json({ data: { name: 'fluxmail' as const, version: VERSION, openapi: '/api/v1/openapi.json' } }),
-  );
+  app.openapi(discoveryRoute, (c) => {
+    const startedAt = performance.now();
+    const response = c.json(
+      { data: { name: 'fluxmail' as const, version: VERSION, openapi: '/api/v1/openapi.json' } },
+      200,
+    );
+    captureOperation(deps.telemetry, {
+      productSurface: 'rest',
+      operation: 'getApiInfo',
+      outcome: 'success',
+      durationMs: performance.now() - startedAt,
+    });
+    return response;
+  });
 
   const statusRoute = createRoute({
     method: 'get',
