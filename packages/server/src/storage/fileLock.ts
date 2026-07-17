@@ -2,6 +2,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, statSy
 import { hostname } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 
 export interface FileLockOptions {
   timeoutMs: number;
@@ -17,6 +18,66 @@ interface LockOwner {
 }
 
 const WAIT_ARRAY = new Int32Array(new SharedArrayBuffer(4));
+const HEARTBEAT_START_TIMEOUT_MS = 5_000;
+const HEARTBEAT_STOP_TIMEOUT_MS = 5_000;
+const HEARTBEAT_RUNNING = 1;
+const HEARTBEAT_STOP_REQUESTED = 2;
+const HEARTBEAT_STOPPED = 3;
+const HEARTBEAT_WORKER_SOURCE = `
+  const { readFileSync, utimesSync } = require('node:fs');
+  const { workerData } = require('node:worker_threads');
+  const state = new Int32Array(workerData.state);
+  Atomics.store(state, 0, ${HEARTBEAT_RUNNING});
+  Atomics.notify(state, 0);
+  while (Atomics.load(state, 0) === ${HEARTBEAT_RUNNING}) {
+    Atomics.wait(state, 0, ${HEARTBEAT_RUNNING}, workerData.intervalMs);
+    if (Atomics.load(state, 0) !== ${HEARTBEAT_RUNNING}) break;
+    try {
+      const owner = JSON.parse(readFileSync(workerData.lockPath, 'utf8'));
+      if (owner.token !== workerData.token) break;
+      const now = new Date();
+      utimesSync(workerData.lockPath, now, now);
+    } catch {
+      break;
+    }
+  }
+  Atomics.store(state, 0, ${HEARTBEAT_STOPPED});
+  Atomics.notify(state, 0);
+`;
+
+interface LockHeartbeat {
+  state: Int32Array;
+  worker: Worker;
+}
+
+function startLockHeartbeat(lockPath: string, token: string, staleMs: number): LockHeartbeat {
+  const state = new Int32Array(new SharedArrayBuffer(4));
+  const worker = new Worker(HEARTBEAT_WORKER_SOURCE, {
+    eval: true,
+    execArgv: [],
+    workerData: {
+      lockPath,
+      token,
+      state: state.buffer,
+      intervalMs: Math.max(25, Math.floor(staleMs / 3)),
+    },
+  });
+  worker.unref();
+  const started = Atomics.wait(state, 0, 0, HEARTBEAT_START_TIMEOUT_MS);
+  if (started === 'timed-out' || Atomics.load(state, 0) !== HEARTBEAT_RUNNING) {
+    void worker.terminate();
+    throw new Error(`Could not start the heartbeat for ${lockPath}`);
+  }
+  return { state, worker };
+}
+
+function stopLockHeartbeat(heartbeat: LockHeartbeat): void {
+  if (Atomics.compareExchange(heartbeat.state, 0, HEARTBEAT_RUNNING, HEARTBEAT_STOP_REQUESTED) === HEARTBEAT_RUNNING) {
+    Atomics.notify(heartbeat.state, 0);
+    Atomics.wait(heartbeat.state, 0, HEARTBEAT_STOP_REQUESTED, HEARTBEAT_STOP_TIMEOUT_MS);
+  }
+  void heartbeat.worker.terminate();
+}
 
 function readOwner(lockPath: string): LockOwner | undefined {
   try {
@@ -129,9 +190,12 @@ export function withFileLock<T>(lockPath: string, options: FileLockOptions, call
     }
   }
 
+  let heartbeat: LockHeartbeat | undefined;
   try {
+    heartbeat = startLockHeartbeat(lockPath, owner.token, options.staleMs);
     return callback();
   } finally {
+    if (heartbeat) stopLockHeartbeat(heartbeat);
     releaseOwnedLock(lockPath, owner.token);
   }
 }

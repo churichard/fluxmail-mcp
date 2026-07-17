@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -8,6 +8,14 @@ import { withFileLock } from '../src/storage/fileLock.js';
 
 const runFile = promisify(execFile);
 const fileLockModuleUrl = new URL('../src/storage/fileLock.ts', import.meta.url).href;
+
+async function waitForFile(filePath: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (existsSync(filePath)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
+}
 
 describe('file lock', () => {
   it('does not remove a replacement lock owned by another operation', () => {
@@ -68,5 +76,68 @@ describe('file lock', () => {
     );
 
     expect(readdirSync(directory)).toEqual([]);
+  });
+
+  it('keeps a long-running lock fresh for waiters on another host', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-file-lock-'));
+    const lockPath = path.join(directory, 'operation.lock');
+    const criticalSectionPath = path.join(directory, 'critical-section');
+    const readyPath = path.join(directory, 'ready');
+    const ownerScript = `
+      import { mkdirSync, rmdirSync, writeFileSync } from 'node:fs';
+      import { withFileLock } from ${JSON.stringify(fileLockModuleUrl)};
+      const waitArray = new Int32Array(new SharedArrayBuffer(4));
+      withFileLock(
+        process.argv[1],
+        { timeoutMs: 2_000, staleMs: 100, description: 'the test operation' },
+        () => {
+          mkdirSync(process.argv[2]);
+          writeFileSync(process.argv[3], 'ready');
+          Atomics.wait(waitArray, 0, 0, 500);
+          rmdirSync(process.argv[2]);
+        },
+      );
+    `;
+    const contenderScript = `
+      import { mkdirSync, rmdirSync } from 'node:fs';
+      import { withFileLock } from ${JSON.stringify(fileLockModuleUrl)};
+      withFileLock(
+        process.argv[1],
+        { timeoutMs: 2_000, staleMs: 100, description: 'the test operation' },
+        () => {
+          mkdirSync(process.argv[2]);
+          rmdirSync(process.argv[2]);
+        },
+      );
+    `;
+
+    const owner = runFile(process.execPath, [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '-e',
+      ownerScript,
+      lockPath,
+      criticalSectionPath,
+      readyPath,
+    ]);
+    await waitForFile(readyPath);
+    const lockOwner = JSON.parse(readFileSync(lockPath, 'utf8')) as Record<string, unknown>;
+    writeFileSync(lockPath, JSON.stringify({ ...lockOwner, hostname: 'another-host' }), { mode: 0o600 });
+
+    await Promise.all([
+      owner,
+      runFile(process.execPath, [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        contenderScript,
+        lockPath,
+        criticalSectionPath,
+      ]),
+    ]);
+
+    expect(readdirSync(directory)).toEqual(['ready']);
   });
 });
