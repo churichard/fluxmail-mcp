@@ -5,7 +5,13 @@ interface GoogleApiErrorLike {
   message?: string;
   response?: {
     status?: number;
-    data?: { error?: { errors?: Array<{ reason?: string }>; message?: string } };
+    data?: {
+      error?: {
+        errors?: Array<{ reason?: string }>;
+        details?: Array<{ reason?: string }>;
+        message?: string;
+      };
+    };
   };
   errors?: Array<{ reason?: string }>;
 }
@@ -17,9 +23,22 @@ function statusOf(err: GoogleApiErrorLike): number | undefined {
 }
 
 function reasonsOf(err: GoogleApiErrorLike): string[] {
-  return [...(err.errors ?? []), ...(err.response?.data?.error?.errors ?? [])]
+  return [
+    ...(err.errors ?? []),
+    ...(err.response?.data?.error?.errors ?? []),
+    ...(err.response?.data?.error?.details ?? []),
+  ]
     .map((item) => item.reason)
     .filter((reason): reason is string => !!reason);
+}
+
+export function isInsufficientScope(err: unknown): boolean {
+  const e = err as GoogleApiErrorLike & Error;
+  const message = e.message ?? e.response?.data?.error?.message ?? '';
+  return (
+    reasonsOf(e).some((reason) => /^(?:insufficientPermissions|ACCESS_TOKEN_SCOPE_INSUFFICIENT)$/i.test(reason)) ||
+    /insufficient (?:authentication )?scopes?|insufficient permissions?/i.test(message)
+  );
 }
 
 function isRateLimitReason(reason: string): boolean {

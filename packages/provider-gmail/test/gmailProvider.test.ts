@@ -192,7 +192,7 @@ describe('GmailProvider sender name', () => {
 });
 
 describe('GmailProvider modify', () => {
-  function providerWithBatchModify() {
+  function providerWithBatchModify(deleteMessage = vi.fn().mockResolvedValue({ data: {} })) {
     const provider = new GmailProvider({
       accountId: 'acct_1',
       email: 'me@example.com',
@@ -203,17 +203,17 @@ describe('GmailProvider modify', () => {
       gmail: {
         users: {
           labels: { list: () => Promise<{ data: { labels: never[] } }> };
-          messages: { batchModify: typeof batchModify };
+          messages: { batchModify: typeof batchModify; delete: typeof deleteMessage };
         };
       };
     };
     internals.gmail = {
       users: {
         labels: { list: vi.fn().mockResolvedValue({ data: { labels: [] } }) },
-        messages: { batchModify },
+        messages: { batchModify, delete: deleteMessage },
       },
     };
-    return { provider, batchModify };
+    return { provider, batchModify, deleteMessage };
   }
 
   it('moving to the inbox removes Spam without also removing Inbox', async () => {
@@ -222,6 +222,50 @@ describe('GmailProvider modify', () => {
     expect(batchModify).toHaveBeenCalledWith({
       userId: 'me',
       requestBody: { ids: ['m1'], addLabelIds: ['INBOX'], removeLabelIds: ['SPAM'] },
+    });
+  });
+
+  it('permanently deletes when the token has full Gmail access', async () => {
+    const { provider, deleteMessage } = providerWithBatchModify();
+
+    await provider.modify(['m1'], 'delete');
+
+    expect(deleteMessage).toHaveBeenCalledWith({ userId: 'me', id: 'm1' });
+  });
+
+  it('explains the Trash alternative when the token has insufficient scope', async () => {
+    const deleteMessage = vi.fn().mockRejectedValue({
+      response: {
+        status: 403,
+        data: {
+          error: {
+            message: 'Request had insufficient authentication scopes.',
+            details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }],
+          },
+        },
+      },
+    });
+    const { provider, batchModify } = providerWithBatchModify(deleteMessage);
+
+    await expect(provider.modify(['m1'], 'delete')).rejects.toMatchObject({
+      code: 'unsupported_capability',
+      message: expect.stringContaining('Use the trash action instead'),
+    });
+    expect(batchModify).not.toHaveBeenCalled();
+  });
+
+  it('preserves other Gmail permission errors during permanent deletion', async () => {
+    const deleteMessage = vi.fn().mockRejectedValue({
+      response: {
+        status: 403,
+        data: { error: { message: 'Gmail API access is disabled', errors: [{ reason: 'domainPolicy' }] } },
+      },
+    });
+    const { provider } = providerWithBatchModify(deleteMessage);
+
+    await expect(provider.modify(['m1'], 'delete')).rejects.toMatchObject({
+      code: 'provider_unavailable',
+      message: expect.not.stringContaining('Use the trash action instead'),
     });
   });
 

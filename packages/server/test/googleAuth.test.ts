@@ -3,7 +3,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { OAuth2Client } from 'google-auth-library';
 import { EmailError } from '@fluxmail/core';
 import type { FluxmailConfig } from '../src/config.js';
-import { identityFromIdToken, runLoopbackFlow } from '../src/accounts/googleAuth.js';
+import { DEFAULT_GOOGLE_CLIENT_ID, DEFAULT_GOOGLE_CLIENT_SECRET } from '../src/accounts/defaultGoogleOAuth.js';
+import {
+  CUSTOM_GMAIL_SCOPES,
+  GMAIL_SCOPES,
+  exchangeCode,
+  gmailScopes,
+  identityFromIdToken,
+  runLoopbackFlow,
+} from '../src/accounts/googleAuth.js';
 
 function oauthClient(claims: Record<string, unknown>): OAuth2Client {
   return {
@@ -13,6 +21,23 @@ function oauthClient(claims: Record<string, unknown>): OAuth2Client {
 }
 
 describe('Google OAuth identity', () => {
+  it('requests gmail.modify for the built-in app', () => {
+    const config = {
+      google: { clientId: DEFAULT_GOOGLE_CLIENT_ID, clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET },
+    } as FluxmailConfig;
+
+    expect(gmailScopes(config)).toBe(GMAIL_SCOPES);
+    expect(gmailScopes(config)).toContain('https://www.googleapis.com/auth/gmail.modify');
+    expect(gmailScopes(config)).not.toContain('https://mail.google.com/');
+  });
+
+  it('requests full Gmail access for a custom app', () => {
+    const config = { google: { clientId: 'custom-client-id', clientSecret: 'custom-client-secret' } } as FluxmailConfig;
+
+    expect(gmailScopes(config)).toBe(CUSTOM_GMAIL_SCOPES);
+    expect(gmailScopes(config)).toContain('https://mail.google.com/');
+  });
+
   it('verifies the id token against the configured client id', async () => {
     const client = oauthClient({
       email: 'me@example.com',
@@ -45,6 +70,30 @@ describe('Google OAuth identity', () => {
     await expect(identityFromIdToken(client, { id_token: 'signed-token' })).rejects.toMatchObject({
       code: 'provider_unavailable',
     });
+  });
+});
+
+describe('Google OAuth token exchange', () => {
+  it('surfaces the provider description without including other response fields', async () => {
+    const client = {
+      getToken: vi.fn().mockRejectedValue({
+        response: {
+          data: {
+            error: 'invalid_request',
+            error_description: 'client_secret is missing.',
+            private_context: 'do-not-log-this',
+          },
+        },
+      }),
+    } as unknown as OAuth2Client;
+
+    const result = exchangeCode(client, 'authorization-code', 'code-verifier');
+
+    await expect(result).rejects.toMatchObject({
+      code: 'provider_unavailable',
+      message: 'Google OAuth token exchange failed: client_secret is missing.',
+    });
+    await expect(result).rejects.not.toThrow(/do-not-log-this/);
   });
 });
 
@@ -95,6 +144,10 @@ describe('Google OAuth callback listener', () => {
     const verifyIdToken = vi.spyOn(OAuth2Client.prototype, 'verifyIdToken').mockResolvedValue({
       getPayload: () => ({ email: 'other@example.com', email_verified: true }),
     } as never);
+    const generateCodeVerifier = vi.spyOn(OAuth2Client.prototype, 'generateCodeVerifierAsync').mockResolvedValue({
+      codeVerifier: 'local-code-verifier',
+      codeChallenge: 'local-code-challenge',
+    });
     let provideAuthUrl!: (url: string) => void;
     const authUrl = new Promise<string>((resolve) => {
       provideAuthUrl = resolve;
@@ -122,6 +175,10 @@ describe('Google OAuth callback listener', () => {
       });
       const flowError = expect(flow).rejects.toThrow(/Google authorized other@example.com/);
       const state = new URL(await authUrl).searchParams.get('state');
+      const authorizationUrl = new URL(await authUrl);
+      expect(authorizationUrl.searchParams.get('redirect_uri')).toBe(`http://127.0.0.1:${address.port}/oauth/callback`);
+      expect(authorizationUrl.searchParams.get('code_challenge')).toBe('local-code-challenge');
+      expect(authorizationUrl.searchParams.get('code_challenge_method')).toBe('S256');
       const response = await fetch(
         `http://127.0.0.1:${address.port}/oauth/callback?state=${state}&code=authorization-code`,
       );
@@ -131,10 +188,15 @@ describe('Google OAuth callback listener', () => {
       expect(page).toContain('Fluxmail could not connect this account');
       expect(page).toContain('Google authorized other@example.com');
       expect(page).not.toContain('is connected to Fluxmail');
+      expect(getToken).toHaveBeenCalledWith({
+        code: 'authorization-code',
+        codeVerifier: 'local-code-verifier',
+      });
       await flowError;
     } finally {
       getToken.mockRestore();
       verifyIdToken.mockRestore();
+      generateCodeVerifier.mockRestore();
     }
   });
 });

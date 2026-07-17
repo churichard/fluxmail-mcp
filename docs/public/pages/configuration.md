@@ -1,7 +1,7 @@
 ---
 title: 'Configuration'
 description: 'Environment variables and telemetry controls for the self-hosted Fluxmail server.'
-updated: '2026-07-15'
+updated: '2026-07-17'
 ---
 
 ## Environment variables
@@ -12,13 +12,13 @@ Every setting is an environment variable, and there are three places to put one.
 2. `.env.local`, then `.env`, read from the working directory
 3. `fluxmail config set <KEY> <value>`, stored in `<data dir>/config.env` and available no matter where you run the CLI from
 
-For a personal setup, `fluxmail config set` is the simplest way to save OAuth application settings. Gmail needs `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. A local Outlook connection needs `MICROSOFT_CLIENT_ID`; hosted Outlook connections also need `MICROSOFT_CLIENT_SECRET`. IMAP accounts do not use these settings. Use `fluxmail config list` to review stored settings (secret values are masked) and `fluxmail config unset <KEY>` to remove one.
+Fluxmail includes a Google Desktop OAuth client for local Gmail connections. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to use another Google OAuth client. Hosted Gmail connections need a custom Web client. A local Outlook connection needs `MICROSOFT_CLIENT_ID`; hosted Outlook connections also need `MICROSOFT_CLIENT_SECRET`. IMAP accounts do not use these settings. Use `fluxmail config list` to review stored settings (secret values are masked) and `fluxmail config unset <KEY>` to remove one.
 
 <!-- BEGIN GENERATED:configuration -->
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `GOOGLE_CLIENT_ID` | `required for Gmail` | Google OAuth client ID. |
-| `GOOGLE_CLIENT_SECRET` | `required for Gmail` | Google OAuth client secret. |
+| `GOOGLE_CLIENT_ID` | `Fluxmail Desktop OAuth app` | Override the built-in Google OAuth client ID. |
+| `GOOGLE_CLIENT_SECRET` | `Fluxmail Desktop OAuth app` | Override the built-in Google OAuth client secret. Required with GOOGLE_CLIENT_ID. |
 | `MICROSOFT_CLIENT_ID` | `required for Outlook` | Microsoft Entra application client ID. |
 | `MICROSOFT_CLIENT_SECRET` | `required for hosted Outlook connections` | Microsoft Entra application client secret. |
 | `MICROSOFT_TENANT_ID` | `common` | Microsoft Entra tenant ID or verified domain. |

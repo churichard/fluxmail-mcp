@@ -1,25 +1,37 @@
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { OAuth2Client, type Credentials } from 'google-auth-library';
+import { CodeChallengeMethod, OAuth2Client, type Credentials } from 'google-auth-library';
 import { EmailError } from '@fluxmail/core';
 import type { FluxmailConfig } from '../config.js';
+import { DEFAULT_GOOGLE_CLIENT_ID } from './defaultGoogleOAuth.js';
 
-/**
- * Full mail scope: the unified API includes permanent delete, which Gmail only
- * allows with https://mail.google.com/ (gmail.modify cannot call messages.delete).
- * Users bring their own OAuth app, so they are consenting to their own credentials.
- */
-export const GMAIL_SCOPES = ['https://mail.google.com/', 'openid', 'email', 'profile'];
+const GOOGLE_IDENTITY_SCOPES = ['openid', 'email', 'profile'];
+
+/** The built-in app uses Fluxmail's approved Gmail permission. */
+export const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.modify', ...GOOGLE_IDENTITY_SCOPES];
+
+/** Custom OAuth apps retain full Gmail support, including permanent deletion. */
+export const CUSTOM_GMAIL_SCOPES = ['https://mail.google.com/', ...GOOGLE_IDENTITY_SCOPES];
 
 export function requireGoogleConfig(config: FluxmailConfig): { clientId: string; clientSecret: string } {
   if (!config.google) {
     throw new EmailError(
       'invalid_request',
-      'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not set. Create OAuth credentials in Google Cloud ' +
-        '(see README "Google setup") and set both environment variables.',
+      'Google OAuth is not configured. Set GOOGLE_CLIENT_ID to use a custom OAuth app.',
     );
   }
   return config.google;
+}
+
+export function requireHostedGoogleConfig(config: FluxmailConfig): { clientId: string; clientSecret: string } {
+  const google = requireGoogleConfig(config);
+  if (google.clientId === DEFAULT_GOOGLE_CLIENT_ID || !google.clientSecret) {
+    throw new EmailError(
+      'invalid_request',
+      'Hosted Gmail connections require a custom Google Web application. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.',
+    );
+  }
+  return { clientId: google.clientId, clientSecret: google.clientSecret };
 }
 
 export function createOAuthClient(config: FluxmailConfig, redirectUri: string): OAuth2Client {
@@ -27,12 +39,17 @@ export function createOAuthClient(config: FluxmailConfig, redirectUri: string): 
   return new OAuth2Client({ clientId, clientSecret, redirectUri });
 }
 
-export function buildAuthUrl(client: OAuth2Client, state: string): string {
+export function gmailScopes(config: FluxmailConfig): string[] {
+  return requireGoogleConfig(config).clientId === DEFAULT_GOOGLE_CLIENT_ID ? GMAIL_SCOPES : CUSTOM_GMAIL_SCOPES;
+}
+
+export function buildAuthUrl(client: OAuth2Client, state: string, scopes: string[], codeChallenge?: string): string {
   return client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: GMAIL_SCOPES,
+    scope: scopes,
     state,
+    ...(codeChallenge ? { code_challenge: codeChallenge, code_challenge_method: CodeChallengeMethod.S256 } : {}),
   });
 }
 
@@ -58,6 +75,22 @@ export interface OAuthResult {
   email: string;
   displayName?: string;
   tokens: Credentials;
+}
+
+function oauthErrorText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.replace(/\s+/g, ' ').trim();
+  return text ? text.slice(0, 300) : undefined;
+}
+
+function googleTokenError(err: unknown): EmailError {
+  const data = (err as { response?: { data?: unknown } } | undefined)?.response?.data;
+  const payload = data && typeof data === 'object' ? (data as Record<string, unknown>) : undefined;
+  const code = oauthErrorText(payload?.error);
+  const description = oauthErrorText(payload?.error_description);
+  const detail =
+    description ?? code ?? oauthErrorText(err instanceof Error ? err.message : undefined) ?? 'unknown error';
+  return new EmailError('provider_unavailable', `Google OAuth token exchange failed: ${detail}`);
 }
 
 function oauthListenerError(err: Error, port: number): Error {
@@ -94,8 +127,13 @@ function callbackPage(title: string, message: string): string {
   );
 }
 
-export async function exchangeCode(client: OAuth2Client, code: string): Promise<OAuthResult> {
-  const { tokens } = await client.getToken(code);
+export async function exchangeCode(client: OAuth2Client, code: string, codeVerifier?: string): Promise<OAuthResult> {
+  let tokens: Credentials;
+  try {
+    ({ tokens } = await client.getToken({ code, ...(codeVerifier ? { codeVerifier } : {}) }));
+  } catch (err) {
+    throw googleTokenError(err);
+  }
   if (!tokens.refresh_token) {
     throw new EmailError(
       'invalid_request',
@@ -115,8 +153,9 @@ export async function runLoopbackFlow<T = OAuthResult>(
   onAuthUrl: (url: string) => void,
   onAuthorized?: (result: OAuthResult) => T | Promise<T>,
 ): Promise<T> {
-  const redirectUri = `http://localhost:${config.oauthPort}/oauth/callback`;
+  const redirectUri = `http://127.0.0.1:${config.oauthPort}/oauth/callback`;
   const client = createOAuthClient(config, redirectUri);
+  const { codeVerifier, codeChallenge } = await client.generateCodeVerifierAsync();
   const state = randomBytes(16).toString('hex');
 
   return new Promise<T>((resolve, reject) => {
@@ -152,7 +191,7 @@ export async function runLoopbackFlow<T = OAuthResult>(
           res.writeHead(400).end('Missing code parameter.');
           return;
         }
-        const result = await exchangeCode(client, code);
+        const result = await exchangeCode(client, code, codeVerifier);
         const accepted = onAuthorized ? await onAuthorized(result) : (result as T);
         finish(() => resolve(accepted));
         res
@@ -171,7 +210,7 @@ export async function runLoopbackFlow<T = OAuthResult>(
     });
     server.on('error', (err) => reject(oauthListenerError(err, config.oauthPort)));
     server.listen(config.oauthPort, config.oauthHost, () => {
-      onAuthUrl(buildAuthUrl(client, state));
+      onAuthUrl(buildAuthUrl(client, state, gmailScopes(config), codeChallenge));
     });
   });
 }

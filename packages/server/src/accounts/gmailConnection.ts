@@ -6,7 +6,7 @@ import {
   createOutlookConnectionGrant,
   type GmailConnectionIntent,
 } from '../storage/gmailConnectionGrants.js';
-import { requireGoogleConfig } from './googleAuth.js';
+import { requireHostedGoogleConfig } from './googleAuth.js';
 import { requireMicrosoftConfig } from './microsoftAuth.js';
 
 export type GmailConnectionMode = 'local' | 'hosted';
@@ -45,7 +45,7 @@ export function prepareHostedGmailConnection(
   config: FluxmailConfig,
   intent: GmailConnectionIntent,
 ): { connectionUrl: string; expiresAt: number } {
-  requireGoogleConfig(config);
+  requireHostedGoogleConfig(config);
   const { token, expiresAt } = createGmailConnectionGrant(db, intent);
   return {
     connectionUrl: `${config.publicUrl}/auth/google/connect?token=${encodeURIComponent(token)}`,
