@@ -1,10 +1,11 @@
 {
-  "title": "Fluxmail MCP",
+  "title": "Fluxmail",
   "pages": [
     "---Getting started---",
     "overview",
     "quickstart",
     "authentication-and-instances",
+    "build-with-rest",
     "---Connect an account---",
     "connect-gmail-to-mcp",
     "connect-outlook-to-mcp",

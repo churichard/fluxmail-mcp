@@ -146,4 +146,4 @@ Open the printed link and choose the Google account that matches the mailbox you
 
 Reauthorization updates the stored token for the same mailbox. It does not add another account or change the mailbox owner.
 
-Return to the [Quickstart](/docs/quickstart) to connect Fluxmail to your AI agent.
+Return to the [Quickstart](/docs/quickstart) to use the mailbox through MCP, REST API, or CLI.

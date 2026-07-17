@@ -1,6 +1,6 @@
 ---
 title: 'Teams & plans'
-description: 'Add members, share mailboxes across a team, and unlock paid-plan limits with a license key on the self-hosted Fluxmail MCP server.'
+description: 'Add members, share mailboxes across a team, and unlock paid-plan limits on a self-hosted Fluxmail instance.'
 updated: '2026-07-17'
 ---
 
@@ -75,4 +75,4 @@ One license activates one instance, and enforcement keeps working offline. If yo
 
 ## Software license
 
-Fluxmail MCP is proprietary, source-available software. You can inspect, test, and privately modify the source. Production use must stay within your Fluxmail entitlement, including the built-in Personal plan. The license does not permit redistribution, hosted resale, competing use, or bypassing plan controls. Read the [full license terms](https://github.com/churichard/fluxmail/blob/main/LICENSE.md) before using or modifying the software.
+Fluxmail is proprietary, source-available software. You can inspect, test, and privately modify the source. Production use must stay within your Fluxmail entitlement, including the built-in Personal plan. The license does not permit redistribution, hosted resale, competing use, or bypassing plan controls. Read the [full license terms](https://github.com/churichard/fluxmail/blob/main/LICENSE.md) before using or modifying the software.

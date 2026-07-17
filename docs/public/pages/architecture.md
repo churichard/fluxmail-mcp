@@ -1,6 +1,6 @@
 ---
 title: 'Architecture'
-description: 'Where the self-hosted Fluxmail server keeps your data and how requests move through it.'
+description: 'Where Fluxmail keeps your data and how MCP, REST, and CLI requests reach each email provider.'
 updated: '2026-07-17'
 ---
 
@@ -10,13 +10,17 @@ Fluxmail keeps its SQLite database on the machine where it runs. Google and Micr
 
 ## How requests flow
 
-The local CLI, remote CLI, HTTP MCP endpoint, REST clients, and a future dashboard use one control plane. Local CLI requests run the same route handlers in the Fluxmail process. Remote clients call those handlers over HTTPS. Each route resolves the member session or API key, applies the centralized access policy, and then calls the account, member, license, or mail service.
+Agents connect through MCP, while apps and backend workflows use REST. Both interfaces send email requests through the same service. Fluxmail selects the mailbox, checks access and plan limits, then passes the operation to Gmail, Microsoft Graph, or an IMAP/SMTP server. Account routing, replies, forwards, and provider capabilities stay consistent across MCP and REST.
+
+The CLI is Fluxmail's control interface. It connects mailboxes, manages members and API keys, changes configuration, and starts the MCP and REST services. Local management commands call the control-plane route handlers in the Fluxmail process. Remote CLI profiles call those handlers over HTTPS. Each route resolves the member session or API key, applies the centralized access policy, and then calls the account, member, license, or mail service.
 
 ```text
 Local CLI --------------------\
 Remote CLI and REST -----------> routes -> principal -> policy -> services -> SQLite
 HTTP MCP with an API key ------/
 ```
+
+CLI management commands use the same database and provider connections as the running server. The CLI does not duplicate the MCP and REST mailbox-operation APIs.
 
 Provider differences still affect the available behavior. Outlook uses Microsoft Graph conversations and folders. IMAP has folders instead of labels, uses the mail server's basic search, and has no server-side thread model. Fluxmail reconstructs IMAP threads from standard email headers.
 

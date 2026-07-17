@@ -1,27 +1,27 @@
 ---
 title: 'Quickstart'
-description: 'Install Fluxmail, connect Gmail, Outlook, or an IMAP mailbox, and use it through MCP or REST.'
+description: 'Install Fluxmail, connect Gmail, Outlook, or IMAP, then choose MCP, REST API, or CLI.'
 updated: '2026-07-17'
 ---
 
-Fluxmail is a self-hosted email server that connects to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. It runs on your machine or a server you control. AI agents can use MCP over stdio or Streamable HTTP, while scripts and applications can use REST.
+Fluxmail is self-hosted email infrastructure for agents and apps. It connects to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes and runs on a machine you control.
 
-This guide takes you from installation to a working agent connection. Fluxmail includes a Google Desktop OAuth client for local Gmail connections. Microsoft mail uses your Microsoft Entra app registration, and generic IMAP accounts use credentials from your email provider.
+This guide covers installation and mailbox setup, then shows how to connect an MCP client, call the REST API, or manage the service through the CLI. Fluxmail includes a Google Desktop OAuth client for local Gmail connections. Microsoft mail uses your Microsoft Entra app registration, and generic IMAP accounts use credentials from your email provider.
 
 ## Choose how to run Fluxmail
 
-Both setups support Gmail, Microsoft mail, and IMAP/SMTP. The difference is how your agent reaches Fluxmail.
+Both setups support Gmail, Microsoft mail, and IMAP/SMTP. Choose based on how your clients will reach Fluxmail.
 
-| Setup                                          | Best for                                            | MCP transport   |
-| ---------------------------------------------- | --------------------------------------------------- | --------------- |
-| [Local process](#local-setup-stdio)            | One person using agents on the same computer        | stdio           |
-| [Docker server](#docker-setup-streamable-http) | Remote access, shared instances, or several clients | Streamable HTTP |
+| Setup | Best for | Interfaces |
+| --- | --- | --- |
+| [Local setup](#local-setup) | One person, local agents, scripts, and development | MCP over stdio or HTTP, REST API, and CLI |
+| [Docker server](#docker-setup) | Remote access, shared instances, or several clients | MCP over Streamable HTTP, REST API, and CLI |
 
 The HTTP server also provides the [REST API](/docs/rest-api) at `/api/v1`. You can run it on your computer without Docker by running `fluxmail serve` after connecting a mailbox and creating an API key.
 
-## Local setup: stdio
+## Local setup
 
-Use this path when Fluxmail and your AI agent run on the same computer. The agent launches Fluxmail when it needs it, so there is no separate server process to manage.
+Use this path when Fluxmail and its clients run on the same computer. An MCP client can launch Fluxmail over stdio without a separate server process. REST and HTTP MCP clients use `fluxmail serve`.
 
 ### 1. Install the CLI
 
@@ -89,7 +89,9 @@ fluxmail accounts add imap \
 
 The [IMAP setup guide](/docs/connect-an-imap-mailbox) covers app passwords, custom ports and usernames, folder mapping, and Sent-copy behavior.
 
-### 3. Connect your agent
+### 3. Choose an interface
+
+#### MCP over stdio
 
 Every stdio client launches `fluxmail stdio`. Fluxmail uses the member logged in to the selected local instance. These examples use the default `full` profile, which includes every tool. See [Limit what an MCP client can do](/docs/permissions) if you want to restrict a connection.
 
@@ -208,7 +210,7 @@ Register `fluxmail` as the command with `stdio` as its argument.
 
 </details>
 
-### 4. Test the connection
+#### Test the MCP connection
 
 Ask your agent:
 
@@ -216,9 +218,44 @@ Ask your agent:
 
 If it returns the messages, the connection is working.
 
-## Docker setup: Streamable HTTP
+#### REST API
 
-Use this path for a remote deployment, a shared instance, or any MCP client that connects by URL. The Docker image is published for amd64 and arm64 as [`ghcr.io/churichard/fluxmail`](https://github.com/churichard/fluxmail/pkgs/container/fluxmail).
+Create an API key and start the local HTTP server:
+
+```bash
+fluxmail apikey create \
+  --name local-app \
+  --member you@example.com
+
+fluxmail serve
+```
+
+Copy the `fmk_...` key when Fluxmail displays it, then test the API in another terminal:
+
+```bash
+export FLUXMAIL_API_KEY='fmk_...'
+
+curl http://localhost:8977/api/v1/accounts \
+  -H "Authorization: Bearer $FLUXMAIL_API_KEY"
+```
+
+The local REST base URL is `http://localhost:8977/api/v1`. Continue with [Build with REST](/docs/build-with-rest) for message, attachment, and sending examples.
+
+#### CLI
+
+The CLI connects mailboxes, manages access, creates API keys, and runs the service. These commands confirm that the local instance is ready:
+
+```bash
+fluxmail status
+fluxmail accounts list
+fluxmail members list
+```
+
+See the [CLI reference](/docs/cli) for every command. Email operations such as reading and sending are available through MCP and REST.
+
+## Docker setup
+
+Use this path for a remote deployment, a shared instance, or any MCP or REST client that connects by URL. The Docker image is published for amd64 and arm64 as [`ghcr.io/churichard/fluxmail`](https://github.com/churichard/fluxmail/pkgs/container/fluxmail).
 
 ### 1. Download the server config
 
@@ -291,7 +328,7 @@ The [IMAP setup guide](/docs/connect-an-imap-mailbox) covers app passwords, cust
 
 ### 3. Create an API key
 
-Create a key for the MCP client. Fluxmail displays the key once, so copy it when it appears:
+Create a key for the HTTP client. Fluxmail displays the key once, so copy it when it appears:
 
 ```bash
 docker compose exec fluxmail \
@@ -300,7 +337,9 @@ docker compose exec fluxmail \
 
 The key can reach mailboxes available to that member. Add `--account <account-id>` one or more times to narrow it further. New API keys use the `full` profile by default. See [Limit what an MCP client can do](/docs/permissions) to choose a narrower profile or change the key later.
 
-### 4. Connect your agent
+### 4. Choose an HTTP interface
+
+#### MCP over Streamable HTTP
 
 Every HTTP client connects to `http://localhost:8977/mcp`, or your deployed `/mcp` URL, and sends the API key in the `Authorization: Bearer fmk_...` header.
 
@@ -445,7 +484,7 @@ Point the client at `http://localhost:8977/mcp` and send `Authorization: Bearer 
 
 </details>
 
-### 5. Test the connection
+#### Test the MCP connection
 
 Ask your agent:
 
@@ -453,9 +492,34 @@ Ask your agent:
 
 If it returns the messages, the connection is working.
 
+#### REST API
+
+The same server exposes REST at `/api/v1`. Test it with the API key from step 3:
+
+```bash
+export FLUXMAIL_API_KEY='fmk_...'
+
+curl https://mail.example.com/api/v1/accounts \
+  -H "Authorization: Bearer $FLUXMAIL_API_KEY"
+```
+
+Replace `https://mail.example.com` with the public URL of your Fluxmail instance. Continue with [Build with REST](/docs/build-with-rest) for common app and backend requests.
+
+#### CLI
+
+Run administrative commands inside the container:
+
+```bash
+docker compose exec fluxmail fluxmail status
+docker compose exec fluxmail fluxmail accounts list
+```
+
+See the [CLI reference](/docs/cli) for the complete command list.
+
 ## Next steps
 
-- See [Tools](/docs/tools) for the full tool set your agent can call.
+- See [MCP tools](/docs/tools) for the full tool set an agent can call.
+- See [Build with REST](/docs/build-with-rest) for app and backend examples.
 - See [Limit what an MCP client can do](/docs/permissions) to restrict local connections and API keys.
 - See [Connect Gmail / Google Workspace](/docs/connect-gmail-to-mcp) for Google OAuth setup and reconnection help.
 - See [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp) for Microsoft Entra setup and reconnection help.
