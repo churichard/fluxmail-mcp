@@ -9,13 +9,15 @@ updated: '2026-07-17'
 Every Fluxmail instance has at least one **member**. A personal instance uses one member to identify its owner. Team and Enterprise instances can add more people and decide which mailboxes each person can reach.
 
 ```bash
-# The first member becomes an administrator
-fluxmail members add --name "Ada Lovelace" --email ada@example.com
+# A fresh instance starts with one logged-in administrator
+fluxmail setup --name "Ada Lovelace" --email ada@example.com
+
+# Administrators invite more people
 fluxmail members add --name "Grace Hopper" --email grace@example.com
 fluxmail members list
 
-# Connect a mailbox and set its owner in one step
-fluxmail accounts add gmail --owner ada@example.com
+# Members connect mailboxes they own
+fluxmail accounts add gmail
 
 # Reassign an existing mailbox
 fluxmail accounts assign <account-id> --owner grace@example.com
@@ -26,18 +28,19 @@ fluxmail accounts access <account-id> --shared
 fluxmail accounts access <account-id> --share-with ada@example.com
 ```
 
-`--owner-only` makes a mailbox private to its owner. `--shared` makes it available to every member. Repeat `--share-with` to give selected members access. Assigning the administrator role lets a member manage the instance, but it does not let them read another member's private mail.
+`fluxmail members add` prints an enrollment code once. Send it to the new member through a private channel. They add the instance and set their password with `fluxmail login --instance <name> --server <url> --enroll`.
 
-Every MCP connection also names the member it acts for. You can limit a connection to selected mailboxes that the member can already reach:
+`--owner-only` makes a mailbox private to its owner. `--shared` makes it available to every active member, including members added later. Repeat `--share-with` to give selected members access. The administrator role permits member, license, key, and mailbox metadata management. It does not grant access to another member's private mail.
+
+Stdio uses the member logged in to the selected local instance. You can limit a connection to selected mailboxes that member can already reach:
 
 ```bash
-# Local connection for Ada, limited to one mailbox
-fluxmail stdio --member ada@example.com --account <account-id>
+# Local connection for the logged-in member, limited to one mailbox
+fluxmail stdio --account <account-id>
 
-# HTTP connection for Ada, limited to one mailbox and read-only actions
+# HTTP connection for the logged-in member, limited to one mailbox and read-only actions
 fluxmail apikey create \
   --name "ada laptop" \
-  --member ada@example.com \
   --account <account-id> \
   --profile read-only
 ```
@@ -66,7 +69,7 @@ fluxmail license activate <key>
 fluxmail license status
 ```
 
-An administrative REST client can read the same status from `GET /api/v1/admin/license` and activate a key with `POST /api/v1/admin/license/activate`. The API key needs `admin.license`. The status response never includes the configured license key. If `FLUXMAIL_LICENSE_KEY` supplies the key, REST cannot replace it.
+An administrative REST client can read the same status from `GET /api/v1/admin/license`, activate a key with `POST /api/v1/admin/license/activate`, and deactivate it with `DELETE /api/v1/admin/license`. An API key needs `admin.license`; an administrator's member session can call the routes directly. The status response never includes the configured license key. REST cannot replace or remove a key supplied through `FLUXMAIL_LICENSE_KEY`.
 
 One license activates one instance, and enforcement keeps working offline. If you schedule a cancellation, the paid plan works until the end of the billing period. After the subscription ends or a payment fails, the instance drops back to Personal limits. Deactivating, downgrading, or lapsing never deletes accounts or data.
 

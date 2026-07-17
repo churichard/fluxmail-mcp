@@ -12,7 +12,7 @@ Send a message now or schedule it for a specified time.
 
 ## Authentication
 
-Pass a Fluxmail API key as a bearer token. The key determines the member, mailbox scope, and permissions for the request.
+Pass a Fluxmail member session or API key as a bearer token. API keys apply their mailbox scope and permissions to the request.
 
 ## Request
 
@@ -206,7 +206,7 @@ Content type: `application/json`
 
 ## Safe retries
 
-Fluxmail keeps each idempotency result for 24 hours and scopes it to the authenticated API key.
+Fluxmail keeps each idempotency result for 24 hours and scopes it to the authenticated credential.
 
 - Repeating a completed request with the same key returns the stored response and sets `Idempotency-Replayed: true`.
 - Reusing the key with different request data returns `409 idempotency_conflict`.

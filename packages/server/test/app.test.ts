@@ -24,7 +24,7 @@ vi.mock('../src/accounts/microsoftAuth.js', async (importOriginal) => ({
   exchangeMicrosoftCode: vi.fn(),
 }));
 
-function appDeps(authMode: FluxmailConfig['authMode']): AppDeps {
+function appDeps(): AppDeps {
   const config: FluxmailConfig = {
     dataDir: ':memory:',
     dbPath: ':memory:',
@@ -34,7 +34,6 @@ function appDeps(authMode: FluxmailConfig['authMode']): AppDeps {
     publicUrlConfigured: false,
     oauthPort: 8976,
     oauthHost: '127.0.0.1',
-    authMode,
     maxAttachmentBytes: 10 * 1024 * 1024,
     licenseServerUrl: 'https://license.invalid',
     google: { clientId: 'client-id', clientSecret: 'client-secret' },
@@ -61,7 +60,7 @@ function microsoftCredentials(refreshToken = 'refresh'): MicrosoftCredentials {
 
 describe('HTTP app', () => {
   it('reports the package version on the health endpoint', async () => {
-    const response = await createApp(appDeps('none')).request('/healthz');
+    const response = await createApp(appDeps()).request('/healthz');
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
@@ -72,17 +71,21 @@ describe('HTTP app', () => {
   });
 
   it('mounts the versioned REST API on the HTTP server', async () => {
-    const app = createApp(appDeps('none'));
+    const deps = appDeps();
+    const member = addMember(deps.db, { name: 'Owner' });
+    const { key } = createApiKey(deps.db, 'test', member.id);
+    const auth = { authorization: `Bearer ${key}` };
+    const app = createApp(deps);
     const discovery = await app.request('/api/v1');
     expect(discovery.status).toBe(200);
     await expect(discovery.json()).resolves.toMatchObject({
       data: { name: 'fluxmail', version: VERSION, openapi: '/api/v1/openapi.json' },
     });
-    expect((await app.request('/api/v1/status')).status).toBe(200);
+    expect((await app.request('/api/v1/status', { headers: auth })).status).toBe(200);
 
     const malformed = await app.request('/api/v1/accounts/acct_1/drafts', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...auth, 'content-type': 'application/json' },
       body: '{',
     });
     expect(malformed.status).toBe(400);
@@ -90,7 +93,7 @@ describe('HTTP app', () => {
       error: { code: 'invalid_request' },
     });
 
-    const missing = await app.request('/api/v1/missing');
+    const missing = await app.request('/api/v1/missing', { headers: auth });
     expect(missing.status).toBe(404);
     expect(missing.headers.get('content-type')).toContain('application/json');
     await expect(missing.json()).resolves.toEqual({
@@ -99,7 +102,7 @@ describe('HTTP app', () => {
   });
 
   it('rejects query-string API keys on the MCP endpoint', async () => {
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     const member = addMember(deps.db, { name: 'Alice' });
     const { key } = createApiKey(deps.db, 'test', member.id);
     const response = await createApp(deps).request(`/mcp?key=${encodeURIComponent(key)}`, {
@@ -112,10 +115,12 @@ describe('HTTP app', () => {
   });
 
   it('returns a JSON-RPC parse error for malformed request JSON', async () => {
-    const deps = appDeps('none');
+    const deps = appDeps();
+    const member = addMember(deps.db, { name: 'Owner' });
+    const { key } = createApiKey(deps.db, 'test', member.id);
     const response = await createApp(deps).request('/mcp', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
       body: '{',
     });
 
@@ -128,7 +133,7 @@ describe('HTTP app', () => {
   });
 
   it('only lets admin keys start server-hosted OAuth flows and suppresses Microsoft referrers', async () => {
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     const member = addMember(deps.db, { name: 'Alice', role: 'admin' });
     const { key: memberKey } = createApiKey(
       deps.db,
@@ -136,6 +141,16 @@ describe('HTTP app', () => {
       member.id,
       permissionPolicyForProfile('full', ['admin.accounts']),
     );
+    deps.db
+      .insert(members)
+      .values({
+        id: 'member_backup_admin',
+        name: 'Backup Admin',
+        role: 'admin',
+        status: 'active',
+        createdAt: Date.now(),
+      })
+      .run();
     setMemberRole(deps.db, member.id, 'member');
     const app = createApp(deps);
 
@@ -158,7 +173,7 @@ describe('HTTP app', () => {
   });
 
   it('requires confirmation before claiming a connection link', async () => {
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     deps.config.publicUrl = 'https://mail.example.com';
     deps.config.publicUrlConfigured = true;
     const { token } = createGmailConnectionGrant(deps.db);
@@ -194,7 +209,7 @@ describe('HTTP app', () => {
   });
 
   it('creates a one-time hosted Outlook link through the management API', async () => {
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     deps.config.publicUrl = 'https://mail.example.com';
     deps.config.publicUrlConfigured = true;
     const member = addMember(deps.db, { name: 'Alice', role: 'admin' });
@@ -209,7 +224,7 @@ describe('HTTP app', () => {
     const response = await app.request('/auth/connections', {
       method: 'POST',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: 'outlook', owner: member.id }),
+      body: JSON.stringify({ provider: 'outlook', ownerMemberId: member.id }),
     });
 
     expect(response.status).toBe(201);
@@ -232,11 +247,11 @@ describe('HTTP app', () => {
         clientAuth: 'confidential',
       },
     });
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     deps.config.publicUrl = 'https://mail.example.com';
     deps.config.publicUrlConfigured = true;
     const member = addMember(deps.db, { name: 'Owner' });
-    const { token } = createOutlookConnectionGrant(deps.db, { memberId: member.id });
+    const { token } = createOutlookConnectionGrant(deps.db, { ownerMemberId: member.id });
     const app = createApp(deps);
 
     const preview = await app.request(`/auth/microsoft/connect?token=${encodeURIComponent(token)}`);
@@ -256,7 +271,7 @@ describe('HTTP app', () => {
     expect(deps.registry.listAccounts()[0]).toMatchObject({
       provider: 'outlook',
       email: 'owner@outlook.com',
-      memberId: member.id,
+      ownerMemberId: member.id,
     });
     expect(exchangeMicrosoftCode).toHaveBeenCalledWith(
       deps.config,
@@ -268,7 +283,7 @@ describe('HTTP app', () => {
   });
 
   it('rejects invalid, expired, and reused Outlook connection links', async () => {
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     const app = createApp(deps);
 
     const invalid = await app.request('/auth/microsoft/connect?token=not-a-token');
@@ -296,7 +311,7 @@ describe('HTTP app', () => {
   });
 
   it('handles Microsoft denial, missing codes, invalid state, and restart state loss', async () => {
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     const app = createApp(deps);
 
     expect((await app.request('/auth/microsoft/callback?state=missing&code=code')).status).toBe(400);
@@ -335,7 +350,7 @@ describe('HTTP app', () => {
   });
 
   it('reauthorizes the matching Outlook mailbox and rejects a different account', async () => {
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     deps.config.publicUrl = 'https://mail.example.com';
     deps.config.publicUrlConfigured = true;
     const member = addMember(deps.db, { name: 'Owner', role: 'admin' });
@@ -373,7 +388,10 @@ describe('HTTP app', () => {
     const matchingState = await startReauthorization();
     expect((await app.request(`/auth/microsoft/callback?state=${matchingState}&code=matching`)).status).toBe(200);
     expect(deps.registry.listAccounts()).toHaveLength(1);
-    expect(deps.registry.getAccount(existing.id)).toMatchObject({ displayName: 'Updated Name', memberId: member.id });
+    expect(deps.registry.getAccount(existing.id)).toMatchObject({
+      displayName: 'Updated Name',
+      ownerMemberId: member.id,
+    });
 
     vi.mocked(exchangeMicrosoftCode).mockResolvedValueOnce({
       email: 'different@outlook.com',
@@ -391,7 +409,7 @@ describe('HTTP app', () => {
       email: 'shared@outlook.com',
       credentials: microsoftCredentials(),
     });
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     deps.config.publicUrl = 'https://mail.example.com';
     deps.config.publicUrlConfigured = true;
     const owner = addMember(deps.db, { name: 'Owner', role: 'admin' });
@@ -419,9 +437,9 @@ describe('HTTP app', () => {
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
       body: JSON.stringify({
         provider: 'outlook',
-        owner: owner.id,
-        sharingMode: 'selected',
-        shareWith: [teammate.email],
+        ownerMemberId: owner.id,
+        sharedWithAll: false,
+        grantedMemberIds: [teammate.email],
       }),
     });
     expect(created.status).toBe(201);
@@ -433,14 +451,14 @@ describe('HTTP app', () => {
     expect((await app.request(`/auth/microsoft/callback?state=${state}&code=shared`)).status).toBe(200);
 
     expect(deps.registry.listAccounts()[0]).toMatchObject({
-      memberId: owner.id,
-      sharingMode: 'selected',
-      sharedMemberIds: [teammate.id],
+      ownerMemberId: owner.id,
+      sharedWithAll: false,
+      grantedMemberIds: [teammate.id],
     });
   });
 
   it('enforces admin access, hosted configuration, validation, and mailbox limits for Outlook links', async () => {
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     deps.config.publicUrl = 'https://mail.example.com';
     deps.config.publicUrlConfigured = true;
     const member = addMember(deps.db, { name: 'Member', role: 'admin' });
@@ -450,6 +468,16 @@ describe('HTTP app', () => {
       member.id,
       permissionPolicyForProfile('full', ['admin.accounts']),
     );
+    deps.db
+      .insert(members)
+      .values({
+        id: 'member_backup_admin',
+        name: 'Backup Admin',
+        role: 'admin',
+        status: 'active',
+        createdAt: Date.now(),
+      })
+      .run();
     setMemberRole(deps.db, member.id, 'member');
     const app = createApp(deps);
     const request = (body: unknown, key = memberKey) =>
@@ -459,31 +487,30 @@ describe('HTTP app', () => {
         body: JSON.stringify(body),
       });
 
-    expect((await request({ provider: 'outlook', owner: member.id })).status).toBe(403);
+    expect((await request({ provider: 'outlook', ownerMemberId: member.id })).status).toBe(403);
     setMemberRole(deps.db, member.id, 'admin');
-    expect((await request({ provider: 'exchange', owner: member.id })).status).toBe(400);
+    expect((await request({ provider: 'exchange', ownerMemberId: member.id })).status).toBe(400);
     expect((await request({ provider: 'outlook' })).status).toBe(400);
     const malformedShareWith = await request({
       provider: 'outlook',
-      owner: member.id,
-      shareWith: 'teammate@example.com',
+      ownerMemberId: member.id,
+      grantedMemberIds: 'teammate@example.com',
     });
     expect(malformedShareWith.status).toBe(400);
-    await expect(malformedShareWith.text()).resolves.toContain('shareWith must be an array');
+    await expect(malformedShareWith.text()).resolves.toContain('grantedMemberIds must be an array');
     expect(
       (
         await request({
           provider: 'outlook',
-          owner: member.id,
-          sharingMode: 'selected',
-          shareWith: [],
+          ownerMemberId: member.id,
+          sharedWithAll: 'all',
         })
       ).status,
     ).toBe(400);
 
     const secret = deps.config.microsoft?.clientSecret;
     delete deps.config.microsoft?.clientSecret;
-    const missingSecret = await request({ provider: 'outlook', owner: member.id });
+    const missingSecret = await request({ provider: 'outlook', ownerMemberId: member.id });
     expect(missingSecret.status).toBe(400);
     await expect(missingSecret.text()).resolves.toContain('MICROSOFT_CLIENT_SECRET');
     if (deps.config.microsoft && secret) deps.config.microsoft.clientSecret = secret;
@@ -491,7 +518,7 @@ describe('HTTP app', () => {
     for (const email of ['one@example.com', 'two@example.com', 'three@example.com']) {
       deps.registry.addOutlookAccount(email, microsoftCredentials(email), undefined, member.id);
     }
-    const overLimit = await request({ provider: 'outlook', owner: member.id });
+    const overLimit = await request({ provider: 'outlook', ownerMemberId: member.id });
     expect(overLimit.status).toBe(400);
     await expect(overLimit.text()).resolves.toContain('mailbox');
   });
@@ -501,9 +528,9 @@ describe('HTTP app', () => {
       email: 'fourth@outlook.com',
       credentials: microsoftCredentials('fourth'),
     });
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     const owner = addMember(deps.db, { name: 'Owner' });
-    const grant = createOutlookConnectionGrant(deps.db, { memberId: owner.id });
+    const grant = createOutlookConnectionGrant(deps.db, { ownerMemberId: owner.id });
     const app = createApp(deps);
     const start = await app.request(`/auth/microsoft/connect?token=${encodeURIComponent(grant.token)}`, {
       method: 'POST',
@@ -520,7 +547,7 @@ describe('HTTP app', () => {
   });
 
   it('shows clear errors for invalid and expired connection links', async () => {
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     const app = createApp(deps);
 
     const invalid = await app.request('/auth/google/connect?token=not-a-token');
@@ -534,7 +561,7 @@ describe('HTTP app', () => {
   });
 
   it('does not accept connection tokens as MCP or admin credentials', async () => {
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     const { token } = createGmailConnectionGrant(deps.db);
     const app = createApp(deps);
 
@@ -559,12 +586,15 @@ describe('HTTP app', () => {
         displayName: 'Owner Updated',
         tokens: { refresh_token: 'second', id_token: 'second-id' },
       });
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     const app = createApp(deps);
     const member = addMember(deps.db, { name: 'Owner' });
 
     for (const code of ['first-code', 'second-code']) {
-      const { token } = createGmailConnectionGrant(deps.db, { memberId: member.id, sharingMode: 'private' });
+      const { token } = createGmailConnectionGrant(deps.db, {
+        ownerMemberId: member.id,
+        sharedWithAll: false,
+      });
       const start = await app.request(`/auth/google/connect?token=${encodeURIComponent(token)}`, { method: 'POST' });
       const state = new URL(start.headers.get('location') ?? '').searchParams.get('state');
       const callback = await app.request(`/auth/google/callback?state=${state}&code=${code}`);
@@ -583,7 +613,7 @@ describe('HTTP app', () => {
       email: 'other@example.com',
       tokens: { refresh_token: 'refresh', id_token: 'id' },
     });
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     const member = addMember(deps.db, { name: 'Alice' });
     const existing = deps.registry.addGmailAccount(
       'expected@example.com',
@@ -593,13 +623,13 @@ describe('HTTP app', () => {
     );
     const app = createApp(deps);
 
-    const ownedGrant = createGmailConnectionGrant(deps.db, { memberId: member.id });
+    const ownedGrant = createGmailConnectionGrant(deps.db, { ownerMemberId: member.id });
     const ownedStart = await app.request(`/auth/google/connect?token=${encodeURIComponent(ownedGrant.token)}`, {
       method: 'POST',
     });
     const ownedState = new URL(ownedStart.headers.get('location') ?? '').searchParams.get('state');
     expect((await app.request(`/auth/google/callback?state=${ownedState}&code=owned`)).status).toBe(200);
-    expect(deps.registry.listAccounts().find((account) => account.email === 'other@example.com')?.memberId).toBe(
+    expect(deps.registry.listAccounts().find((account) => account.email === 'other@example.com')?.ownerMemberId).toBe(
       member.id,
     );
 
@@ -618,13 +648,13 @@ describe('HTTP app', () => {
       email: 'fourth@example.com',
       tokens: { refresh_token: 'refresh', id_token: 'id' },
     });
-    const deps = appDeps('apikey');
+    const deps = appDeps();
     const member = addMember(deps.db, { name: 'Owner' });
     for (const email of ['one@example.com', 'two@example.com', 'three@example.com']) {
       deps.registry.addGmailAccount(email, { refresh_token: email }, undefined, member.id);
     }
     const app = createApp(deps);
-    const { token } = createGmailConnectionGrant(deps.db, { memberId: member.id });
+    const { token } = createGmailConnectionGrant(deps.db, { ownerMemberId: member.id });
     const start = await app.request(`/auth/google/connect?token=${encodeURIComponent(token)}`, { method: 'POST' });
     const state = new URL(start.headers.get('location') ?? '').searchParams.get('state');
 
@@ -638,7 +668,7 @@ describe('HTTP app', () => {
     vi.mocked(exchangeCode).mockRejectedValue(
       new EmailError('invalid_request', 'Google did not return a refresh token.'),
     );
-    const deps = appDeps('none');
+    const deps = appDeps();
     const member = addMember(deps.db, { name: 'Owner' });
     const app = createApp(deps);
 

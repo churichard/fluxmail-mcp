@@ -26,6 +26,4 @@ fluxmail accounts assign <accountId> [options]
 
 | Option | Required | Details | Default |
 | --- | --- | --- | --- |
-| `--owner <member>` | No | Member (id or email) to own the mailbox | None |
-| `--member <member>` | No | Deprecated alias for --owner | None |
-| `--shared` | No | Deprecated alias for sharing with all members | None |
+| `--owner <member>` | Yes | Member id or email to own the mailbox | None |

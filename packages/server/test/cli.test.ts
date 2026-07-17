@@ -1,18 +1,15 @@
-import { existsSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createCliProgram,
   permissionPolicyForUpdate,
   permissionPolicyFromOptions,
-  runCli,
   waitForServerListening,
 } from '../src/cli.js';
 import { customPermissionPolicy, permissionPolicyForProfile } from '../src/permissions.js';
-import { VERSION } from '../src/version.js';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -111,55 +108,6 @@ describe('CLI telemetry', () => {
     await createCliProgram({ telemetry }).parseAsync(['node', 'fluxmail', 'telemetry', 'disable']);
 
     expect(capture).not.toHaveBeenCalled();
-  });
-});
-
-describe('status command', () => {
-  it('reports the engine, data directory, and compatible store format', async () => {
-    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-status-'));
-    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
-    vi.stubEnv('DO_NOT_TRACK', '1');
-    const output: string[] = [];
-    vi.spyOn(console, 'log').mockImplementation((line) => output.push(String(line)));
-
-    await createCliProgram({ telemetry: telemetrySpy().telemetry }).parseAsync(['node', 'fluxmail', 'status']);
-
-    const status = JSON.parse(output.at(-1)!) as Record<string, unknown>;
-    expect(status).toMatchObject({
-      version: VERSION,
-      dataDir,
-      databasePath: path.join(dataDir, 'fluxmail.db'),
-      store: {
-        storeFormat: 1,
-        minimumSupportedFormat: 1,
-        maximumSupportedFormat: 1,
-        compatible: true,
-      },
-    });
-  });
-
-  it('exits without generating a key for a store from a newer Fluxmail version', async () => {
-    const previousExitCode = process.exitCode;
-    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-status-'));
-    const dbPath = path.join(dataDir, 'fluxmail.db');
-    const db = new Database(dbPath);
-    db.pragma('user_version = 2');
-    db.close();
-    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
-    vi.stubEnv('DO_NOT_TRACK', '1');
-    const errors: string[] = [];
-    vi.spyOn(console, 'error').mockImplementation((line) => errors.push(String(line)));
-
-    try {
-      process.exitCode = undefined;
-      await runCli(['node', 'fluxmail', 'status']);
-
-      expect(process.exitCode).toBe(1);
-      expect(errors.join('\n')).toContain('store format 2');
-      expect(existsSync(path.join(dataDir, 'encryption.key'))).toBe(false);
-    } finally {
-      process.exitCode = previousExitCode;
-    }
   });
 });
 

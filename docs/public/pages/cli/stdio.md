@@ -20,7 +20,6 @@ fluxmail stdio [options]
 
 | Option | Required | Details | Default |
 | --- | --- | --- | --- |
-| `--member <member>` | Yes | Member (id or email) using this MCP process | None |
 | `--account <account>` | No | Limit access to one mailbox; repeat as needed | None |
 | `--profile <profile>` | No | Tool profile: read-only, read-write, full | None |
 | `--allow <capability>` | No | Allow one MCP capability; repeat as needed | None |

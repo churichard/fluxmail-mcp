@@ -35,6 +35,7 @@ const ENV_KEYS = [
   'FLUXMAIL_PORT',
   'FLUXMAIL_OAUTH_PORT',
   'FLUXMAIL_OAUTH_HOST',
+  'FLUXMAIL_TRUST_PROXY',
   'FLUXMAIL_MAX_ATTACHMENT_MB',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
@@ -179,6 +180,7 @@ describe('stored config', () => {
 
   it('loadConfig picks up stored settings, with shell env winning', () => {
     const dir = tempDataDir();
+    vi.spyOn(process, 'cwd').mockReturnValue(dir);
     process.env.FLUXMAIL_DATA_DIR = dir;
     delete process.env.GOOGLE_CLIENT_ID;
     delete process.env.GOOGLE_CLIENT_SECRET;
@@ -231,6 +233,18 @@ describe('stored config', () => {
     process.env.FLUXMAIL_DATA_DIR = tempDataDir();
     process.env.FLUXMAIL_OAUTH_HOST = '0.0.0.0';
     expect(loadConfig().oauthHost).toBe('0.0.0.0');
+  });
+
+  it('uses and validates trusted proxy configuration', () => {
+    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
+    expect(loadConfig().trustProxy).toBe(false);
+
+    process.env.FLUXMAIL_TRUST_PROXY = 'true';
+    expect(loadConfig().trustProxy).toBe(true);
+    process.env.FLUXMAIL_TRUST_PROXY = '0';
+    expect(loadConfig().trustProxy).toBe(false);
+    process.env.FLUXMAIL_TRUST_PROXY = 'sometimes';
+    expect(() => loadConfig()).toThrow(/FLUXMAIL_TRUST_PROXY/);
   });
 
   it('uses and validates the attachment size limit', () => {

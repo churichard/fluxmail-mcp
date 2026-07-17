@@ -79,9 +79,9 @@ export const CONFIG_REFERENCE = {
     defaultValue: 'http://localhost:<FLUXMAIL_PORT>',
     description: 'Public base URL used for HTTP APIs and hosted OAuth callbacks.',
   },
-  FLUXMAIL_AUTH: {
-    defaultValue: 'apikey',
-    description: 'HTTP authentication mode. Use none only behind a trusted network boundary.',
+  FLUXMAIL_TRUST_PROXY: {
+    defaultValue: '0',
+    description: 'Trust Forwarded, X-Forwarded-Proto, and X-Forwarded-For headers from a reverse proxy.',
   },
   FLUXMAIL_OAUTH_PORT: {
     defaultValue: '8976',
@@ -131,12 +131,12 @@ export interface FluxmailConfig {
   publicUrl: string;
   /** Whether FLUXMAIL_PUBLIC_URL was explicitly set instead of using the localhost default. */
   publicUrlConfigured?: boolean;
+  /** Trust proxy-supplied protocol and client address headers. */
+  trustProxy?: boolean;
   /** Port for the ephemeral loopback OAuth listener used by `fluxmail accounts add`. */
   oauthPort: number;
   /** Bind address for the OAuth listener. Docker uses 0.0.0.0 so its published port can reach it. */
   oauthHost: string;
-  /** 'apikey' (default) requires a bearer token on email APIs; 'none' is for trusted networks only. */
-  authMode: 'apikey' | 'none';
   /** Largest attachment Fluxmail will return through MCP or REST. */
   maxAttachmentBytes: number;
   /** Paid-tier license key (fluxmail_lic_…); absent means free tier. */
@@ -364,6 +364,15 @@ function readMaxAttachmentBytes(): number {
   return value * BYTES_PER_MEGABYTE;
 }
 
+function readTrustProxy(): boolean {
+  const raw = readEnvironment('FLUXMAIL_TRUST_PROXY');
+  if (raw === undefined) return false;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true') return true;
+  if (normalized === '0' || normalized === 'false') return false;
+  throw new Error(`FLUXMAIL_TRUST_PROXY must be 0, 1, false, or true, got "${raw}"`);
+}
+
 function readPublicUrl(port: number): string {
   const value = (readEnvironment('FLUXMAIL_PUBLIC_URL') ?? `http://localhost:${port}`).replace(/\/+$/, '');
   let parsed: URL;
@@ -447,11 +456,6 @@ export function loadConfig(storeLocation: FluxmailStoreLocation = resolveStoreLo
   const oauthPort = readPort('FLUXMAIL_OAUTH_PORT', 8976);
   const publicUrlConfigured = readEnvironment('FLUXMAIL_PUBLIC_URL') !== undefined;
   const publicUrl = readPublicUrl(port);
-  const authModeEnv = readEnvironment('FLUXMAIL_AUTH') ?? 'apikey';
-  if (authModeEnv !== 'apikey' && authModeEnv !== 'none') {
-    throw new Error(`FLUXMAIL_AUTH must be "apikey" or "none", got "${authModeEnv}"`);
-  }
-
   const config: FluxmailConfig = {
     dataDir,
     dbPath,
@@ -459,9 +463,9 @@ export function loadConfig(storeLocation: FluxmailStoreLocation = resolveStoreLo
     port,
     publicUrl,
     publicUrlConfigured,
+    trustProxy: readTrustProxy(),
     oauthPort,
     oauthHost: readEnvironment('FLUXMAIL_OAUTH_HOST') ?? '127.0.0.1',
-    authMode: authModeEnv,
     maxAttachmentBytes: readMaxAttachmentBytes(),
     licenseServerUrl: (readEnvironment('FLUXMAIL_LICENSE_SERVER_URL') ?? DEFAULT_LICENSE_SERVER_URL).replace(
       /\/+$/,

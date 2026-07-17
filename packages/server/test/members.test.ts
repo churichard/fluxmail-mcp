@@ -7,7 +7,15 @@ import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EmailError } from '@fluxmail/core';
 import { accounts, openDb } from '../src/storage/db.js';
-import { addMember, findMember, getMember, listMembers, removeMember, setMemberRole } from '../src/storage/members.js';
+import {
+  addMember,
+  findMember,
+  getMember,
+  listMembers,
+  removeMember,
+  setMemberRole,
+  updateMember,
+} from '../src/storage/members.js';
 import { authenticateApiKey, createApiKey, listApiKeys } from '../src/storage/apiKeys.js';
 import {
   assertWithinQuota,
@@ -82,6 +90,14 @@ describe('members', () => {
     expect(() => addMember(db, { name: 'Alias', email: 'alice@example.com' })).toThrow(/already exists/);
   });
 
+  it('protects the last active administrator from demotion, suspension, and removal', () => {
+    const db = openDb(':memory:');
+    const admin = addMember(db, { name: 'Admin', email: 'admin@example.com', role: 'admin', status: 'active' });
+    expect(() => setMemberRole(db, admin.id, 'member')).toThrow(/last active administrator/);
+    expect(() => updateMember(db, admin.id, { status: 'suspended' })).toThrow(/last active administrator/);
+    expect(() => removeMember(db, admin.id)).toThrow(/last active administrator/);
+  });
+
   it('enforces the Personal-plan seat limit', () => {
     const db = openDb(':memory:');
     addMember(db, { name: 'Alice' });
@@ -107,7 +123,7 @@ describe('members', () => {
 
   it('blocks owner removal, then revokes keys after the mailbox is removed', () => {
     const db = openDb(':memory:');
-    const member = addMember(db, { name: 'Alice' });
+    const member = addMember(db, { name: 'Alice', role: 'member' });
     db.insert(accounts)
       .values({
         id: 'acct_1',
@@ -115,7 +131,7 @@ describe('members', () => {
         email: 'me@example.com',
         status: 'active',
         createdAt: Date.now(),
-        memberId: member.id,
+        ownerMemberId: member.id,
       })
       .run();
     createApiKey(db, 'alice-key', member.id);
@@ -227,24 +243,14 @@ describe('API key migrations', () => {
     const db = openDb(dbPath);
     const account = db.select().from(accounts).all()[0];
     expect(account?.id).toBe('acct_1');
-    expect(account?.memberId).toBeNull();
-    expect(account?.sharingMode).toBe('all');
-    expect(listApiKeys(db)[0]).toMatchObject({
-      memberId: null,
-      permissionProfile: 'full',
-      accountIds: null,
-      supplementalCapabilities: ['admin.accounts'],
-    });
-    expect(authenticateApiKey(db, legacyKey)).toMatchObject({
-      memberId: null,
-      role: null,
-      accountIds: null,
-      permissions: { supplementalCapabilities: ['admin.accounts'] },
-    });
+    expect(account?.ownerMemberId).toBeNull();
+    expect(account?.sharedWithAll).toBe(true);
+    expect(listApiKeys(db)).toEqual([]);
+    expect(authenticateApiKey(db, legacyKey)).toBeNull();
     // The first member becomes the owner while migrated sharing stays global.
     const member = addMember(db, { name: 'Alice' });
-    expect(db.select().from(accounts).all()[0]?.memberId).toBe(member.id);
-    expect(db.select().from(accounts).all()[0]?.sharingMode).toBe('all');
+    expect(db.select().from(accounts).all()[0]?.ownerMemberId).toBe(member.id);
+    expect(db.select().from(accounts).all()[0]?.sharedWithAll).toBe(true);
   });
 
   it('preserves only account-management access for existing admin-owned keys', () => {
@@ -278,9 +284,6 @@ describe('API key migrations', () => {
     `);
     raw.close();
 
-    const keys = listApiKeys(openDb(dbPath));
-    expect(keys.find((key) => key.id === 'key_admin')?.supplementalCapabilities).toEqual(['admin.accounts']);
-    expect(keys.find((key) => key.id === 'key_user')?.supplementalCapabilities).toEqual([]);
-    expect(keys.find((key) => key.id === 'key_custom')?.capabilities).toEqual(['mail.read', 'admin.accounts']);
+    expect(listApiKeys(openDb(dbPath))).toEqual([]);
   });
 });

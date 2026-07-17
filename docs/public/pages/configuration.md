@@ -33,7 +33,7 @@ Set `FLUXMAIL_DATA_DIR` to create a separate installation. `FLUXMAIL_DB_PATH` ch
 | `FLUXMAIL_ENCRYPTION_KEY` | `generated automatically` | A 64-character hexadecimal key used to encrypt provider credentials. |
 | `FLUXMAIL_PORT` | `8977` | HTTP server port. |
 | `FLUXMAIL_PUBLIC_URL` | `http://localhost:<FLUXMAIL_PORT>` | Public base URL used for HTTP APIs and hosted OAuth callbacks. |
-| `FLUXMAIL_AUTH` | `apikey` | HTTP authentication mode. Use none only behind a trusted network boundary. |
+| `FLUXMAIL_TRUST_PROXY` | `0` | Trust Forwarded, X-Forwarded-Proto, and X-Forwarded-For headers from a reverse proxy. |
 | `FLUXMAIL_OAUTH_PORT` | `8976` | Port for the local OAuth callback listener. |
 | `FLUXMAIL_OAUTH_HOST` | `127.0.0.1` | Bind address for the local OAuth callback listener. |
 | `FLUXMAIL_MAX_ATTACHMENT_MB` | `10` | Largest decoded attachment returned through MCP or REST, from 1 through 25 MB. |
@@ -42,7 +42,7 @@ Set `FLUXMAIL_DATA_DIR` to create a separate installation. `FLUXMAIL_DB_PATH` ch
 | `DO_NOT_TRACK` | `unset` | Set to 1 to turn off anonymous usage telemetry. |
 <!-- END GENERATED:configuration -->
 
-With `FLUXMAIL_AUTH=apikey`, each HTTP API key can have its own permission profile. The profile applies to MCP and REST. `FLUXMAIL_AUTH=none` gives every HTTP client full access to mail routes, so use it only behind a network boundary you control. Administrative routes still require a bearer key with the matching `admin.*` capability. See [Permissions](/docs/permissions) for profiles and custom policies.
+HTTP MCP requests require an API key. REST requests accept an active member session or API key. Each API key has its own permission profile and optional mailbox allowlist. See [Permissions](/docs/permissions) for profiles and custom policies, and [Authentication and instances](/docs/authentication-and-instances) for login and session storage.
 
 For the full command set, see the [CLI reference](/docs/cli).
 

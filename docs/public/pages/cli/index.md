@@ -4,7 +4,7 @@ description: 'Run the Fluxmail server and manage accounts, members, API keys, co
 updated: '2026-07-15'
 ---
 
-The Fluxmail CLI starts MCP and REST servers and manages the local Fluxmail instance.
+The Fluxmail CLI starts local MCP and REST servers and manages a selected local or remote instance. Run `fluxmail setup` for a new local instance, or use `fluxmail login` to add an existing instance. See [Authentication and instances](/docs/authentication-and-instances) for profiles, sessions, and remote URL rules.
 
 ## Install the CLI
 
@@ -27,6 +27,17 @@ docker compose exec fluxmail fluxmail accounts list
 <!-- BEGIN GENERATED:cli-command-reference -->
 | Command | Description |
 | --- | --- |
+| [`fluxmail setup`](/docs/cli/setup) | Create the first local administrator or claim a migrated administrator |
+| [`fluxmail login`](/docs/cli/login) | Log in to a local or remote instance |
+| [`fluxmail logout`](/docs/cli/logout) | Revoke the current CLI session |
+| [`fluxmail instances`](/docs/cli/instances) | Manage local and remote CLI instances |
+| [`fluxmail instances list`](/docs/cli/instances-list) | List configured instances |
+| [`fluxmail instances use`](/docs/cli/instances-use) | Select the default instance |
+| [`fluxmail instances remove`](/docs/cli/instances-remove) | Remove a CLI profile and its local session |
+| [`fluxmail auth`](/docs/cli/auth) | Manage interactive authentication |
+| [`fluxmail auth recover-admin`](/docs/cli/auth-recover-admin) | Reset an administrator password using local filesystem access |
+| [`fluxmail auth sessions`](/docs/cli/auth-sessions) | List sessions for the current member |
+| [`fluxmail auth revoke-session`](/docs/cli/auth-revoke-session) | Revoke one of the current member's sessions |
 | [`fluxmail serve`](/docs/cli/serve) | Run the HTTP server (MCP at /mcp and REST at /api/v1) |
 | [`fluxmail stdio`](/docs/cli/stdio) | Run as a stdio MCP server (for Claude Desktop / Claude Code local config) |
 | [`fluxmail accounts`](/docs/cli/accounts) | Manage connected email accounts |
@@ -41,6 +52,11 @@ docker compose exec fluxmail fluxmail accounts list
 | [`fluxmail members list`](/docs/cli/members-list) | List members with their mailbox and API key counts |
 | [`fluxmail members remove`](/docs/cli/members-remove) | Remove a member after reassigning or removing their mailboxes |
 | [`fluxmail members role`](/docs/cli/members-role) | Change a member role |
+| [`fluxmail members status`](/docs/cli/members-status) | Activate or suspend a member |
+| [`fluxmail members invite`](/docs/cli/members-invite) | Issue a new enrollment code |
+| [`fluxmail members password-reset`](/docs/cli/members-password-reset) | Issue a password reset code |
+| [`fluxmail members sessions`](/docs/cli/members-sessions) | List sessions for a member |
+| [`fluxmail members revoke-session`](/docs/cli/members-revoke-session) | Revoke a member session |
 | [`fluxmail apikey`](/docs/cli/apikey) | Manage API keys for the HTTP MCP and REST APIs |
 | [`fluxmail apikey capabilities`](/docs/cli/apikey-capabilities) | List capabilities for API key permission policies |
 | [`fluxmail apikey create`](/docs/cli/apikey-create) | Create an API key (shown once) |
@@ -60,7 +76,7 @@ docker compose exec fluxmail fluxmail accounts list
 | [`fluxmail telemetry disable`](/docs/cli/telemetry-disable) | Stop sending anonymous usage telemetry |
 | [`fluxmail telemetry enable`](/docs/cli/telemetry-enable) | Allow anonymous usage telemetry |
 | [`fluxmail telemetry status`](/docs/cli/telemetry-status) | Show whether anonymous usage telemetry is enabled |
-| [`fluxmail status`](/docs/cli/status) | Show engine, store, account, member, entitlement, and provider status |
+| [`fluxmail status`](/docs/cli/status) | Show mailbox and provider status for the selected instance |
 <!-- END GENERATED:cli-command-reference -->
 
 Add `--help` to a command to view its usage in the terminal. For example, run `fluxmail accounts add --help`.

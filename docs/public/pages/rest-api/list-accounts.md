@@ -12,7 +12,7 @@ List the email accounts available to the API key.
 
 ## Authentication
 
-Pass a Fluxmail API key as a bearer token. The key determines the member, mailbox scope, and permissions for the request.
+Pass a Fluxmail member session or API key as a bearer token. API keys apply their mailbox scope and permissions to the request.
 
 ## Request
 
@@ -105,25 +105,17 @@ This endpoint has no parameters or request body.
             ],
             "additionalProperties": false
           },
-          "ownerId": {
+          "ownerMemberId": {
             "type": "string"
           },
-          "sharingMode": {
-            "type": "string",
-            "enum": [
-              "private",
-              "all",
-              "selected"
-            ]
+          "sharedWithAll": {
+            "type": "boolean"
           },
-          "sharedMemberIds": {
+          "grantedMemberIds": {
             "type": "array",
             "items": {
               "type": "string"
             }
-          },
-          "memberId": {
-            "type": "string"
           }
         },
         "required": [
@@ -132,8 +124,9 @@ This endpoint has no parameters or request body.
           "email",
           "status",
           "capabilities",
-          "sharingMode",
-          "sharedMemberIds"
+          "ownerMemberId",
+          "sharedWithAll",
+          "grantedMemberIds"
         ],
         "additionalProperties": false
       }

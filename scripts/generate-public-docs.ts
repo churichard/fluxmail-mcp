@@ -5,7 +5,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createCliProgram } from '../packages/server/src/cli.js';
 import { CONFIG_REFERENCE } from '../packages/server/src/config.js';
 import { buildMcpServer } from '../packages/server/src/mcp/buildServer.js';
-import { createRestApi } from '../packages/server/src/http/rest.js';
+import { createRestApi, REST_OPENAPI_DOCUMENT } from '../packages/server/src/http/rest.js';
 import {
   MCP_CAPABILITIES,
   MCP_CAPABILITY_DESCRIPTIONS,
@@ -116,9 +116,7 @@ async function main(): Promise<void> {
   const restIndexSource = readFileSync(restIndex, 'utf8');
   const updated = parseFrontmatter(restIndexSource, 'rest-api/index.md').updated;
   const restApp = createRestApi({} as never);
-  const openApiResponse = await restApp.request('/api/v1/openapi.json');
-  if (!openApiResponse.ok) throw new Error(`Could not generate the OpenAPI document: HTTP ${openApiResponse.status}.`);
-  const restReference = generateRestApiReference((await openApiResponse.json()) as never, updated);
+  const restReference = generateRestApiReference(restApp.getOpenAPIDocument(REST_OPENAPI_DOCUMENT), updated);
   references.push({ directory: 'rest-api', marker: 'rest-api-endpoints', reference: restReference });
 
   const toolsIndex = path.join(PUBLIC_DOCS_ROOT, 'pages', 'tools', 'index.md');

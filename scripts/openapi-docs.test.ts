@@ -124,4 +124,36 @@ describe('OpenAPI documentation generation', () => {
     expect(page).toContain('### 202 response');
     expect(page).toContain('"title": "ScheduledItem"');
   });
+
+  it('distinguishes public, session-only, and administrative authentication', () => {
+    const reference = generateRestApiReference(
+      {
+        paths: {
+          '/api/v1': {
+            get: { operationId: 'discover', responses: { 200: { description: 'OK' } } },
+          },
+          '/api/v1/me/password': {
+            put: {
+              operationId: 'changePassword',
+              security: [{ memberSessionAuth: [] }],
+              responses: { 200: { description: 'OK' } },
+            },
+          },
+          '/api/v1/admin/members': {
+            get: {
+              operationId: 'listMembers',
+              security: [{ bearerAuth: [] }],
+              responses: { 200: { description: 'OK' } },
+            },
+          },
+        },
+      },
+      '2026-07-15',
+    );
+
+    expect(reference.pages.get('discover.md')).toContain('This endpoint does not require authentication.');
+    expect(reference.pages.get('change-password.md')).toContain('API keys cannot use this endpoint.');
+    expect(reference.pages.get('change-password.md')).toContain('Bearer $FLUXMAIL_SESSION');
+    expect(reference.pages.get('list-members.md')).toContain('administrator member session or an API key');
+  });
 });

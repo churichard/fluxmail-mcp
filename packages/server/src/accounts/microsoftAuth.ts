@@ -241,7 +241,7 @@ function listenerError(error: Error, port: number): Error {
   return new Error(
     `OAuth callback port ${port} is already in use.\n\n` +
       'If Fluxmail is running with Docker Compose, connect the account inside the container:\n\n' +
-      '  docker compose exec fluxmail fluxmail accounts add outlook --owner <member>\n\n' +
+      '  docker compose exec fluxmail fluxmail accounts add outlook\n\n' +
       `Otherwise, stop the process using port ${port} and try again.`,
     { cause: error },
   );

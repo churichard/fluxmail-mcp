@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
 import { emitKeypressEvents } from 'node:readline';
+import { createInterface } from 'node:readline/promises';
+import { hostname } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 import { serve } from '@hono/node-server';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { EmailError, isEmailError, type AccountSharingMode } from '@fluxmail/core';
+import { EmailError, isEmailError } from '@fluxmail/core';
 import { createContext } from './context.js';
 import {
   configFilePath,
@@ -26,29 +28,13 @@ import {
   selectGmailConnectionMode,
   validateAccountConnectionFlags,
 } from './accounts/gmailConnection.js';
-import {
-  createApiKey,
-  listApiKeys,
-  revokeApiKey,
-  updateApiKeyAccounts,
-  updateApiKeyPermissions,
-  type ApiKeyInfo,
-} from './storage/apiKeys.js';
-import { addMember, findMember, listMembers, removeMember, setMemberRole, type MemberRole } from './storage/members.js';
-import { activateLicense } from './licensing/activation.js';
-import { LICENSE_KEY_PATTERN, releaseLicense } from './licensing/client.js';
-import { licensePublicKeys, verifyLease } from './licensing/lease.js';
-import {
-  checkLicenseState,
-  clearLease,
-  getEntitlements,
-  readLeaseRow,
-  type Entitlements,
-} from './licensing/entitlements.js';
-import { loadInstanceId } from './licensing/refresher.js';
+import { listApiKeys, type ApiKeyInfo } from './storage/apiKeys.js';
+import { findMember } from './storage/members.js';
+import { LICENSE_KEY_PATTERN } from './licensing/client.js';
+import { checkLicenseState, getEntitlements, type Entitlements } from './licensing/entitlements.js';
 import { VERSION } from './version.js';
-import { inspectStoreCompatibility, type FluxmailDb } from './storage/db.js';
-import type { ImapCredentials, ImapSecurity } from '@fluxmail/provider-imap';
+import type { FluxmailDb } from './storage/db.js';
+import type { ImapSecurity } from '@fluxmail/provider-imap';
 import {
   customPermissionPolicy,
   ADMIN_CAPABILITIES,
@@ -68,13 +54,23 @@ import {
   shutdownTelemetry,
   type Telemetry,
 } from './telemetry.js';
+import {
+  clearSessionToken,
+  instanceClient,
+  loadInstanceConfig,
+  removeInstance,
+  resolveInstance,
+  saveLocalInstance,
+  saveRemoteInstance,
+  saveSessionToken,
+  useInstance,
+} from './cliInstances.js';
+import { authenticateBearer, recoverAdminPassword, setupInitialAdmin } from './auth.js';
+import { recordAdminAuditEvent } from './storage/adminAudit.js';
+import { canManageOwnedAccount } from './authorization.js';
 
 interface AddAccountOptions {
   reauthorize?: string;
-  owner?: string;
-  member?: string;
-  shared?: boolean;
-  shareWith: string[];
   local?: boolean;
   hosted?: boolean;
   email?: string;
@@ -104,7 +100,6 @@ interface PermissionOptions {
 }
 
 interface ScopedMcpOptions extends PermissionOptions {
-  member: string;
   account: string[];
 }
 
@@ -114,12 +109,6 @@ function collectOption(value: string, previous: string[]): string[] {
 
 function accountIdsFromRefs(ctx: ReturnType<typeof createContext>, refs: readonly string[]): string[] | null {
   return refs.length ? [...new Set(refs.map((ref) => ctx.registry.findAccount(ref).id))] : null;
-}
-
-function sharingMode(shared: boolean | undefined, sharedMemberIds: readonly string[]): AccountSharingMode {
-  if (shared) return 'all';
-  if (sharedMemberIds.length) return 'selected';
-  return 'private';
 }
 
 export function permissionPolicyFromOptions(opts: PermissionOptions, requireSelection = false): PermissionPolicy {
@@ -210,6 +199,20 @@ async function hiddenPrompt(label: string): Promise<string> {
   });
 }
 
+async function textPrompt(label: string): Promise<string> {
+  if (!process.stdin.isTTY) throw new EmailError('invalid_request', `${label} must be supplied as an option.`);
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await prompt.question(`${label}: `)).trim();
+  } finally {
+    prompt.close();
+  }
+}
+
+async function loginPassword(label = 'Password'): Promise<string> {
+  return process.env.FLUXMAIL_PASSWORD ?? hiddenPrompt(label);
+}
+
 async function accountSecret(envName: string | undefined, label: string): Promise<string> {
   if (!envName) return hiddenPrompt(label);
   const value = process.env[envName];
@@ -275,7 +278,10 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   program
     .name('fluxmail')
     .description('Fluxmail, a self-hosted MCP server for your email')
+    .option('--instance <name>', 'Use a named local or remote instance')
     .version(VERSION, '-v, --version');
+
+  const selectedInstance = (): string | undefined => program.opts<{ instance?: string }>().instance;
 
   function commandPath(command: Command): string {
     const names: string[] = [];
@@ -343,6 +349,221 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   });
 
   program
+    .command('setup')
+    .description('Create the first local administrator or claim a migrated administrator')
+    .option('--name <name>', 'Administrator name')
+    .option('--email <email>', 'Administrator email')
+    .option('--existing-admin <member>', 'Existing administrator id or email for a migrated instance')
+    .action(async (opts: { name?: string; email?: string; existingAdmin?: string }) => {
+      try {
+        const name = opts.name ?? (opts.existingAdmin ? undefined : await textPrompt('Administrator name'));
+        const email = opts.email ?? (await textPrompt('Administrator email'));
+        const password = await loginPassword('New password');
+        const context = createContext();
+        const result = await setupInitialAdmin(context.db, {
+          ...(name ? { name } : {}),
+          email,
+          password,
+          ...(opts.existingAdmin ? { existingAdmin: opts.existingAdmin } : {}),
+          deviceName: `CLI on ${hostname()}`,
+        });
+        saveLocalInstance('local');
+        saveSessionToken('local', result.session.token);
+        recordAdminAuditEvent(context.db, {
+          operation: 'auth.setup',
+          outcome: 'success',
+          actorMemberId: result.member.id,
+          actorSessionId: result.session.info.id,
+        });
+        console.log(`Fluxmail is ready. Logged in to local as ${result.member.name}.`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('login')
+    .description('Log in to a local or remote instance')
+    .option('--server <url>', 'Add or update a remote instance')
+    .option('--email <email>', 'Member email')
+    .option('--enroll', 'Use a one-time enrollment code')
+    .option('--reset', 'Use a one-time password reset code')
+    .action(async (opts: { server?: string; email?: string; enroll?: boolean; reset?: boolean }) => {
+      try {
+        if (opts.enroll && opts.reset) {
+          throw new EmailError('invalid_request', '--enroll and --reset cannot be used together.');
+        }
+        const requestedInstance = selectedInstance();
+        if (!opts.server && requestedInstance === 'local' && !loadInstanceConfig().instances.local) {
+          saveLocalInstance('local');
+        }
+        const instanceName = requestedInstance ?? (opts.server ? 'remote' : resolveInstance().name);
+        if (opts.server) saveRemoteInstance(instanceName, opts.server);
+        const client = instanceClient(instanceName, false);
+        const deviceName = `CLI on ${hostname()}`;
+        const result =
+          opts.enroll || opts.reset
+            ? await client.json<{ token: string; member: { name: string } }>(
+                opts.reset ? '/api/v1/auth/password-reset' : '/api/v1/auth/enroll',
+                {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    token:
+                      (opts.reset ? process.env.FLUXMAIL_RESET_CODE : process.env.FLUXMAIL_INVITE_CODE) ??
+                      (await hiddenPrompt(opts.reset ? 'Password reset code' : 'Enrollment code')),
+                    password: await loginPassword('New password'),
+                    deviceName,
+                  }),
+                },
+                false,
+              )
+            : await client.json<{ token: string; member: { name: string } }>(
+                '/api/v1/auth/login',
+                {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    email: opts.email ?? (await textPrompt('Email')),
+                    password: await loginPassword(),
+                    deviceName,
+                  }),
+                },
+                false,
+              );
+        saveSessionToken(instanceName, result.token);
+        useInstance(instanceName);
+        console.log(`Logged in to ${instanceName} as ${result.member.name}.`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('logout')
+    .description('Revoke the current CLI session')
+    .action(async () => {
+      try {
+        const selected = resolveInstance(selectedInstance());
+        const response = await instanceClient(selected.name).request('/api/v1/auth/logout', { method: 'POST' });
+        if (!response.ok && response.status !== 401) {
+          throw new EmailError('invalid_request', `Logout failed with HTTP ${response.status}.`);
+        }
+        clearSessionToken(selected.name);
+        console.log(`Logged out of ${selected.name}.`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  const instances = program.command('instances').description('Manage local and remote CLI instances');
+  instances
+    .command('list')
+    .description('List configured instances')
+    .action(() => {
+      const config = loadInstanceConfig();
+      for (const [name, profile] of Object.entries(config.instances)) {
+        console.log(
+          `${name}${config.active === name ? ' *' : ''}  ${profile.kind}${profile.kind === 'remote' ? `  ${profile.serverUrl}` : ''}`,
+        );
+      }
+    });
+  instances
+    .command('use')
+    .argument('<name>')
+    .description('Select the default instance')
+    .action((name: string) => {
+      try {
+        useInstance(name);
+        console.log(`Using ${name}.`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+  instances
+    .command('remove')
+    .argument('<name>')
+    .description('Remove a CLI profile and its local session')
+    .action((name: string) => {
+      try {
+        removeInstance(name);
+        console.log(`Removed CLI instance ${name}. Server data was not changed.`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  const authCommand = program.command('auth').description('Manage interactive authentication');
+  authCommand
+    .command('recover-admin')
+    .argument('<member>', 'Administrator id or email')
+    .description('Reset an administrator password using local filesystem access')
+    .action(async (memberRef: string) => {
+      try {
+        const selected = resolveInstance(selectedInstance());
+        if (selected.profile.kind !== 'local') {
+          throw new EmailError(
+            'invalid_request',
+            'Administrator recovery is only available on the local instance host.',
+          );
+        }
+        const password = await loginPassword('New password');
+        const context = createContext();
+        const member = await recoverAdminPassword(context.db, memberRef, password);
+        recordAdminAuditEvent(context.db, {
+          operation: 'auth.recover_admin',
+          outcome: 'success',
+          actorMemberId: member.id,
+          resourceType: 'member',
+          resourceId: member.id,
+        });
+        console.log(`Reset ${member.name}'s password and revoked existing sessions.`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+  authCommand
+    .command('sessions')
+    .description('List sessions for the current member')
+    .action(async () => {
+      try {
+        const sessions =
+          await instanceClient(selectedInstance()).json<
+            Array<{ id: string; deviceName: string; createdAt: number; expiresAt: number; current: boolean }>
+          >('/api/v1/me/sessions');
+        for (const session of sessions) {
+          console.log(
+            `${session.id}${session.current ? ' *' : ''}  ${session.deviceName}  created=${new Date(session.createdAt).toISOString()}  expires=${new Date(session.expiresAt).toISOString()}`,
+          );
+        }
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+  authCommand
+    .command('revoke-session')
+    .argument('<sessionId>')
+    .description("Revoke one of the current member's sessions")
+    .action(async (sessionId: string) => {
+      try {
+        await instanceClient(selectedInstance()).json(`/api/v1/me/sessions/${encodeURIComponent(sessionId)}`, {
+          method: 'DELETE',
+        });
+        console.log(`Revoked ${sessionId}.`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
     .command('serve')
     .description('Run the HTTP server (MCP at /mcp and REST at /api/v1)')
     .action(async () => {
@@ -356,18 +577,19 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         console.log(`  MCP endpoint:   ${ctx.config.publicUrl}/mcp`);
         console.log(`  REST API:       ${ctx.config.publicUrl}/api/v1`);
         console.log(`  OpenAPI:        ${ctx.config.publicUrl}/api/v1/openapi.json`);
-        console.log(`  Auth mode:      ${ctx.config.authMode}`);
-        if (ctx.config.authMode === 'apikey' && listApiKeys(ctx.db).length === 0) {
-          console.log(
-            '  Note: no API keys exist yet. Run "fluxmail apikey create --name <name> --member <member>" to create one.',
-          );
+        if (listApiKeys(ctx.db).length === 0) {
+          console.log('  Note: no API keys exist yet. Run "fluxmail apikey create --name <name>" to create one.');
         }
-        const accounts = ctx.registry.listAccounts();
-        console.log(
-          accounts.length
-            ? `  Accounts:       ${accounts.map((a) => `${a.email} (${a.status})`).join(', ')}`
-            : '  Accounts:       none (run "fluxmail accounts add gmail --owner <member>", "fluxmail accounts add outlook --owner <member>", or the IMAP equivalent)',
-        );
+        try {
+          const accounts = ctx.registry.listAccounts();
+          console.log(
+            accounts.length
+              ? `  Accounts:       ${accounts.map((a) => `${a.email} (${a.status})`).join(', ')}`
+              : '  Accounts:       none (run "fluxmail accounts add gmail", "fluxmail accounts add outlook", or the IMAP equivalent)',
+          );
+        } catch {
+          console.log('  Accounts:       unavailable until an existing administrator claims this instance');
+        }
         console.log(`  Plan:           ${planLine(getEntitlements(ctx.db))}`);
         warnLicense(ctx.db, console.log);
         ctx.licenseController.start(console.log);
@@ -378,7 +600,6 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   program
     .command('stdio')
     .description('Run as a stdio MCP server (for Claude Desktop / Claude Code local config)')
-    .requiredOption('--member <member>', 'Member (id or email) using this MCP process')
     .option('--account <account>', 'Limit access to one mailbox; repeat as needed', collectOption, [])
     .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
     .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
@@ -387,9 +608,23 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       installTelemetryStreamEndHandler(process.stdin);
       const ctx = createContext();
       const permissions = permissionPolicyFromOptions(opts);
-      const member = findMember(ctx.db, opts.member);
+      const selected = resolveInstance(selectedInstance());
+      if (selected.profile.kind !== 'local') {
+        throw new EmailError(
+          'invalid_request',
+          'Stdio MCP only supports the local instance. Use the remote HTTP MCP endpoint with an API key.',
+        );
+      }
+      if (!selected.token)
+        throw new EmailError('permission_denied', 'Log in to the local instance before starting stdio MCP.');
+      const principal = authenticateBearer(ctx.db, selected.token);
+      if (!principal || principal.kind !== 'session')
+        throw new EmailError(
+          'permission_denied',
+          'The local CLI session has expired. Run "fluxmail login --instance local".',
+        );
       const accountIds = accountIdsFromRefs(ctx, opts.account);
-      const scopedService = ctx.service.withScope({ memberId: member.id, role: member.role, accountIds });
+      const scopedService = ctx.service.withPrincipal({ ...principal, accountIds });
       const server = buildMcpServer(scopedService, {
         permissions,
         maxAttachmentBytes: ctx.config.maxAttachmentBytes,
@@ -413,10 +648,6 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .command('add')
     .argument('<provider>', 'Email provider: gmail, outlook, or imap')
     .option('--reauthorize <account-id>', 'Reconnect an existing account')
-    .option('--owner <member>', 'Member (id or email) who owns the new mailbox')
-    .option('--member <member>', 'Deprecated alias for --owner')
-    .option('--shared', 'Share the mailbox with every member')
-    .option('--share-with <member>', 'Share with one member; repeat as needed', collectOption, [])
     .option('--local', 'Use the local browser callback for OAuth')
     .option('--hosted', 'Use FLUXMAIL_PUBLIC_URL for the OAuth callback')
     .option('--email <address>', 'Mailbox address (required for IMAP)')
@@ -446,109 +677,140 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         process.exitCode = 1;
         return;
       }
+      const selected = resolveInstance(selectedInstance());
+      if (!selected.token) {
+        console.error(`Error: Log in to instance "${selected.name}" before connecting a mailbox.`);
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        validateAccountConnectionFlags(provider, opts);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+        return;
+      }
+      let useControlPlane = selected.profile.kind === 'remote' || provider === 'imap';
+      if (selected.profile.kind === 'local' && provider !== 'imap') {
+        try {
+          useControlPlane = selectGmailConnectionMode(createContext().config, opts) === 'hosted';
+        } catch (err) {
+          console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          process.exitCode = 1;
+          return;
+        }
+      }
+      if (useControlPlane) {
+        try {
+          if (selected.profile.kind === 'remote' && opts.local) {
+            throw new EmailError('invalid_request', '--local is only available for the local instance.');
+          }
+          let request: Record<string, unknown> = {
+            provider,
+            ...(opts.reauthorize ? { reauthorizeAccountId: opts.reauthorize } : {}),
+          };
+          if (provider === 'imap') {
+            const email = opts.email?.trim();
+            if (!email || !email.includes('@'))
+              throw new EmailError('invalid_request', '--email must be a mailbox address.');
+            if (!opts.imapHost) throw new EmailError('invalid_request', '--imap-host is required for IMAP accounts.');
+            if (!opts.smtpHost) throw new EmailError('invalid_request', '--smtp-host is required for IMAP accounts.');
+            const imapPassword = await accountSecret(opts.imapPasswordEnv, 'IMAP password');
+            const smtpPassword = opts.smtpPasswordEnv
+              ? await accountSecret(opts.smtpPasswordEnv, 'SMTP password')
+              : imapPassword;
+            const imapUser = opts.imapUser ?? email;
+            request = {
+              ...request,
+              email,
+              ...(opts.displayName ? { displayName: opts.displayName } : {}),
+              imap: {
+                host: opts.imapHost,
+                port: connectionPort(opts.imapPort, '--imap-port'),
+                security: connectionSecurity(opts.imapSecurity, '--imap-security'),
+                user: imapUser,
+                password: imapPassword,
+              },
+              smtp: {
+                host: opts.smtpHost,
+                port: connectionPort(opts.smtpPort, '--smtp-port'),
+                security: connectionSecurity(opts.smtpSecurity, '--smtp-security'),
+                user: opts.smtpUser ?? imapUser,
+                password: smtpPassword,
+              },
+              ...(command.getOptionValueSource('saveSent') !== 'default' ? { saveSent: opts.saveSent } : {}),
+              folderOverrides: {
+                ...(opts.sentFolder ? { sent: opts.sentFolder } : {}),
+                ...(opts.draftsFolder ? { drafts: opts.draftsFolder } : {}),
+                ...(opts.trashFolder ? { trash: opts.trashFolder } : {}),
+                ...(opts.archiveFolder ? { archive: opts.archiveFolder } : {}),
+                ...(opts.spamFolder ? { spam: opts.spamFolder } : {}),
+              },
+            };
+          }
+          const result = await instanceClient(selected.name).json<{
+            connectionUrl?: string;
+            account?: { id: string; email: string };
+            warnings?: Array<{ message: string }>;
+          }>('/api/v1/accounts/connections', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(request),
+          });
+          if (result.connectionUrl) console.log(`Open this URL in your browser:\n\n  ${result.connectionUrl}\n`);
+          if (result.account) {
+            console.log(`Connected ${result.account.email} (account id: ${result.account.id})`);
+            for (const warning of result.warnings ?? []) console.log(`Warning: ${warning.message}.`);
+          }
+        } catch (err) {
+          console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          process.exitCode = 1;
+        }
+        return;
+      }
       const ctx = createContext();
       warnLicense(ctx.db);
       try {
-        validateAccountConnectionFlags(provider, opts);
-        if (opts.owner && opts.member) {
-          throw new EmailError('invalid_request', '--owner and --member cannot be combined. Use --owner.');
-        }
-        if (opts.shared && opts.shareWith.length) {
-          throw new EmailError('invalid_request', '--shared and --share-with cannot be combined.');
-        }
-        const ownerRef = opts.owner ?? opts.member;
-        if (opts.member) console.error('Warning: --member is deprecated; use --owner.');
-        if (opts.reauthorize && (ownerRef || opts.shared || opts.shareWith.length)) {
+        const principal = authenticateBearer(ctx.db, selected.token);
+        if (!principal || principal.kind !== 'session') {
           throw new EmailError(
-            'invalid_request',
-            'Ownership and sharing options cannot be combined with --reauthorize. Use "fluxmail accounts assign" or "fluxmail accounts access".',
+            'permission_denied',
+            'The local CLI session has expired. Run "fluxmail login --instance local".',
           );
         }
-        // Resolve before the OAuth flow so a typo fails fast.
-        const owner = ownerRef ? findMember(ctx.db, ownerRef) : undefined;
+        const owner = findMember(ctx.db, principal.memberId);
         const existing = opts.reauthorize ? ctx.registry.getAccount(opts.reauthorize) : undefined;
+        if (existing && !canManageOwnedAccount(principal, existing)) {
+          throw new EmailError('permission_denied', 'Only the mailbox owner or an administrator can reauthorize it.');
+        }
         if (existing && existing.provider !== provider) {
           throw new EmailError('invalid_request', `Account ${existing.id} uses ${existing.provider}, not ${provider}.`);
         }
         if (!existing) ctx.registry.assertCanAddAccount();
-        if (!existing && !owner) {
-          throw new EmailError('invalid_request', '--owner <id-or-email> is required when connecting a mailbox.');
-        }
-        const sharedMemberIds = opts.shareWith.map((ref) => findMember(ctx.db, ref).id);
-        const access = {
-          sharingMode: sharingMode(opts.shared, sharedMemberIds),
-          sharedMemberIds,
-        };
-
-        if (provider === 'imap') {
-          const previousCredentials = existing ? ctx.registry.loadImapCredentials(existing.id) : undefined;
-          const email = opts.email?.trim();
-          if (!email || !email.includes('@'))
-            throw new EmailError('invalid_request', '--email must be a mailbox address.');
-          if (!opts.imapHost) throw new EmailError('invalid_request', '--imap-host is required for IMAP accounts.');
-          if (!opts.smtpHost) throw new EmailError('invalid_request', '--smtp-host is required for IMAP accounts.');
-          if (existing && existing.email !== email) {
-            throw new EmailError(
-              'invalid_request',
-              `Account ${existing.id} belongs to ${existing.email}, not ${email}.`,
-            );
+        const access = { sharedWithAll: false, grantedMemberIds: [] };
+        const auditConnection = (operation: string, accountId?: string): void => {
+          try {
+            recordAdminAuditEvent(ctx.db, {
+              operation,
+              outcome: 'success',
+              actorMemberId: principal.memberId,
+              actorSessionId: principal.sessionId,
+              ...(accountId ? { resourceType: 'account', resourceId: accountId } : {}),
+            });
+          } catch {
+            // Audit storage must not replace the connection result.
           }
-          const imapPassword = await accountSecret(opts.imapPasswordEnv, 'IMAP password');
-          const smtpPassword = opts.smtpPasswordEnv
-            ? await accountSecret(opts.smtpPasswordEnv, 'SMTP password')
-            : imapPassword;
-          const imapUser = opts.imapUser ?? email;
-          const credentials: ImapCredentials = {
-            imap: {
-              host: opts.imapHost,
-              port: connectionPort(opts.imapPort, '--imap-port'),
-              security: connectionSecurity(opts.imapSecurity, '--imap-security'),
-              user: imapUser,
-              password: imapPassword,
-            },
-            smtp: {
-              host: opts.smtpHost,
-              port: connectionPort(opts.smtpPort, '--smtp-port'),
-              security: connectionSecurity(opts.smtpSecurity, '--smtp-security'),
-              user: opts.smtpUser ?? imapUser,
-              password: smtpPassword,
-            },
-            saveSent:
-              previousCredentials && command.getOptionValueSource('saveSent') === 'default'
-                ? previousCredentials.saveSent
-                : opts.saveSent,
-            folderOverrides: {
-              ...previousCredentials?.folderOverrides,
-              ...(opts.sentFolder ? { sent: opts.sentFolder } : {}),
-              ...(opts.draftsFolder ? { drafts: opts.draftsFolder } : {}),
-              ...(opts.trashFolder ? { trash: opts.trashFolder } : {}),
-              ...(opts.archiveFolder ? { archive: opts.archiveFolder } : {}),
-              ...(opts.spamFolder ? { spam: opts.spamFolder } : {}),
-            },
-          };
-          console.log('Checking IMAP and SMTP settings...');
-          const warnings = await ctx.registry.testImapCredentials(email, credentials, opts.displayName);
-          const account = ctx.registry.addImapAccount(
-            email,
-            credentials,
-            opts.displayName,
-            owner?.id,
-            opts.reauthorize,
-            access,
-          );
-          console.log(`Connected ${account.email} (account id: ${account.id})`);
-          for (const warning of warnings) console.log(`Warning: ${warning.message}.`);
-          return;
-        }
+        };
 
         if (provider === 'outlook') {
           const connectionMode = selectGmailConnectionMode(ctx.config, opts);
           if (connectionMode === 'hosted') {
             const { connectionUrl } = prepareHostedOutlookConnection(ctx.db, ctx.config, {
-              ...(owner ? { memberId: owner.id } : {}),
+              ownerMemberId: owner.id,
               ...(existing ? { reauthorizeAccountId: existing.id } : {}),
-              ...(!existing ? { sharingMode: access.sharingMode, sharedMemberIds: access.sharedMemberIds } : {}),
+              ...(!existing ? access : {}),
             });
+            auditConnection('account.connection.prepare', existing?.id);
             console.log('\nOpen this URL in your browser to connect Outlook:\n');
             console.log(`  ${connectionUrl}\n`);
             console.log('This link expires in 10 minutes and can only be used once.');
@@ -563,6 +825,15 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
               console.log('Waiting for Microsoft to redirect back...');
             },
             (result) => {
+              const duplicate = ctx.registry
+                .listAccounts()
+                .find((candidate) => candidate.email.toLowerCase() === result.email.toLowerCase());
+              if (duplicate && !canManageOwnedAccount(principal, duplicate)) {
+                throw new EmailError(
+                  'permission_denied',
+                  'Only the mailbox owner or an administrator can reauthorize it.',
+                );
+              }
               if (existing && result.email.toLowerCase() !== existing.email.toLowerCase()) {
                 throw new EmailError(
                   'invalid_request',
@@ -574,15 +845,16 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
                 result.email,
                 result.credentials,
                 result.displayName,
-                owner?.id,
+                owner.id,
                 existing?.id,
                 access,
               );
             },
           );
+          auditConnection('account.connection.complete', account.id);
           console.log(
             `\nConnected ${account.email} (account id: ${account.id})` +
-              (owner && account.ownerId === owner.id ? ` for member ${owner.name}` : ''),
+              (account.ownerMemberId === owner.id ? ` for member ${owner.name}` : ''),
           );
           return;
         }
@@ -590,10 +862,11 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         const gmailConnectionMode = selectGmailConnectionMode(ctx.config, opts);
         if (gmailConnectionMode === 'hosted') {
           const { connectionUrl } = prepareHostedGmailConnection(ctx.db, ctx.config, {
-            ...(owner ? { memberId: owner.id } : {}),
+            ownerMemberId: owner.id,
             ...(existing ? { reauthorizeAccountId: existing.id } : {}),
-            ...(!existing ? { sharingMode: access.sharingMode, sharedMemberIds: access.sharedMemberIds } : {}),
+            ...(!existing ? access : {}),
           });
+          auditConnection('account.connection.prepare', existing?.id);
           console.log('\nOpen this URL in your browser to connect Gmail:\n');
           console.log(`  ${connectionUrl}\n`);
           console.log('This link expires in 10 minutes and can only be used once.');
@@ -608,6 +881,15 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
             console.log('Waiting for Google to redirect back…');
           },
           (result) => {
+            const duplicate = ctx.registry
+              .listAccounts()
+              .find((candidate) => candidate.email.toLowerCase() === result.email.toLowerCase());
+            if (duplicate && !canManageOwnedAccount(principal, duplicate)) {
+              throw new EmailError(
+                'permission_denied',
+                'Only the mailbox owner or an administrator can reauthorize it.',
+              );
+            }
             if (existing && result.email !== existing.email) {
               throw new EmailError(
                 'invalid_request',
@@ -615,14 +897,15 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
                   'Try again and choose the matching Google account.',
               );
             }
-            return ctx.registry.addGmailAccount(result.email, result.tokens, result.displayName, owner?.id, access);
+            return ctx.registry.addGmailAccount(result.email, result.tokens, result.displayName, owner.id, access);
           },
         );
+        auditConnection('account.connection.complete', account.id);
         console.log(
           `\nConnected ${account.email} (account id: ${account.id})` +
-            (owner && account.ownerId === owner.id ? ` for member ${owner.name}` : ''),
+            (account.ownerMemberId === owner.id ? ` for member ${owner.name}` : ''),
         );
-        if (owner && account.ownerId !== owner.id) {
+        if (account.ownerMemberId !== owner.id) {
           // The mailbox was already connected; re-auth keeps its existing owner.
           console.log(
             `${account.email} was already connected, so its ownership is unchanged. ` +
@@ -656,8 +939,6 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           spamFolder?: string;
         },
       ) => {
-        const ctx = createContext();
-        warnLicense(ctx.db);
         try {
           const changes = [
             ['sent', opts.sentFolder],
@@ -669,39 +950,19 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           if (!changes.some(([, value]) => value !== undefined)) {
             throw new EmailError('invalid_request', 'Pass at least one folder option.');
           }
-          const credentials = ctx.registry.loadImapCredentials(accountId);
-          const provider = ctx.registry.getProvider(accountId) as ReturnType<typeof ctx.registry.getProvider> & {
-            close?: () => Promise<void>;
-          };
-          try {
-            const existingPaths = new Set((await provider.listFolders()).map((folder) => folder.id));
-            const overrides = { ...credentials.folderOverrides };
-            for (const [role, value] of changes) {
-              if (value === undefined) continue;
-              if (value === 'auto') delete overrides[role];
-              else {
-                if (!existingPaths.has(value)) {
-                  throw new EmailError('not_found', `No selectable mailbox named "${value}".`);
-                }
-                overrides[role] = value;
-              }
-            }
-            credentials.folderOverrides = overrides;
-            ctx.registry.saveImapCredentials(accountId, credentials);
-            const checked = ctx.registry.getProvider(accountId) as typeof provider & {
-              getFolderWarnings?: () => Promise<Array<{ message: string }>>;
-            };
-            try {
-              console.log(`Updated folder settings for ${accountId}.`);
-              for (const warning of (await checked.getFolderWarnings?.()) ?? []) {
-                console.log(`Warning: ${warning.message}.`);
-              }
-            } finally {
-              await checked.close?.();
-            }
-          } finally {
-            await provider.close?.();
+          const patch: Record<string, string | null> = {};
+          for (const [role, value] of changes) {
+            if (value !== undefined) patch[role] = value === 'auto' ? null : value;
           }
+          const result = await instanceClient(selectedInstance()).json<{
+            warnings: Array<{ message: string }>;
+          }>(`/api/v1/accounts/${encodeURIComponent(accountId)}/imap/folders`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(patch),
+          });
+          console.log(`Updated folder settings for ${accountId}.`);
+          for (const warning of result.warnings) console.log(`Warning: ${warning.message}.`);
         } catch (err) {
           console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
           process.exitCode = 1;
@@ -712,24 +973,34 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   accounts
     .command('list')
     .description('List connected accounts')
-    .action(() => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
-      const all = ctx.registry.listAccounts();
-      if (!all.length) {
-        console.log(
-          'No accounts connected. Run "fluxmail accounts add gmail --owner <member>", "fluxmail accounts add outlook --owner <member>", or the IMAP equivalent.',
-        );
-        return;
-      }
-      const memberNames = new Map(listMembers(ctx.db).map((m) => [m.id, m.name]));
-      for (const a of all) {
-        const owner = a.ownerId ? (memberNames.get(a.ownerId) ?? a.ownerId) : '-';
-        const access =
-          a.sharingMode === 'selected'
-            ? `selected:${a.sharedMemberIds.map((id) => memberNames.get(id) ?? id).join(',')}`
-            : a.sharingMode;
-        console.log(`${a.id}  ${a.provider}  ${a.email}  [${a.status}]  owner=${owner}  access=${access}`);
+    .action(async () => {
+      try {
+        const all = await instanceClient(selectedInstance()).json<
+          Array<{
+            id: string;
+            provider: string;
+            email: string;
+            status: string;
+            ownerMemberId: string;
+            sharedWithAll: boolean;
+            grantedMemberIds: string[];
+          }>
+        >('/api/v1/accounts');
+        if (!all.length) {
+          console.log('No accounts connected. Run "fluxmail accounts add <provider>".');
+          return;
+        }
+        for (const a of all) {
+          const access = a.sharedWithAll
+            ? 'all'
+            : a.grantedMemberIds.length
+              ? `selected:${a.grantedMemberIds.join(',')}`
+              : 'owner-only';
+          console.log(`${a.id}  ${a.provider}  ${a.email}  [${a.status}]  owner=${a.ownerMemberId}  access=${access}`);
+        }
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
       }
     });
 
@@ -737,44 +1008,34 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .command('remove')
     .argument('<accountId>')
     .description('Disconnect an account and delete its stored tokens')
-    .action((accountId: string) => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
-      ctx.registry.removeAccount(accountId);
-      console.log(`Removed ${accountId}`);
+    .action(async (accountId: string) => {
+      try {
+        await instanceClient(selectedInstance()).json(`/api/v1/accounts/${encodeURIComponent(accountId)}/connection`, {
+          method: 'DELETE',
+        });
+        console.log(`Removed ${accountId}`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
     });
 
   accounts
     .command('assign')
     .argument('<accountId>')
-    .option('--owner <member>', 'Member (id or email) to own the mailbox')
-    .option('--member <member>', 'Deprecated alias for --owner')
-    .option('--shared', 'Deprecated alias for sharing with all members')
+    .requiredOption('--owner <member>', 'Member id or email to own the mailbox')
     .description('Change mailbox ownership')
-    .action((accountId: string, opts: { owner?: string; member?: string; shared?: boolean }) => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
+    .action(async (accountId: string, opts: { owner: string }) => {
       try {
-        if (opts.owner && opts.member) {
-          throw new EmailError('invalid_request', '--owner and --member cannot be combined. Use --owner.');
-        }
-        const ownerRef = opts.owner ?? opts.member;
-        if (!ownerRef && !opts.shared) {
-          throw new EmailError('invalid_request', 'Pass --owner <member>.');
-        }
-        if (ownerRef && opts.shared) {
-          throw new EmailError('invalid_request', '--owner and --shared cannot be combined.');
-        }
-        if (opts.member) console.error('Warning: --member is deprecated; use --owner.');
-        if (opts.shared) {
-          console.error('Warning: "accounts assign --shared" is deprecated; use "accounts access --shared".');
-          const account = ctx.registry.setAccountAccess(accountId, { sharingMode: 'all' });
-          console.log(`${account.email} is now shared with every member. Its owner is unchanged.`);
-          return;
-        }
-        const owner = findMember(ctx.db, ownerRef!);
-        const account = ctx.registry.assignAccountOwner(accountId, owner.id);
-        console.log(`${account.email} is now owned by ${owner.name}.`);
+        const account = await instanceClient(selectedInstance()).json<{ email: string; ownerMemberId: string }>(
+          `/api/v1/admin/accounts/${encodeURIComponent(accountId)}`,
+          {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ownerMemberId: opts.owner }),
+          },
+        );
+        console.log(`${account.email} is now owned by ${account.ownerMemberId}.`);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
@@ -788,9 +1049,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .option('--shared', 'Share the mailbox with every member')
     .option('--share-with <member>', 'Replace selected access with this member; repeat as needed', collectOption, [])
     .description('Set who can access a mailbox')
-    .action((accountId: string, opts: { ownerOnly?: boolean; shared?: boolean; shareWith: string[] }) => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
+    .action(async (accountId: string, opts: { ownerOnly?: boolean; shared?: boolean; shareWith: string[] }) => {
       try {
         const choices =
           Number(Boolean(opts.ownerOnly)) + Number(Boolean(opts.shared)) + Number(opts.shareWith.length > 0);
@@ -800,12 +1059,18 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
             'Pass exactly one of --owner-only, --shared, or one or more --share-with options.',
           );
         }
-        const sharedMemberIds = opts.shareWith.map((ref) => findMember(ctx.db, ref).id);
-        const account = ctx.registry.setAccountAccess(accountId, {
-          sharingMode: sharingMode(opts.shared, sharedMemberIds),
-          sharedMemberIds,
+        const account = await instanceClient(selectedInstance()).json<{
+          email: string;
+          sharedWithAll: boolean;
+          grantedMemberIds: string[];
+        }>(`/api/v1/admin/accounts/${encodeURIComponent(accountId)}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sharedWithAll: opts.shared === true, grantedMemberIds: opts.shareWith }),
         });
-        console.log(`Updated access for ${account.email}: ${account.sharingMode}.`);
+        console.log(
+          `Updated access for ${account.email}: ${account.sharedWithAll ? 'all members' : `${account.grantedMemberIds.length} explicit grant(s)`}.`,
+        );
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
@@ -817,22 +1082,27 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   membersCmd
     .command('add')
     .requiredOption('--name <name>', 'Member name')
-    .option('--email <email>', 'Member email, usable as a shorthand in --member flags')
+    .requiredOption('--email <email>', 'Member login email')
     .option('--role <role>', 'Member role: admin or member')
     .description('Add a member (subject to the plan seat limit)')
-    .action((opts: { name: string; email?: string; role?: string }) => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
+    .action(async (opts: { name: string; email: string; role?: string }) => {
       try {
         if (opts.role && opts.role !== 'admin' && opts.role !== 'member') {
           throw new EmailError('invalid_request', '--role must be "admin" or "member".');
         }
-        const member = addMember(ctx.db, {
-          name: opts.name,
-          ...(opts.email ? { email: opts.email } : {}),
-          ...(opts.role ? { role: opts.role as MemberRole } : {}),
+        const member = await instanceClient(selectedInstance()).json<{
+          id: string;
+          name: string;
+          role: string;
+          invitation: { token: string; expiresAt: number };
+        }>('/api/v1/admin/members', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: opts.name, email: opts.email, role: opts.role ?? 'member' }),
         });
-        console.log(`Added member ${member.name} (id: ${member.id}, role: ${member.role})`);
+        console.log(`Added ${member.name} (id: ${member.id}, role: ${member.role}).`);
+        console.log(`Enrollment code (shown once): ${member.invitation.token}`);
+        console.log(`Expires: ${new Date(member.invitation.expiresAt).toISOString()}`);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
@@ -842,18 +1112,31 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   membersCmd
     .command('list')
     .description('List members with their mailbox and API key counts')
-    .action(() => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
-      const all = listMembers(ctx.db);
-      if (!all.length) {
-        console.log('No members. Run "fluxmail members add --name <name>".');
-        return;
-      }
-      for (const m of all) {
-        console.log(
-          `${m.id}  ${m.name}  role=${m.role}  email=${m.email ?? '-'}  mailboxes=${m.accountCount}  keys=${m.apiKeyCount}`,
-        );
+    .action(async () => {
+      try {
+        const all = await instanceClient(selectedInstance()).json<
+          Array<{
+            id: string;
+            name: string;
+            role: string;
+            status: string;
+            email: string | null;
+            accountCount: number;
+            apiKeyCount: number;
+          }>
+        >('/api/v1/admin/members');
+        if (!all.length) {
+          console.log('No members. Run "fluxmail members add --name <name>".');
+          return;
+        }
+        for (const m of all) {
+          console.log(
+            `${m.id}  ${m.name}  role=${m.role}  status=${m.status}  email=${m.email ?? '-'}  mailboxes=${m.accountCount}  keys=${m.apiKeyCount}`,
+          );
+        }
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
       }
     });
 
@@ -861,12 +1144,12 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .command('remove')
     .argument('<memberId>')
     .description('Remove a member after reassigning or removing their mailboxes')
-    .action((memberId: string) => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
+    .action(async (memberId: string) => {
       try {
-        const { name, revokedApiKeys } = removeMember(ctx.db, memberId);
-        console.log(`Removed ${name} and revoked ${revokedApiKeys} API key(s).`);
+        await instanceClient(selectedInstance()).json(`/api/v1/admin/members/${encodeURIComponent(memberId)}`, {
+          method: 'DELETE',
+        });
+        console.log(`Removed ${memberId}.`);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
@@ -878,15 +1161,104 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .argument('<member>', 'Member id or email')
     .argument('<role>', 'admin or member')
     .description('Change a member role')
-    .action((memberRef: string, role: string) => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
+    .action(async (memberRef: string, role: string) => {
       try {
         if (role !== 'admin' && role !== 'member') {
           throw new EmailError('invalid_request', 'Role must be "admin" or "member".');
         }
-        const member = setMemberRole(ctx.db, memberRef, role);
+        const member = await instanceClient(selectedInstance()).json<{ name: string; role: string }>(
+          `/api/v1/admin/members/${encodeURIComponent(memberRef)}`,
+          {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ role }),
+          },
+        );
         console.log(`${member.name} now has the ${member.role} role.`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  membersCmd
+    .command('status')
+    .argument('<member>', 'Member id or email')
+    .argument('<status>', 'active or suspended')
+    .description('Activate or suspend a member')
+    .action(async (memberRef: string, status: string) => {
+      try {
+        if (status !== 'active' && status !== 'suspended') {
+          throw new EmailError('invalid_request', 'Status must be "active" or "suspended".');
+        }
+        const member = await instanceClient(selectedInstance()).json<{ name: string; status: string }>(
+          `/api/v1/admin/members/${encodeURIComponent(memberRef)}`,
+          {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ status }),
+          },
+        );
+        console.log(`${member.name} is now ${member.status}.`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  for (const [commandName, endpoint, label] of [
+    ['invite', 'invitation', 'Enrollment code'],
+    ['password-reset', 'password-reset', 'Password reset code'],
+  ] as const) {
+    membersCmd
+      .command(commandName)
+      .argument('<member>', 'Member id or email')
+      .description(commandName === 'invite' ? 'Issue a new enrollment code' : 'Issue a password reset code')
+      .action(async (memberRef: string) => {
+        try {
+          const token = await instanceClient(selectedInstance()).json<{ token: string; expiresAt: number }>(
+            `/api/v1/admin/members/${encodeURIComponent(memberRef)}/${endpoint}`,
+            { method: 'POST' },
+          );
+          console.log(`${label} (shown once): ${token.token}`);
+          console.log(`Expires: ${new Date(token.expiresAt).toISOString()}`);
+        } catch (err) {
+          console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          process.exitCode = 1;
+        }
+      });
+  }
+
+  membersCmd
+    .command('sessions')
+    .argument('<member>', 'Member id or email')
+    .description('List sessions for a member')
+    .action(async (memberRef: string) => {
+      try {
+        const sessions = await instanceClient(selectedInstance()).json<
+          Array<{ id: string; deviceName: string; expiresAt: number }>
+        >(`/api/v1/admin/members/${encodeURIComponent(memberRef)}/sessions`);
+        for (const session of sessions) {
+          console.log(`${session.id}  ${session.deviceName}  expires=${new Date(session.expiresAt).toISOString()}`);
+        }
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  membersCmd
+    .command('revoke-session')
+    .argument('<member>', 'Member id or email')
+    .argument('<sessionId>')
+    .description('Revoke a member session')
+    .action(async (memberRef: string, sessionId: string) => {
+      try {
+        await instanceClient(selectedInstance()).json(
+          `/api/v1/admin/members/${encodeURIComponent(memberRef)}/sessions/${encodeURIComponent(sessionId)}`,
+          { method: 'DELETE' },
+        );
+        console.log(`Revoked ${sessionId}.`);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
@@ -905,26 +1277,51 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   apikey
     .command('create')
     .requiredOption('--name <name>', 'Human-readable key name')
-    .requiredOption('--member <member>', 'Member (id or email) the key is issued to')
+    .option('--member <member>', 'Admin only: issue the key to another member')
     .option('--account <account>', 'Limit the key to one mailbox; repeat as needed', collectOption, [])
     .option('--profile <profile>', `Tool profile: ${NAMED_PERMISSION_PROFILES.join(', ')}`)
     .option('--allow <capability>', 'Allow one capability in a custom policy; repeat as needed', collectOption, [])
     .option('--admin <capability>', 'Add one admin capability to a named profile; repeat as needed', collectOption, [])
     .description('Create an API key (shown once)')
-    .action((opts: { name: string; member: string; account: string[] } & PermissionOptions) => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
+    .action(async (opts: { name: string; member?: string; account: string[] } & PermissionOptions) => {
       try {
-        const member = findMember(ctx.db, opts.member);
-        const accountIds = accountIdsFromRefs(ctx, opts.account);
         const permissions = permissionPolicyFromOptions(opts);
-        const { key, info } = createApiKey(ctx.db, opts.name, member.id, permissions, accountIds);
-        console.log(
-          `Created API key "${info.name}" (id: ${info.id}, profile: ${info.permissionProfile})` +
-            ` for member ${member.name}` +
-            '\n',
-        );
-        console.log(`  ${key}\n`);
+        const body = {
+          name: opts.name,
+          ...(opts.member ? { member: opts.member } : {}),
+          accounts: opts.account.length ? opts.account : null,
+          ...(permissions.profile === 'custom'
+            ? { customCapabilities: permissions.capabilities }
+            : {
+                permissionProfile: permissions.profile,
+                supplementalCapabilities: permissions.supplementalCapabilities,
+              }),
+        };
+        const created = await instanceClient(selectedInstance()).json<{
+          id: string;
+          name: string;
+          permissionProfile: string;
+          key: string;
+        }>(opts.member ? '/api/v1/admin/api-keys' : '/api/v1/me/api-keys', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(
+            opts.member
+              ? body
+              : {
+                  name: body.name,
+                  accountIds: body.accounts,
+                  ...(permissions.profile === 'custom'
+                    ? { capabilities: permissions.capabilities }
+                    : {
+                        permissionProfile: permissions.profile,
+                        supplementalCapabilities: permissions.supplementalCapabilities,
+                      }),
+                },
+          ),
+        });
+        console.log(`Created API key "${created.name}" (id: ${created.id}, profile: ${created.permissionProfile}).\n`);
+        console.log(`  ${created.key}\n`);
         console.log('Store it now; it cannot be shown again.');
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -935,25 +1332,30 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   apikey
     .command('list')
     .description('List API keys')
-    .action(() => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
-      const keys = listApiKeys(ctx.db);
-      if (!keys.length) {
-        console.log('No API keys. Run "fluxmail apikey create --name <name> --member <member>".');
-        return;
-      }
-      const memberNames = new Map(listMembers(ctx.db).map((m) => [m.id, m.name]));
-      for (const k of keys) {
-        const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : 'never';
-        const member = k.memberId ? (memberNames.get(k.memberId) ?? k.memberId) : 'system';
-        const accountScope = k.accountIds === null ? 'all granted' : k.accountIds.join(',') || 'none';
-        console.log(
-          `${k.id}  ${k.name}  member=${member}  accounts=${accountScope}  profile=${k.permissionProfile}` +
-            (k.permissionProfile === 'custom' ? `  allows=${k.capabilities.join(',')}` : '') +
-            (k.supplementalCapabilities.length ? `  admin=${k.supplementalCapabilities.join(',')}` : '') +
-            `  created=${new Date(k.createdAt).toISOString()}  lastUsed=${lastUsed}`,
+    .action(async () => {
+      try {
+        const client = instanceClient(selectedInstance());
+        const me = await client.json<{ role: string }>('/api/v1/me');
+        const keys = await client.json<ApiKeyInfo[]>(
+          me.role === 'admin' ? '/api/v1/admin/api-keys' : '/api/v1/me/api-keys',
         );
+        if (!keys.length) {
+          console.log('No API keys. Run "fluxmail apikey create --name <name>".');
+          return;
+        }
+        for (const k of keys) {
+          const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : 'never';
+          const accountScope = k.accountIds === null ? 'all granted' : k.accountIds.join(',') || 'none';
+          console.log(
+            `${k.id}  ${k.name}  member=${k.memberId}  accounts=${accountScope}  profile=${k.permissionProfile}` +
+              (k.permissionProfile === 'custom' ? `  allows=${k.capabilities.join(',')}` : '') +
+              (k.supplementalCapabilities.length ? `  admin=${k.supplementalCapabilities.join(',')}` : '') +
+              `  created=${new Date(k.createdAt).toISOString()}  lastUsed=${lastUsed}`,
+          );
+        }
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
       }
     });
 
@@ -963,17 +1365,17 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .option('--account <account>', 'Replace the allowlist with this mailbox; repeat as needed', collectOption, [])
     .option('--all-accounts', 'Clear the allowlist')
     .description('Replace or clear an API key mailbox allowlist')
-    .action((keyId: string, opts: { account: string[]; allAccounts?: boolean }) => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
+    .action(async (keyId: string, opts: { account: string[]; allAccounts?: boolean }) => {
       try {
         if (Boolean(opts.allAccounts) === Boolean(opts.account.length)) {
           throw new EmailError('invalid_request', 'Pass --all-accounts or at least one --account.');
         }
-        const accountIds = opts.allAccounts ? null : accountIdsFromRefs(ctx, opts.account);
-        if (!updateApiKeyAccounts(ctx.db, keyId, accountIds)) {
-          throw new EmailError('not_found', `No key with id ${keyId}.`);
-        }
+        const accountIds = opts.allAccounts ? null : opts.account;
+        await instanceClient(selectedInstance()).json(`/api/v1/admin/api-keys/${encodeURIComponent(keyId)}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ accounts: accountIds }),
+        });
         console.log(
           accountIds === null
             ? `Cleared the mailbox allowlist for ${keyId}.`
@@ -992,22 +1394,28 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .option('--allow <capability>', 'Allow one capability in a custom policy; repeat as needed', collectOption, [])
     .option('--admin <capability>', 'Add one admin capability to a named profile; repeat as needed', collectOption, [])
     .description('Change the permissions for an API key')
-    .action((keyId: string, opts: PermissionOptions) => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
+    .action(async (keyId: string, opts: PermissionOptions) => {
       try {
-        const existing = listApiKeys(ctx.db).find((key) => key.id === keyId);
+        const client = instanceClient(selectedInstance());
+        const existing = (await client.json<ApiKeyInfo[]>('/api/v1/admin/api-keys')).find((key) => key.id === keyId);
         if (!existing) {
           console.error(`No key with id ${keyId}`);
           process.exitCode = 1;
           return;
         }
         const permissions = permissionPolicyForUpdate(opts, existing);
-        if (!updateApiKeyPermissions(ctx.db, keyId, permissions)) {
-          console.error(`No key with id ${keyId}`);
-          process.exitCode = 1;
-          return;
-        }
+        await client.json(`/api/v1/admin/api-keys/${encodeURIComponent(keyId)}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(
+            permissions.profile === 'custom'
+              ? { customCapabilities: permissions.capabilities }
+              : {
+                  permissionProfile: permissions.profile,
+                  supplementalCapabilities: permissions.supplementalCapabilities,
+                },
+          ),
+        });
         console.log(`Updated ${keyId} to profile ${permissions.profile}`);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -1019,10 +1427,20 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .command('revoke')
     .argument('<keyId>')
     .description('Revoke an API key')
-    .action((keyId: string) => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
-      console.log(revokeApiKey(ctx.db, keyId) ? `Revoked ${keyId}` : `No key with id ${keyId}`);
+    .action(async (keyId: string) => {
+      try {
+        const client = instanceClient(selectedInstance());
+        const me = await client.json<{ role: string }>('/api/v1/me');
+        const path =
+          me.role === 'admin'
+            ? `/api/v1/admin/api-keys/${encodeURIComponent(keyId)}`
+            : `/api/v1/me/api-keys/${encodeURIComponent(keyId)}`;
+        await client.json(path, { method: 'DELETE' });
+        console.log(`Revoked ${keyId}`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
     });
 
   const license = program.command('license').description('Manage the paid-tier license');
@@ -1039,34 +1457,30 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         process.exitCode = 1;
         return;
       }
-      const dataDir = resolveDataDir();
-      const overridingKey = process.env.FLUXMAIL_LICENSE_KEY?.trim();
-      if (overridingKey && overridingKey !== key) {
-        console.error(
-          'FLUXMAIL_LICENSE_KEY is already set by the shell or a .env file, which takes precedence over stored settings. Remove it before activating a different key.',
-        );
-        process.exitCode = 1;
-        return;
-      }
-      const ctx = createContext();
-      const result = await activateLicense(ctx.db, {
-        licenseKey: key,
-        serverUrl: ctx.config.licenseServerUrl,
-        dataDir,
-      });
-      if (result.outcome === 'refreshed') {
-        const { lease } = result;
-        console.log(
-          `License activated: ${lease.plan} plan, up to ${lease.maxAccounts} mailboxes and ` +
-            `${lease.maxMembers} member${lease.maxMembers === 1 ? '' : 's'}.`,
-        );
-        console.log(`The lease is valid until ${lease.expiresAt} and renews automatically while the server runs.`);
-        return;
-      }
-      console.error(result.message);
-      if (result.outcome === 'outage') {
-        console.error('The key is saved; validation will be retried automatically once the server can reach it.');
-      } else {
+      try {
+        const result = await instanceClient(selectedInstance()).json<{
+          outcome: 'activated' | 'saved_for_retry';
+          lease?: { plan: string; maxAccounts: number; maxMembers: number; expiresAt: string };
+        }>('/api/v1/admin/license/activate', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ licenseKey: key }),
+        });
+        if (result.lease) {
+          console.log(
+            `License activated: ${result.lease.plan} plan, up to ${result.lease.maxAccounts} mailboxes and ` +
+              `${result.lease.maxMembers} member${result.lease.maxMembers === 1 ? '' : 's'}.`,
+          );
+          console.log(
+            `The lease is valid until ${result.lease.expiresAt} and renews automatically while the server runs.`,
+          );
+        } else {
+          console.log(
+            'The license key was saved. Validation will retry when the instance can reach the license server.',
+          );
+        }
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
     });
@@ -1074,65 +1488,52 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   license
     .command('status')
     .description('Show the configured license and cached lease')
-    .action(() => {
-      const ctx = createContext();
-      if (ctx.config.licenseKey) {
-        console.log(`License key: ${maskStoredConfigValue('FLUXMAIL_LICENSE_KEY', ctx.config.licenseKey)}`);
-      } else {
-        console.log('No license key configured. Run "fluxmail license activate <key>" after purchasing one.');
+    .action(async () => {
+      try {
+        const status = await instanceClient(selectedInstance()).json<{
+          configured: boolean;
+          source: 'environment' | 'stored' | null;
+          entitlements: Entitlements;
+          usage: { accounts: number; members: number; overQuota: boolean };
+          lastValidatedAt: string | null;
+          warning: string | null;
+        }>('/api/v1/admin/license');
+        console.log(
+          status.configured
+            ? `License configured from ${status.source}.`
+            : 'No license key configured. Run "fluxmail license activate <key>" after purchasing one.',
+        );
+        console.log(`Current plan: ${planLine(status.entitlements)}`);
+        console.log(
+          `Usage: ${status.usage.accounts} mailbox(es), ${status.usage.members} member(s)` +
+            (status.usage.overQuota ? ' (over plan limits)' : ''),
+        );
+        if (status.lastValidatedAt) console.log(`Last validated: ${status.lastValidatedAt}`);
+        if (status.warning) console.log(`Warning: ${status.warning}`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
       }
-      const row = readLeaseRow(ctx.db);
-      if (row) {
-        console.log(`Last validated: ${new Date(row.updatedAt).toISOString()}`);
-        try {
-          const lease = verifyLease(row.token, licensePublicKeys(), new Date(), { allowExpired: true });
-          const expired = Date.parse(lease.expiresAt) <= Date.now();
-          console.log(
-            `Lease ${expired ? 'expired' : 'valid until'} ${lease.expiresAt}: ${lease.plan} plan, ` +
-              `up to ${lease.maxAccounts} mailboxes and ${lease.maxMembers} member${lease.maxMembers === 1 ? '' : 's'}.`,
-          );
-        } catch (err) {
-          console.log(`Cached lease is not usable (${err instanceof Error ? err.message : String(err)}).`);
-        }
-      } else {
-        console.log('No cached lease.');
-      }
-      console.log(`Current plan: ${planLine(getEntitlements(ctx.db))}`);
-      warnLicense(ctx.db, console.log);
     });
 
   license
     .command('deactivate')
     .description('Release the license from this instance and remove the stored key and cached lease')
     .action(async () => {
-      const dataDir = resolveDataDir();
-      // Captured before createContext() merges the stored config into the
-      // environment: truthy only when the key comes from the shell or a .env file.
-      const envLicenseKey = process.env.FLUXMAIL_LICENSE_KEY?.trim();
-      const ctx = createContext();
-      // Best effort: free the server-side instance binding so the key can be
-      // activated elsewhere. Local deactivation proceeds either way.
-      if (ctx.config.licenseKey) {
-        const released = await releaseLicense({
-          serverUrl: ctx.config.licenseServerUrl,
-          licenseKey: ctx.config.licenseKey,
-          instanceId: loadInstanceId(dataDir),
-        });
+      try {
+        const result = await instanceClient(selectedInstance()).json<{
+          released: boolean;
+          removedStoredKey: boolean;
+        }>('/api/v1/admin/license', { method: 'DELETE' });
         console.log(
-          released
-            ? 'Released the license from this instance; it can now be activated elsewhere.'
-            : 'Could not reach the license server to release this instance; unused bindings are released automatically after a while.',
+          result.released
+            ? 'Released the license from this instance.'
+            : 'The local license was removed. The remote binding, if any, will expire automatically.',
         );
-      }
-      const removed = unsetStoredConfig(dataDir, 'FLUXMAIL_LICENSE_KEY');
-      clearLease(ctx.db);
-      console.log(
-        removed
-          ? 'License removed; this instance is back to Personal-plan limits.'
-          : 'No stored license key; cleared any cached lease.',
-      );
-      if (envLicenseKey) {
-        console.log('Note: FLUXMAIL_LICENSE_KEY is still set in the environment or a .env file.');
+        console.log('This instance is back to Personal plan limits.');
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
       }
     });
 
@@ -1213,24 +1614,15 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
 
   program
     .command('status')
-    .description('Show engine, store, account, member, entitlement, and provider status')
+    .description('Show mailbox and provider status for the selected instance')
     .action(async () => {
-      const ctx = createContext();
-      warnLicense(ctx.db);
-      const serviceStatus = await ctx.service.status();
-      console.log(
-        JSON.stringify(
-          {
-            ...serviceStatus,
-            version: VERSION,
-            dataDir: ctx.config.dataDir,
-            databasePath: ctx.config.dbPath,
-            store: inspectStoreCompatibility(ctx.config.dbPath, ctx.config.dataDir),
-          },
-          null,
-          2,
-        ),
-      );
+      try {
+        const status = await instanceClient(selectedInstance()).json('/api/v1/status');
+        console.log(JSON.stringify(status, null, 2));
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
     });
 
   return program;

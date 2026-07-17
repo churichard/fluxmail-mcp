@@ -9,7 +9,13 @@ export const MCP_CAPABILITIES = [
 
 export type McpCapability = (typeof MCP_CAPABILITIES)[number];
 
-export const ADMIN_CAPABILITIES = ['admin.accounts', 'admin.api_keys', 'admin.license'] as const;
+export const ADMIN_CAPABILITIES = [
+  'admin.accounts',
+  'admin.members',
+  'admin.api_keys',
+  'admin.license',
+  'admin.audit',
+] as const;
 export type AdminCapability = (typeof ADMIN_CAPABILITIES)[number];
 export type Capability = McpCapability | AdminCapability;
 

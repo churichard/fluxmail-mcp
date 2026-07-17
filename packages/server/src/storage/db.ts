@@ -52,6 +52,7 @@ export const members = sqliteTable(
     name: text('name').notNull(),
     email: text('email'),
     role: text('role').notNull().default('member'),
+    status: text('status').notNull().default('pending'),
     createdAt: integer('created_at').notNull(),
   },
   (table) => [uniqueIndex('members_email_unique').on(table.email)],
@@ -66,15 +67,15 @@ export const accounts = sqliteTable(
     displayName: text('display_name'),
     status: text('status').notNull().default('active'),
     createdAt: integer('created_at').notNull(),
-    /** Owning member. NULL is retained only for migrated installs with no members. */
-    memberId: text('member_id').references(() => members.id, { onDelete: 'set null' }),
-    sharingMode: text('sharing_mode').notNull().default('private'),
+    /** Transitional nulls only exist until a migrated installation claims its first administrator. */
+    ownerMemberId: text('member_id').references(() => members.id, { onDelete: 'restrict' }),
+    sharedWithAll: integer('shared_with_all', { mode: 'boolean' }).notNull().default(false),
   },
   (table) => [uniqueIndex('accounts_provider_email_unique').on(table.provider, table.email)],
 );
 
-export const accountMemberShares = sqliteTable(
-  'account_member_shares',
+export const accountMemberGrants = sqliteTable(
+  'account_member_grants',
   {
     accountId: text('account_id')
       .notNull()
@@ -139,8 +140,10 @@ export const apiKeys = sqliteTable('api_keys', {
   keyHash: text('key_hash').notNull().unique(),
   createdAt: integer('created_at').notNull(),
   lastUsedAt: integer('last_used_at'),
-  /** Member the key was issued to; NULL is reserved for migrated system credentials. */
-  memberId: text('member_id').references(() => members.id, { onDelete: 'set null' }),
+  /** Member the key was issued to. */
+  memberId: text('member_id')
+    .notNull()
+    .references(() => members.id, { onDelete: 'cascade' }),
   /** Named MCP permission profile, or "custom" when customCapabilities is populated. */
   permissionProfile: text('permission_profile').notNull().default('full'),
   /** JSON array of explicit MCP capabilities for custom policies. */
@@ -151,6 +154,67 @@ export const apiKeys = sqliteTable('api_keys', {
   accountIds: text('account_ids'),
 });
 
+export const memberCredentials = sqliteTable('member_credentials', {
+  memberId: text('member_id')
+    .primaryKey()
+    .references(() => members.id, { onDelete: 'cascade' }),
+  passwordHash: text('password_hash').notNull(),
+  passwordVersion: integer('password_version').notNull().default(1),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const memberSessions = sqliteTable(
+  'member_sessions',
+  {
+    id: text('id').primaryKey(),
+    memberId: text('member_id')
+      .notNull()
+      .references(() => members.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    deviceName: text('device_name').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    lastUsedAt: integer('last_used_at').notNull(),
+    revokedAt: integer('revoked_at'),
+  },
+  (table) => [index('member_sessions_member').on(table.memberId), index('member_sessions_expiry').on(table.expiresAt)],
+);
+
+export const memberAuthTokens = sqliteTable(
+  'member_auth_tokens',
+  {
+    id: text('id').primaryKey(),
+    memberId: text('member_id')
+      .notNull()
+      .references(() => members.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    tokenHash: text('token_hash').notNull().unique(),
+    createdByMemberId: text('created_by_member_id').references(() => members.id, { onDelete: 'set null' }),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    usedAt: integer('used_at'),
+  },
+  (table) => [
+    index('member_auth_tokens_member').on(table.memberId),
+    index('member_auth_tokens_expiry').on(table.expiresAt),
+  ],
+);
+
+export const authRateLimits = sqliteTable(
+  'auth_rate_limits',
+  {
+    key: text('key').primaryKey(),
+    attempts: integer('attempts').notNull(),
+    windowStartedAt: integer('window_started_at').notNull(),
+  },
+  (table) => [index('auth_rate_limits_window').on(table.windowStartedAt)],
+);
+
+export const instanceSettings = sqliteTable('instance_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+});
+
 export const adminAuditEvents = sqliteTable(
   'admin_audit_events',
   {
@@ -159,6 +223,7 @@ export const adminAuditEvents = sqliteTable(
     operation: text('operation').notNull(),
     outcome: text('outcome').notNull(),
     actorKeyId: text('actor_key_id'),
+    actorSessionId: text('actor_session_id'),
     actorMemberId: text('actor_member_id'),
     resourceType: text('resource_type'),
     resourceId: text('resource_id'),
@@ -171,10 +236,10 @@ export const gmailConnectionGrants = sqliteTable('gmail_connection_grants', {
   /** SHA-256 hex digest. The raw token is printed once and never stored. */
   tokenHash: text('token_hash').primaryKey(),
   scope: text('scope').notNull(),
-  memberId: text('member_id'),
+  ownerMemberId: text('owner_member_id'),
   reauthorizeAccountId: text('reauthorize_account_id'),
-  sharingMode: text('sharing_mode'),
-  sharedMemberIds: text('shared_member_ids'),
+  sharedWithAll: integer('shared_with_all', { mode: 'boolean' }),
+  grantedMemberIds: text('granted_member_ids'),
   createdAt: integer('created_at').notNull(),
   expiresAt: integer('expires_at').notNull(),
   consumedAt: integer('consumed_at'),
@@ -239,6 +304,7 @@ CREATE TABLE IF NOT EXISTS members (
   name TEXT NOT NULL,
   email TEXT,
   role TEXT NOT NULL DEFAULT 'member',
+  status TEXT NOT NULL DEFAULT 'pending',
   created_at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS members_email_unique ON members(email);
@@ -249,10 +315,10 @@ CREATE TABLE IF NOT EXISTS accounts (
   display_name TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   created_at INTEGER NOT NULL,
-  member_id TEXT REFERENCES members(id) ON DELETE SET NULL,
-  sharing_mode TEXT NOT NULL DEFAULT 'private'
+  member_id TEXT REFERENCES members(id) ON DELETE RESTRICT,
+  shared_with_all INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS account_member_shares (
+CREATE TABLE IF NOT EXISTS account_member_grants (
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
   PRIMARY KEY (account_id, member_id)
@@ -297,11 +363,51 @@ CREATE TABLE IF NOT EXISTS api_keys (
   key_hash TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
   last_used_at INTEGER,
-  member_id TEXT REFERENCES members(id) ON DELETE SET NULL,
+  member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
   permission_profile TEXT NOT NULL DEFAULT 'full',
   custom_capabilities TEXT,
   supplemental_capabilities TEXT NOT NULL DEFAULT '[]',
   account_ids TEXT
+);
+CREATE TABLE IF NOT EXISTS member_credentials (
+  member_id TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+  password_hash TEXT NOT NULL,
+  password_version INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS member_sessions (
+  id TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  device_name TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS member_sessions_member ON member_sessions(member_id);
+CREATE INDEX IF NOT EXISTS member_sessions_expiry ON member_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS member_auth_tokens (
+  id TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_by_member_id TEXT REFERENCES members(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS member_auth_tokens_member ON member_auth_tokens(member_id);
+CREATE INDEX IF NOT EXISTS member_auth_tokens_expiry ON member_auth_tokens(expires_at);
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
+  key TEXT PRIMARY KEY,
+  attempts INTEGER NOT NULL,
+  window_started_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS auth_rate_limits_window ON auth_rate_limits(window_started_at);
+CREATE TABLE IF NOT EXISTS instance_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS admin_audit_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -309,6 +415,7 @@ CREATE TABLE IF NOT EXISTS admin_audit_events (
   operation TEXT NOT NULL,
   outcome TEXT NOT NULL,
   actor_key_id TEXT,
+  actor_session_id TEXT,
   actor_member_id TEXT,
   resource_type TEXT,
   resource_id TEXT,
@@ -316,13 +423,23 @@ CREATE TABLE IF NOT EXISTS admin_audit_events (
 );
 CREATE INDEX IF NOT EXISTS admin_audit_events_timestamp
   ON admin_audit_events(timestamp);
+CREATE TRIGGER IF NOT EXISTS admin_audit_events_no_update
+  BEFORE UPDATE ON admin_audit_events
+  BEGIN
+    SELECT RAISE(ABORT, 'security audit events are append-only');
+  END;
+CREATE TRIGGER IF NOT EXISTS admin_audit_events_no_delete
+  BEFORE DELETE ON admin_audit_events
+  BEGIN
+    SELECT RAISE(ABORT, 'security audit events are append-only');
+  END;
 CREATE TABLE IF NOT EXISTS gmail_connection_grants (
   token_hash TEXT PRIMARY KEY,
   scope TEXT NOT NULL,
-  member_id TEXT,
+  owner_member_id TEXT,
   reauthorize_account_id TEXT,
-  sharing_mode TEXT,
-  shared_member_ids TEXT,
+  shared_with_all INTEGER,
+  granted_member_ids TEXT,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   consumed_at INTEGER
@@ -446,6 +563,13 @@ function syncLegacyCredentialRows(sqlite: Database.Database): void {
 }
 
 function migrateToFormatOne(sqlite: Database.Database): void {
+  const existingMemberColumns = tableColumns(sqlite, 'members');
+  const existingApiKeyColumns = tableColumns(sqlite, 'api_keys');
+  const existingAccountColumns = tableColumns(sqlite, 'accounts');
+  const hadLegacyAccountShares = tableColumns(sqlite, 'account_member_shares').size > 0;
+  const legacyAuthentication =
+    (existingMemberColumns.size > 0 && !existingMemberColumns.has('status')) ||
+    (existingMemberColumns.size === 0 && existingApiKeyColumns.size > 0);
   sqlite.exec(BOOTSTRAP_SQL);
   const credentialCols = tableColumns(sqlite, 'account_credentials');
   if (!credentialCols.has('revision')) {
@@ -463,30 +587,37 @@ function migrateToFormatOne(sqlite: Database.Database): void {
       WHERE id = (SELECT id FROM members ORDER BY created_at, id LIMIT 1)
     `);
   }
+  if (!memberCols.has('status')) {
+    sqlite.exec("ALTER TABLE members ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
+  }
 
   if (!tableColumns(sqlite, 'accounts').has('member_id')) {
     sqlite.exec('ALTER TABLE accounts ADD COLUMN member_id TEXT REFERENCES members(id) ON DELETE SET NULL');
   }
   const accountCols = tableColumns(sqlite, 'accounts');
-  if (!accountCols.has('sharing_mode')) {
-    sqlite.exec('ALTER TABLE accounts ADD COLUMN sharing_mode TEXT');
-    sqlite.exec("UPDATE accounts SET sharing_mode = CASE WHEN member_id IS NULL THEN 'all' ELSE 'private' END");
+  if (!accountCols.has('shared_with_all')) {
+    sqlite.exec('ALTER TABLE accounts ADD COLUMN shared_with_all INTEGER NOT NULL DEFAULT 0');
+    sqlite.exec(
+      existingAccountColumns.has('sharing_mode')
+        ? "UPDATE accounts SET shared_with_all = CASE WHEN sharing_mode = 'all' THEN 1 ELSE 0 END"
+        : 'UPDATE accounts SET shared_with_all = CASE WHEN member_id IS NULL THEN 1 ELSE 0 END',
+    );
   }
   sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS account_member_shares (
+    CREATE TABLE IF NOT EXISTS account_member_grants (
       account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
       member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
       PRIMARY KEY (account_id, member_id)
     )
   `);
-  // Migrated ownerless mailboxes remain shared with all, but receive an owner
-  // when the installation already has a member.
-  sqlite.exec(`
-    UPDATE accounts SET member_id = (
-      SELECT id FROM members ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at, id LIMIT 1
-    )
-    WHERE member_id IS NULL AND sharing_mode = 'all' AND EXISTS (SELECT 1 FROM members)
-  `);
+  if (hadLegacyAccountShares) {
+    sqlite.exec(`
+      INSERT OR IGNORE INTO account_member_grants (account_id, member_id)
+      SELECT account_id, member_id FROM account_member_shares
+    `);
+    sqlite.exec('DROP TABLE account_member_shares');
+  }
+  if (accountCols.has('sharing_mode')) sqlite.exec('ALTER TABLE accounts DROP COLUMN sharing_mode');
   if (!tableColumns(sqlite, 'api_keys').has('member_id')) {
     sqlite.exec('ALTER TABLE api_keys ADD COLUMN member_id TEXT REFERENCES members(id) ON DELETE SET NULL');
   }
@@ -499,9 +630,10 @@ function migrateToFormatOne(sqlite: Database.Database): void {
   }
   if (!apiKeyCols.has('supplemental_capabilities')) {
     sqlite.exec("ALTER TABLE api_keys ADD COLUMN supplemental_capabilities TEXT NOT NULL DEFAULT '[]'");
-    // Preserve the account-management authority that admin and memberless keys
-    // held before administrative capabilities existed. Broader capabilities
-    // must still be granted explicitly.
+    // Preserve the account-management authority held by legacy administrator
+    // keys before administrative capabilities existed. Broader capabilities
+    // must still be granted explicitly. The breaking auth migration below
+    // revokes these keys before authenticated service access resumes.
     sqlite.exec(`
       UPDATE api_keys
       SET supplemental_capabilities = '["admin.accounts"]'
@@ -527,13 +659,55 @@ function migrateToFormatOne(sqlite: Database.Database): void {
   if (!apiKeyCols.has('account_ids')) {
     sqlite.exec('ALTER TABLE api_keys ADD COLUMN account_ids TEXT');
   }
+  if (legacyAuthentication) sqlite.exec('DELETE FROM api_keys');
+  if (!tableColumns(sqlite, 'admin_audit_events').has('actor_session_id')) {
+    sqlite.exec('ALTER TABLE admin_audit_events ADD COLUMN actor_session_id TEXT');
+  }
   const grantCols = tableColumns(sqlite, 'gmail_connection_grants');
-  if (!grantCols.has('sharing_mode')) {
-    sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN sharing_mode TEXT');
+  if (!grantCols.has('owner_member_id')) {
+    sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN owner_member_id TEXT');
+    if (grantCols.has('member_id')) {
+      sqlite.exec('UPDATE gmail_connection_grants SET owner_member_id = member_id');
+    }
   }
-  if (!grantCols.has('shared_member_ids')) {
-    sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN shared_member_ids TEXT');
+  if (!grantCols.has('shared_with_all')) {
+    sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN shared_with_all INTEGER');
+    if (grantCols.has('sharing_mode')) {
+      sqlite.exec(
+        "UPDATE gmail_connection_grants SET shared_with_all = CASE sharing_mode WHEN 'all' THEN 1 WHEN 'explicit' THEN 0 ELSE NULL END",
+      );
+    }
   }
+  if (!grantCols.has('granted_member_ids')) {
+    sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN granted_member_ids TEXT');
+    if (grantCols.has('shared_member_ids')) {
+      sqlite.exec('UPDATE gmail_connection_grants SET granted_member_ids = shared_member_ids');
+    }
+  }
+  if (grantCols.has('member_id')) sqlite.exec('ALTER TABLE gmail_connection_grants DROP COLUMN member_id');
+  if (grantCols.has('sharing_mode')) sqlite.exec('ALTER TABLE gmail_connection_grants DROP COLUMN sharing_mode');
+  if (grantCols.has('shared_member_ids')) {
+    sqlite.exec('ALTER TABLE gmail_connection_grants DROP COLUMN shared_member_ids');
+  }
+
+  // Login emails are case-insensitive. Keep the earliest duplicate address
+  // and require later legacy records to receive a new email before enrollment.
+  sqlite.exec(`
+    UPDATE members
+    SET email = NULL
+    WHERE email IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM members AS winner
+        WHERE winner.email IS NOT NULL
+          AND lower(winner.email) = lower(members.email)
+          AND (
+            winner.created_at < members.created_at
+            OR (winner.created_at = members.created_at AND winner.id < members.id)
+          )
+      )
+  `);
+  sqlite.exec('DROP INDEX IF EXISTS members_email_unique');
+  sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS members_email_unique_ci ON members(lower(email))');
 
   // Account identity is the mailbox address, regardless of provider. Gmail
   // wins when an older database contains the same address as both Gmail and IMAP.
@@ -558,6 +732,13 @@ function migrateToFormatOne(sqlite: Database.Database): void {
   `);
   sqlite.exec('DROP INDEX IF EXISTS accounts_provider_email_unique');
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_unique_ci ON accounts(lower(email))');
+  sqlite.exec(`
+    INSERT INTO instance_settings (key, value) VALUES ('schema_version', '2')
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `);
+  sqlite.exec(`
+    INSERT OR IGNORE INTO instance_settings (key, value) VALUES ('bootstrap_complete', '0')
+  `);
 }
 
 const MIGRATIONS = [{ format: 1, run: migrateToFormatOne }] as const;

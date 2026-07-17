@@ -49,10 +49,10 @@ Create a client secret under **Certificates & secrets** for hosted connections. 
 
 ## 4. Connect the mailbox
 
-Create the member who will own the mailbox if they do not exist yet:
+For a fresh local instance, create the first administrator and log in:
 
 ```bash
-fluxmail members add --name "Your name" --email you@example.com
+fluxmail setup --name "Your name" --email you@example.com
 ```
 
 ### Local stdio
@@ -61,7 +61,7 @@ Store the application client ID, then start the browser consent flow:
 
 ```bash
 fluxmail config set MICROSOFT_CLIENT_ID <application-client-id>
-fluxmail accounts add outlook --owner you@example.com
+fluxmail accounts add outlook
 ```
 
 If the app is restricted to one tenant, store that tenant too:
@@ -86,9 +86,9 @@ Start Fluxmail and run the account command inside the container:
 ```bash
 docker compose up -d
 docker compose exec fluxmail \
-  fluxmail members add --name "Your name" --email you@example.com
+  fluxmail setup --name "Your name" --email you@example.com
 docker compose exec fluxmail \
-  fluxmail accounts add outlook --owner you@example.com
+  fluxmail accounts add outlook
 ```
 
 Docker Compose publishes the callback listener to `localhost:8976` on the host, so the browser can return to the waiting command.
@@ -109,7 +109,7 @@ Recreate the container and start the account command:
 ```bash
 docker compose up -d
 docker compose exec fluxmail \
-  fluxmail accounts add outlook --owner you@example.com
+  fluxmail accounts add outlook
 ```
 
 Open the printed connection link in your browser, continue to Microsoft, and approve access. The link expires after 10 minutes and works once.
@@ -122,12 +122,10 @@ A product backend can create a hosted link without running the CLI. The API key 
 curl -X POST "$FLUXMAIL_PUBLIC_URL/api/v1/admin/connections" \
   -H "Authorization: Bearer $FLUXMAIL_ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"provider":"outlook","owner":"you@example.com"}'
+  -d '{"provider":"outlook","ownerMemberId":"you@example.com"}'
 ```
 
-The response contains `data.connectionUrl` and `data.expiresAt`. Send the URL to the user, but keep the admin API key on your backend. To reconnect an existing mailbox, send `reauthorizeAccountId` instead of `owner`. The endpoint also accepts `provider: "gmail"`.
-
-`POST /auth/connections` remains available for existing integrations. It has the same authentication requirement and no longer bypasses authentication under `FLUXMAIL_AUTH=none`.
+The response contains `data.connectionUrl` and `data.expiresAt`. Send the URL to the user, but keep the admin API key on your backend. To reconnect an existing mailbox, send `reauthorizeAccountId` instead of `ownerMemberId`. The endpoint also accepts `provider: "gmail"`.
 
 ## Reconnect Outlook later
 

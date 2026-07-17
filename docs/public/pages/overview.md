@@ -18,12 +18,13 @@ MCP and REST use the same mailbox operations, permissions, and provider integrat
 
 ## How it works
 
-You run Fluxmail on your computer or on a server you control. Agents can connect over MCP using stdio or Streamable HTTP. Apps use the REST API, and operators use the CLI on the machine where Fluxmail runs.
+You run Fluxmail on your computer or on a server you control. Agents connect over MCP, apps use the REST API, and the CLI manages either a local or remote named instance. The CLI signs in as a Fluxmail member. Local MCP clients use that member session over stdio, while remote MCP clients use a scoped API key over Streamable HTTP.
 
 ```text
-AI agents       -> MCP      -> Fluxmail -> Gmail API
-Apps and jobs   -> REST API ->          -> Microsoft Graph
-Operators       -> CLI      ->          -> IMAP and SMTP
+Local agents   -> authenticated MCP stdio session -> Fluxmail -> Gmail API
+Remote agents  -> scoped MCP HTTP API key --------->          -> Microsoft Graph
+Apps and jobs  -> REST API ------------------------>          -> IMAP and SMTP
+CLI operators  -> authenticated control plane ---->
 ```
 
 Fluxmail stores its SQLite database and encrypted provider credentials on the machine where it runs. It does not copy email content to a service operated by Fluxmail. An MCP client may send content returned by Fluxmail to its model provider, depending on how that client works.
@@ -46,7 +47,7 @@ You can connect several mailboxes to one Fluxmail instance. Members and account 
 | Local HTTP server | Local apps, scripts, or MCP clients that connect by URL | REST API, MCP over Streamable HTTP, plus the CLI |
 | Docker server | Remote access, shared instances, or several clients | REST API, MCP over Streamable HTTP, plus the CLI |
 
-The [Quickstart](/docs/quickstart) walks through both setups. For provider-specific steps, see [Connect Gmail / Google Workspace](/docs/connect-gmail-to-mcp), [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp), or [Connect IMAP/SMTP](/docs/connect-an-imap-mailbox).
+The [Quickstart](/docs/quickstart) walks through both setups. [Authentication and instances](/docs/authentication-and-instances) explains member sessions, remote CLI profiles, and API keys. For provider-specific steps, see [Connect Gmail / Google Workspace](/docs/connect-gmail-to-mcp), [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp), or [Connect IMAP/SMTP](/docs/connect-an-imap-mailbox).
 
 ## Read next
 
@@ -56,4 +57,5 @@ The [Quickstart](/docs/quickstart) walks through both setups. For provider-speci
 - [Permissions](/docs/permissions) explains profiles, custom policies, and mailbox scope.
 - [Configuration](/docs/configuration) covers server settings, storage paths, and telemetry.
 - [Teams and plans](/docs/teams-and-plans) covers members, shared mailboxes, and plan limits.
+- [Authentication and instances](/docs/authentication-and-instances) covers login, enrollment, sessions, and remote CLI profiles.
 - [Architecture](/docs/architecture) explains data storage and the server's internal structure.

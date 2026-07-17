@@ -7,18 +7,20 @@ import { EmailError, isEmailError, type EmailQuery, type ModifyAction, type Page
 import type { FluxmailConfig } from '../config.js';
 import type { AccountRegistry } from '../accounts/registry.js';
 import type { LicenseController } from '../licensing/refresher.js';
-import type { AccessScope, EmailService, SendInput } from '../service/emailService.js';
+import type { EmailService, SendInput } from '../service/emailService.js';
 import type { FluxmailDb } from '../storage/db.js';
-import { authenticateApiKey, type ApiKeyAuth } from '../storage/apiKeys.js';
+import { authenticateBearer, isBootstrapComplete, type Principal } from '../auth.js';
 import { completeIdempotencyKey, reserveIdempotencyKey } from '../storage/restIdempotency.js';
-import { FULL_PERMISSION_POLICY, hasCapability, type McpCapability } from '../permissions.js';
+import { type McpCapability } from '../permissions.js';
+import { allowsCapability } from '../authorization.js';
 import { captureOperation, type OperationOutcome, type Telemetry, type TelemetryProperties } from '../telemetry.js';
 import { VERSION } from '../version.js';
 import { administrationUsesHttps, adminOperationId, registerAdminRoutes, requestBodyExceedsLimit } from './admin.js';
 import { recordAdminAuditEvent } from '../storage/adminAudit.js';
+import { identityOperationId, registerIdentityRoutes } from './identity.js';
 
 interface RestVariables {
-  restAuth: ApiKeyAuth;
+  restAuth: Principal;
   restService: EmailService;
 }
 
@@ -141,10 +143,9 @@ const AccountSchema = z
         snippets: z.boolean(),
       })
       .strict(),
-    ownerId: z.string().optional(),
-    sharingMode: z.enum(['private', 'all', 'selected']),
-    sharedMemberIds: z.array(z.string()),
-    memberId: z.string().optional(),
+    ownerMemberId: z.string(),
+    sharedWithAll: z.boolean(),
+    grantedMemberIds: z.array(z.string()),
   })
   .strict()
   .openapi('Account');
@@ -203,6 +204,14 @@ const errorResponses = {
 
 const protectedRoute: { security: Array<Record<string, string[]>> } = {
   security: [{ bearerAuth: [] }],
+};
+export const REST_OPENAPI_DOCUMENT = {
+  openapi: '3.1.0' as const,
+  info: {
+    title: 'Fluxmail REST API',
+    version: VERSION,
+    description: 'Read, draft, send, schedule, and organize email through connected Fluxmail accounts.',
+  },
 };
 const idempotencyHeaders = z.object({
   'Idempotency-Key': z
@@ -460,7 +469,7 @@ async function runJson(
 
   try {
     const auth = c.get('restAuth');
-    const missing = options.capabilities.filter((capability) => !hasCapability(auth.permissions, capability));
+    const missing = options.capabilities.filter((capability) => !allowsCapability(auth, capability));
     if (missing.length) {
       throw new EmailError('permission_denied', `This API key does not allow: ${missing.join(', ')}.`);
     }
@@ -477,7 +486,7 @@ async function runJson(
       }
       if (options.accountId !== undefined) service.assertAccountAccess(options.accountId);
       const hash = requestHash(options.operation, options.request);
-      const principalId = auth.keyId;
+      const principalId = auth.principalId;
       const result = reserveIdempotencyKey(deps.db, {
         principalId,
         idempotencyKey,
@@ -595,7 +604,7 @@ async function runAttachment(
   let errorCode: string | undefined;
   try {
     const auth = c.get('restAuth');
-    if (!hasCapability(auth.permissions, 'mail.read')) {
+    if (!allowsCapability(auth, 'mail.read')) {
       throw new EmailError('permission_denied', 'This API key does not allow: mail.read.');
     }
     const service = c.get('restService');
@@ -727,8 +736,40 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     },
   });
 
+  app.use('/api/v1/*', async (c, next) => {
+    const telemetryOperation = identityOperationId(c.req.method, c.req.path);
+    if (!telemetryOperation) return next();
+    const finishActivity = deps.telemetry?.beginActivity?.();
+    const startedAt = performance.now();
+    let errorCode: string | undefined;
+    try {
+      await next();
+      if (c.res.status >= 400) {
+        try {
+          const payload = (await c.res.clone().json()) as { error?: { code?: unknown } };
+          if (typeof payload.error?.code === 'string') errorCode = payload.error.code;
+        } catch {
+          errorCode = 'internal';
+        }
+      }
+    } catch (error) {
+      errorCode = isEmailError(error) ? error.code : 'internal';
+      throw error;
+    } finally {
+      captureOperation(deps.telemetry, {
+        productSurface: 'rest',
+        operation: telemetryOperation,
+        outcome: c.res.status < 400 && !errorCode ? 'success' : 'error',
+        durationMs: performance.now() - startedAt,
+        errorCode,
+      });
+      finishActivity?.();
+    }
+  });
+
   app.use('/api/v1/admin/*', async (c, next) => {
     const telemetryOperation = adminOperationId(c.req.method, c.req.path);
+    const identityOperation = identityOperationId(c.req.method, c.req.path);
     const finishActivity = telemetryOperation ? deps.telemetry?.beginActivity?.() : undefined;
     const startedAt = performance.now();
     await next();
@@ -751,7 +792,7 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
       });
       finishActivity?.();
     }
-    if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(c.req.method)) return;
+    if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(c.req.method) || (identityOperation && c.res.status < 400)) return;
     const auth = c.get('restAuth');
     if (!auth) return;
     const resource = c.req.path.match(/\/(api-keys|accounts)\/((?:key|acct)_[^/]+)/);
@@ -760,7 +801,8 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
       recordAdminAuditEvent(deps.db, {
         operation,
         outcome: c.res.status < 400 ? 'success' : 'error',
-        actorKeyId: auth.keyId,
+        actorKeyId: auth.kind === 'api_key' ? auth.keyId : undefined,
+        actorSessionId: auth.kind === 'session' ? auth.sessionId : undefined,
         actorMemberId: auth.memberId,
         ...(resource
           ? { resourceType: resource[1] === 'api-keys' ? 'api_key' : 'account', resourceId: resource[2] }
@@ -773,17 +815,49 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
   });
 
   app.use('/api/v1/*', async (c, next) => {
-    if (c.req.path === '/api/v1' || c.req.path === '/api/v1/openapi.json') return next();
+    if (
+      c.req.path.startsWith('/api/v1/auth/') ||
+      c.req.path === '/api/v1/me' ||
+      c.req.path.startsWith('/api/v1/me/') ||
+      c.req.path === '/api/v1/accounts/connections'
+    ) {
+      c.header('cache-control', 'no-store');
+      c.header('x-content-type-options', 'nosniff');
+      c.header('referrer-policy', 'no-referrer');
+    }
+    const publicPaths = new Set([
+      '/api/v1',
+      '/api/v1/openapi.json',
+      '/api/v1/auth/login',
+      '/api/v1/auth/enroll',
+      '/api/v1/auth/password-reset',
+    ]);
+    const publicAuthRequest =
+      c.req.method === 'POST' &&
+      (c.req.path === '/api/v1/auth/login' ||
+        c.req.path === '/api/v1/auth/enroll' ||
+        c.req.path === '/api/v1/auth/password-reset');
+    if (publicAuthRequest && (await requestBodyExceedsLimit(c.req.raw))) {
+      return jsonResponse(
+        { error: { code: 'request_too_large', message: 'Authentication request bodies are limited to 64 KiB.' } },
+        413,
+      );
+    }
+    if (publicPaths.has(c.req.path)) return next();
     const administrative = c.req.path.startsWith('/api/v1/admin/');
     if (administrative) {
       c.header('cache-control', 'no-store');
       c.header('x-content-type-options', 'nosniff');
       c.header('referrer-policy', 'no-referrer');
       if (
-        !administrationUsesHttps(c.req.raw, {
-          remoteAddress: c.env?.incoming?.socket.remoteAddress,
-          encrypted: Boolean((c.env?.incoming?.socket as { encrypted?: boolean } | undefined)?.encrypted),
-        })
+        !administrationUsesHttps(
+          c.req.raw,
+          {
+            remoteAddress: c.env?.incoming?.socket.remoteAddress,
+            encrypted: Boolean((c.env?.incoming?.socket as { encrypted?: boolean } | undefined)?.encrypted),
+          },
+          deps.config.trustProxy,
+        )
       ) {
         return jsonResponse(
           { error: { code: 'https_required', message: 'Administrative routes require HTTPS outside loopback.' } },
@@ -791,24 +865,21 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
         );
       }
     }
-    let auth: ApiKeyAuth | null;
-    if (deps.config.authMode === 'none' && !administrative) {
-      auth = {
-        keyId: 'auth:none',
-        memberId: null,
-        role: null,
-        permissions: FULL_PERMISSION_POLICY,
-        accountIds: null,
-      };
-    } else {
-      const authorization = c.req.header('authorization');
-      const bearer = authorization?.match(/^Bearer\s+([^\s]+)$/i)?.[1];
-      auth = bearer ? authenticateApiKey(deps.db, bearer) : null;
+    if (!isBootstrapComplete(deps.db)) {
+      return jsonResponse(
+        { error: { code: 'setup_required', message: 'Run "fluxmail setup" on the server before using Fluxmail.' } },
+        503,
+      );
     }
+    const authorization = c.req.header('authorization');
+    const bearer = authorization?.match(/^Bearer\s+([^\s]+)$/i)?.[1];
+    const auth = bearer ? authenticateBearer(deps.db, bearer) : null;
     if (!auth) {
-      return jsonResponse({ error: { code: 'unauthorized', message: 'Pass an API key as a Bearer token.' } }, 401, {
-        'www-authenticate': 'Bearer',
-      });
+      return jsonResponse(
+        { error: { code: 'unauthorized', message: 'Pass a member session or API key as a Bearer token.' } },
+        401,
+        { 'www-authenticate': 'Bearer' },
+      );
     }
     c.set('restAuth', auth);
     if (administrative && (c.req.method === 'POST' || c.req.method === 'PATCH' || c.req.method === 'PUT')) {
@@ -826,14 +897,11 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
         );
       }
     }
-    const scope: AccessScope =
-      deps.config.authMode === 'none'
-        ? { memberId: null }
-        : { memberId: auth.memberId, role: auth.role, accountIds: auth.accountIds };
-    c.set('restService', deps.service.withScope(scope));
+    c.set('restService', deps.service.withPrincipal(auth));
     return next();
   });
 
+  registerIdentityRoutes(app, deps);
   registerAdminRoutes(app, deps);
 
   const discoveryRoute = createRoute({
@@ -1280,16 +1348,14 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
   app.openAPIRegistry.registerComponent('securitySchemes', 'bearerAuth', {
     type: 'http',
     scheme: 'bearer',
-    bearerFormat: 'Fluxmail API key',
+    bearerFormat: 'Fluxmail member session or API key',
   });
-  app.doc31('/api/v1/openapi.json', {
-    openapi: '3.1.0',
-    info: {
-      title: 'Fluxmail REST API',
-      version: VERSION,
-      description: 'Read, draft, send, schedule, and organize email through connected Fluxmail accounts.',
-    },
+  app.openAPIRegistry.registerComponent('securitySchemes', 'memberSessionAuth', {
+    type: 'http',
+    scheme: 'bearer',
+    bearerFormat: 'Fluxmail member session',
   });
+  app.doc31('/api/v1/openapi.json', REST_OPENAPI_DOCUMENT);
 
   app.all('/api/v1/*', () =>
     jsonResponse({ error: { code: 'not_found', message: 'No REST route matches this request.' } }, 404),

@@ -128,11 +128,18 @@ function yamlString(value: string): string {
 
 function authenticationSection(apiPath: string, operation: OpenApiOperation): string {
   if (!operation.security?.length) return '## Authentication\n\nThis endpoint does not require authentication.';
+  if (usesSecurityScheme(operation, 'memberSessionAuth')) {
+    return [
+      '## Authentication',
+      '',
+      'Pass a Fluxmail member session as a bearer token. API keys cannot use this endpoint.',
+    ].join('\n');
+  }
   if (apiPath.startsWith('/api/v1/admin/')) {
     return [
       '## Authentication',
       '',
-      'Pass a Fluxmail API key as a bearer token. The key owner must be an administrator, and the key must include the administrative capability named in the endpoint description.',
+      'Pass an administrator member session or an API key as a bearer token. An API key must include the administrative capability named in the endpoint description.',
       '',
       'Remote administrative requests require HTTPS. Requests from the local computer can use HTTP.',
     ].join('\n');
@@ -140,8 +147,12 @@ function authenticationSection(apiPath: string, operation: OpenApiOperation): st
   return [
     '## Authentication',
     '',
-    'Pass a Fluxmail API key as a bearer token. The key determines the member, mailbox scope, and permissions for the request.',
+    'Pass a Fluxmail member session or API key as a bearer token. API keys apply their mailbox scope and permissions to the request.',
   ].join('\n');
+}
+
+function usesSecurityScheme(operation: OpenApiOperation, scheme: string): boolean {
+  return operation.security?.some((requirement) => scheme in requirement) ?? false;
 }
 
 function requestSection(
@@ -197,7 +208,10 @@ function curlExample(
   const urlPath = apiPath.replace(/\{([^}]+)\}/g, (_match, name: string) => pathParameterExample(name));
   const lines = [`curl 'http://localhost:8977${urlPath}'`];
   if (method !== 'get') lines.push(`  -X ${method.toUpperCase()}`);
-  if (operation.security?.length) lines.push('  -H "Authorization: Bearer $FLUXMAIL_API_KEY"');
+  if (operation.security?.length) {
+    const token = usesSecurityScheme(operation, 'memberSessionAuth') ? '$FLUXMAIL_SESSION' : '$FLUXMAIL_API_KEY';
+    lines.push(`  -H "Authorization: Bearer ${token}"`);
+  }
   for (const parameter of operation.parameters ?? []) {
     if (parameter.in !== 'header' || !parameter.name) continue;
     const value = parameter.name.toLowerCase() === 'idempotency-key' ? '$(uuidgen)' : parameterExample(parameter);
@@ -250,7 +264,7 @@ function retrySafetySection(operation: OpenApiOperation): string | undefined {
   return [
     '## Safe retries',
     '',
-    'Fluxmail keeps each idempotency result for 24 hours and scopes it to the authenticated API key.',
+    'Fluxmail keeps each idempotency result for 24 hours and scopes it to the authenticated credential.',
     '',
     '- Repeating a completed request with the same key returns the stored response and sets `Idempotency-Replayed: true`.',
     '- Reusing the key with different request data returns `409 idempotency_conflict`.',
