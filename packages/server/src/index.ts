@@ -27,14 +27,25 @@ export {
   loadConfig,
   loadDotEnv,
   resolveDataDir,
+  resolveStoreLocation,
   configFilePath,
   maskStoredConfigValue,
   readStoredConfig,
   setStoredConfig,
   unsetStoredConfig,
   type FluxmailConfig,
+  type FluxmailStoreLocation,
 } from './config.js';
-export { openDb } from './storage/db.js';
+export {
+  openDb,
+  inspectStoreCompatibility,
+  IncompatibleStoreError,
+  CURRENT_STORE_FORMAT,
+  MIN_SUPPORTED_STORE_FORMAT,
+  MAX_SUPPORTED_STORE_FORMAT,
+  type StoreCompatibility,
+} from './storage/db.js';
+export { VERSION } from './version.js';
 export { encryptString, decryptString } from './storage/crypto.js';
 export {
   getEntitlements,

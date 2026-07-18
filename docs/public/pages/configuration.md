@@ -14,6 +14,12 @@ Every setting is an environment variable, and there are three places to put one.
 
 Fluxmail includes a Google Desktop OAuth client for local Gmail connections. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to use another Google OAuth client. Hosted Gmail connections need a custom Web client. A local Outlook connection needs `MICROSOFT_CLIENT_ID`; hosted Outlook connections also need `MICROSOFT_CLIENT_SECRET`. IMAP mailboxes do not use these settings. Use `fluxmail config list` to review stored settings (secret values are masked) and `fluxmail config unset <KEY>` to remove one.
 
+By default, Fluxmail processes that use the same data directory also open the same SQLite database. They share encrypted credentials, saved configuration, members, API keys, license state, and the telemetry setting. The processes can run different Fluxmail releases as long as each release supports the store format in that directory. Fluxmail exits without changing the database when the store format is not supported.
+
+Store format 1 is the compatibility baseline. Before a format migration, Fluxmail writes one database backup to the `backups` directory next to the database. Releases from before the format check can open format 1, but update those installations before a later Fluxmail release moves the store to a newer format.
+
+Set `FLUXMAIL_DATA_DIR` to create a separate installation. `FLUXMAIL_DB_PATH` changes only the database location. Fluxmail still reads the encryption key and saved configuration from the data directory. Shell variables and working-directory `.env` files can also give one process different settings from other processes that share the store.
+
 <!-- BEGIN GENERATED:configuration -->
 | Environment variable | Default | Purpose |
 | --- | --- | --- |

@@ -1,6 +1,18 @@
-import { chmodSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   configFilePath,
@@ -13,9 +25,11 @@ import {
 } from '../src/config.js';
 import { DEFAULT_GOOGLE_CLIENT_ID, DEFAULT_GOOGLE_CLIENT_SECRET } from '../src/accounts/defaultGoogleOAuth.js';
 import { isTelemetryEnabled, telemetryDisabled, withStoredTelemetrySetting } from '../src/telemetry.js';
+import { createContext } from '../src/context.js';
 
 const ENV_KEYS = [
   'FLUXMAIL_DATA_DIR',
+  'FLUXMAIL_DB_PATH',
   'FLUXMAIL_ENCRYPTION_KEY',
   'FLUXMAIL_PUBLIC_URL',
   'FLUXMAIL_PORT',
@@ -32,6 +46,8 @@ const ENV_KEYS = [
   'FM_STORED_TEST',
 ];
 const saved: Record<string, string | undefined> = {};
+const runFile = promisify(execFile);
+const configModuleUrl = new URL('../src/config.ts', import.meta.url).href;
 
 for (const k of ENV_KEYS) saved[k] = process.env[k];
 beforeEach(() => {
@@ -110,6 +126,39 @@ describe('stored config', () => {
     setStoredConfig(dir, 'GOOGLE_CLIENT_SECRET', 'shh');
     const mode = statSync(configFilePath(dir)).mode & 0o777;
     expect(mode).toBe(0o600);
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect(readdirSync(dir)).not.toContain('.config.lock');
+  });
+
+  it('recovers an abandoned config lock from an older Fluxmail process', () => {
+    const dir = tempDataDir();
+    const lock = path.join(dir, '.config.lock');
+    mkdirSync(lock);
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+
+    setStoredConfig(dir, 'FM_STORED_TEST', 'recovered');
+
+    expect(readStoredConfig(dir).FM_STORED_TEST).toBe('recovered');
+    expect(readdirSync(dir)).not.toContain('.config.lock');
+  });
+
+  it('preserves concurrent config updates from separate processes', async () => {
+    const dir = tempDataDir();
+    const updates = Array.from({ length: 6 }, (_, index) => [`FM_CONCURRENT_${index}`, `value-${index}`] as const);
+    const script = `
+      import { setStoredConfig } from ${JSON.stringify(configModuleUrl)};
+      const [dataDir, key, value] = process.argv.slice(1);
+      setStoredConfig(dataDir, key, value);
+    `;
+
+    await Promise.all(
+      updates.map(([key, value]) =>
+        runFile(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, dir, key, value]),
+      ),
+    );
+
+    expect(readStoredConfig(dir)).toEqual(Object.fromEntries(updates));
   });
 
   it('repairs permissions when reading an existing stored-config file', () => {
@@ -232,6 +281,38 @@ describe('stored config', () => {
     loadConfig();
 
     expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('generates one encryption key when separate processes start together', async () => {
+    const dir = tempDataDir();
+    const script = `
+      import { loadConfig } from ${JSON.stringify(configModuleUrl)};
+      process.env.FLUXMAIL_DATA_DIR = process.argv[1];
+      process.stdout.write(loadConfig().encryptionKey.toString('hex'));
+    `;
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        runFile(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, dir]),
+      ),
+    );
+
+    expect(new Set(results.map((result) => result.stdout))).toHaveLength(1);
+    expect(results[0]!.stdout).toHaveLength(64);
+    expect(readdirSync(dir)).not.toContain('.encryption-key.lock');
+  });
+
+  it('rejects an incompatible configured store before generating an encryption key', () => {
+    const dir = tempDataDir();
+    const dbPath = path.join(dir, 'shared.db');
+    const db = new Database(dbPath);
+    db.pragma('user_version = 2');
+    db.close();
+    process.env.FLUXMAIL_DATA_DIR = dir;
+    setStoredConfig(dir, 'FLUXMAIL_DB_PATH', dbPath);
+
+    expect(() => createContext()).toThrow(/store format 2/);
+    expect(existsSync(path.join(dir, 'encryption.key'))).toBe(false);
   });
 
   it.each([

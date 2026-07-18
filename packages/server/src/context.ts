@@ -1,5 +1,5 @@
-import { loadConfig, type FluxmailConfig } from './config.js';
-import { openDb, type FluxmailDb } from './storage/db.js';
+import { loadConfig, resolveStoreLocation, type FluxmailConfig } from './config.js';
+import { IncompatibleStoreError, inspectStoreCompatibility, openDb, type FluxmailDb } from './storage/db.js';
 import { AccountRegistry } from './accounts/registry.js';
 import { EmailService } from './service/emailService.js';
 import { SendScheduler } from './scheduler/sendScheduler.js';
@@ -18,8 +18,11 @@ export interface AppContext {
 }
 
 export function createContext(): AppContext {
-  const config = loadConfig();
-  const db = openDb(config.dbPath);
+  const storeLocation = resolveStoreLocation();
+  const compatibility = inspectStoreCompatibility(storeLocation.dbPath, storeLocation.dataDir);
+  if (!compatibility.compatible) throw new IncompatibleStoreError(compatibility);
+  const config = loadConfig(storeLocation);
+  const db = openDb(config.dbPath, { dataDir: config.dataDir });
   const registry = new AccountRegistry(db, config);
   const service = new EmailService(registry, db);
   const scheduler = new SendScheduler(db, service);

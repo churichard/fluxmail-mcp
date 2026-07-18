@@ -1,9 +1,24 @@
 import { randomBytes } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { mkdtempSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { EmailError } from '@fluxmail/core';
 import { decryptString, encryptString } from '../src/storage/crypto.js';
-import { accounts, apiKeys, gmailConnectionGrants, members, openDb } from '../src/storage/db.js';
+import {
+  accounts,
+  apiKeys,
+  CURRENT_STORE_FORMAT,
+  gmailConnectionGrants,
+  IncompatibleStoreError,
+  inspectStoreCompatibility,
+  members,
+  openDb,
+} from '../src/storage/db.js';
 import {
   authenticateApiKey,
   createApiKey,
@@ -39,6 +54,8 @@ const paidPlan: Entitlements = {
   maxMembers: 5,
   maxAccounts: 5,
 };
+const runFile = promisify(execFile);
+const dbModuleUrl = new URL('../src/storage/db.ts', import.meta.url).href;
 
 describe('crypto', () => {
   const key = randomBytes(32);
@@ -291,6 +308,87 @@ describe('account storage', () => {
         })
         .run(),
     ).toThrow();
+  });
+});
+
+describe('store compatibility', () => {
+  it('adopts a legacy store as format 1 and creates a backup', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-store-'));
+    const dbPath = path.join(directory, 'fluxmail.db');
+    const legacy = new Database(dbPath);
+    legacy.exec("CREATE TABLE legacy_data (value TEXT NOT NULL); INSERT INTO legacy_data VALUES ('kept')");
+    legacy.close();
+
+    openDb(dbPath, { dataDir: directory });
+
+    expect(inspectStoreCompatibility(dbPath, directory)).toMatchObject({
+      storeFormat: CURRENT_STORE_FORMAT,
+      compatible: true,
+      requiresMigration: false,
+    });
+    const reopened = new Database(dbPath, { readonly: true });
+    expect(reopened.prepare('SELECT value FROM legacy_data').pluck().get()).toBe('kept');
+    reopened.close();
+    expect(readdirSync(path.join(directory, 'backups'))).toHaveLength(1);
+  });
+
+  it('rejects a newer store before changing it', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-store-'));
+    const dbPath = path.join(directory, 'fluxmail.db');
+    const newer = new Database(dbPath);
+    newer.exec("CREATE TABLE marker (value TEXT NOT NULL); INSERT INTO marker VALUES ('untouched')");
+    newer.pragma(`user_version = ${CURRENT_STORE_FORMAT + 1}`);
+    newer.close();
+
+    expect(() => openDb(dbPath, { dataDir: directory })).toThrow(IncompatibleStoreError);
+
+    const reopened = new Database(dbPath, { readonly: true });
+    expect(reopened.pragma('user_version', { simple: true })).toBe(CURRENT_STORE_FORMAT + 1);
+    expect(reopened.prepare('SELECT value FROM marker').pluck().get()).toBe('untouched');
+    reopened.close();
+    expect(readdirSync(directory)).not.toContain('backups');
+  });
+
+  it('keeps the original store and backup when a migration fails', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-store-'));
+    const dbPath = path.join(directory, 'fluxmail.db');
+    const malformed = new Database(dbPath);
+    malformed.exec('CREATE TABLE members (id TEXT PRIMARY KEY)');
+    malformed.close();
+
+    expect(() => openDb(dbPath, { dataDir: directory })).toThrow();
+
+    const reopened = new Database(dbPath, { readonly: true });
+    expect(reopened.pragma('user_version', { simple: true })).toBe(0);
+    expect(reopened.prepare('PRAGMA table_info(members)').all()).toHaveLength(1);
+    reopened.close();
+    expect(readdirSync(path.join(directory, 'backups'))).toHaveLength(1);
+    expect(readdirSync(directory)).not.toContain('fluxmail.db.migration.lock');
+  });
+
+  it('serializes migration and backup across separate processes', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-store-'));
+    const dbPath = path.join(directory, 'fluxmail.db');
+    const legacy = new Database(dbPath);
+    legacy.exec("CREATE TABLE legacy_data (value TEXT NOT NULL); INSERT INTO legacy_data VALUES ('kept')");
+    legacy.close();
+    const script = `
+      import { openDb } from ${JSON.stringify(dbModuleUrl)};
+      openDb(process.argv[1], { dataDir: process.argv[2] });
+    `;
+
+    await Promise.all(
+      Array.from({ length: 4 }, () =>
+        runFile(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, dbPath, directory]),
+      ),
+    );
+
+    expect(inspectStoreCompatibility(dbPath, directory).storeFormat).toBe(CURRENT_STORE_FORMAT);
+    const reopened = new Database(dbPath, { readonly: true });
+    expect(reopened.prepare('SELECT value FROM legacy_data').pluck().get()).toBe('kept');
+    reopened.close();
+    expect(readdirSync(path.join(directory, 'backups'))).toHaveLength(1);
+    expect(readdirSync(directory)).not.toContain('fluxmail.db.migration.lock');
   });
 });
 
