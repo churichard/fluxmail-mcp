@@ -4,6 +4,7 @@ import type {
   DraftInput,
   EmailQuery,
   Folder,
+  Label,
   Message,
   ModifyAction,
   Page,
@@ -39,6 +40,8 @@ export interface EmailProvider {
   getMessage(id: string, opts?: GetMessageOpts): Promise<Message>;
   getThread(threadId: string): Promise<Thread>;
   listFolders(): Promise<Folder[]>;
+  /** Many-to-many tags: Gmail user labels or Outlook categories. */
+  listLabels(): Promise<Label[]>;
 
   createDraft(d: DraftInput): Promise<Message>;
   /** Fetch a draft by draft id (message with draftId populated). */

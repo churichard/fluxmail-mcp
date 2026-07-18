@@ -105,6 +105,7 @@ If a reverse proxy terminates TLS and connects to Fluxmail from a non-loopback a
 | [Get server status](/docs/rest-api/get-status) | Return provider and mailbox status for the accounts available to the API key. |
 | [List accounts](/docs/rest-api/list-accounts) | List the email accounts available to the API key. |
 | [List folders](/docs/rest-api/list-folders) | List folders in an email account. |
+| [List labels](/docs/rest-api/list-labels) | List Gmail user labels or Outlook categories in an email account. |
 | [List messages](/docs/rest-api/list-messages) | List and filter messages in an email account. |
 | [Get a message](/docs/rest-api/get-message) | Get one message by its provider ID. |
 | [Get a thread](/docs/rest-api/get-thread) | Get a complete email thread by its provider ID. |

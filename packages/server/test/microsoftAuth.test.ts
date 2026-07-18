@@ -50,6 +50,7 @@ describe('Microsoft OAuth', () => {
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
     expect(url.searchParams.get('scope')).toContain('Mail.ReadWrite');
     expect(url.searchParams.get('scope')).toContain('Mail.Send');
+    expect(url.searchParams.get('scope')).toContain('MailboxSettings.Read');
     expect(url.searchParams.get('scope')).toContain('offline_access');
   });
 
@@ -223,6 +224,28 @@ describe('Microsoft OAuth', () => {
     expect(refreshed.refreshToken).toBe('existing-refresh');
     expect(refreshed.expiresAt).toBeGreaterThan(Date.now());
     expect(String(fetchMock.mock.calls[0]![1]?.body)).not.toContain('client_secret');
+    expect(String(fetchMock.mock.calls[0]![1]?.body)).not.toContain('scope=');
+  });
+
+  it('refreshes existing Outlook accounts with their previously granted scopes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ access_token: 'fresh-access', expires_in: 1200 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await refreshMicrosoftCredentials(config(), {
+      accessToken: 'expired-access',
+      refreshToken: 'existing-refresh',
+      expiresAt: 0,
+      scope: 'User.Read Mail.ReadWrite Mail.Send offline_access',
+    });
+
+    const body = String(fetchMock.mock.calls[0]![1]?.body);
+    expect(body).toContain('scope=User.Read+Mail.ReadWrite+Mail.Send+offline_access');
+    expect(body).not.toContain('MailboxSettings.Read');
   });
 
   it('uses the client secret when refreshing hosted credentials', async () => {

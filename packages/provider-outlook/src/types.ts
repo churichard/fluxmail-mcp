@@ -47,8 +47,15 @@ export interface GraphMessage {
   isDraft?: boolean | null;
   flag?: { flagStatus?: string | null } | null;
   hasAttachments?: boolean | null;
+  categories?: string[] | null;
   attachments?: GraphAttachment[] | null;
   internetMessageHeaders?: GraphInternetHeader[] | null;
+}
+
+export interface GraphCategory {
+  id?: string | null;
+  displayName?: string | null;
+  color?: string | null;
 }
 
 export interface GraphFolder {

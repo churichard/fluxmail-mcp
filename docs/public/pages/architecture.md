@@ -22,7 +22,7 @@ HTTP MCP with an API key ------/
 
 CLI management commands use the same database and provider connections as the running server. The CLI does not duplicate the MCP and REST mailbox-operation APIs.
 
-Provider differences still affect the available behavior. Outlook uses Microsoft Graph conversations and folders. IMAP has folders instead of labels, uses the mail server's basic search, and has no server-side thread model. Fluxmail reconstructs IMAP threads from standard email headers.
+Provider differences still affect the available behavior. Folders are places you can navigate, such as Inbox or Archive. Labels are tags that a message can have alongside its folder. Gmail user labels work as both navigable views and tags, so they appear in folder and label listings. Outlook folders appear as folders, while Outlook categories appear as labels. IMAP has folders but does not support label actions. It also uses the mail server's basic search and has no server-side thread model. Fluxmail reconstructs IMAP threads from standard email headers.
 
 ## How permissions are enforced
 

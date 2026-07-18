@@ -20,9 +20,10 @@ export type AdminCapability = (typeof ADMIN_CAPABILITIES)[number];
 export type Capability = McpCapability | AdminCapability;
 
 export const MCP_CAPABILITY_DESCRIPTIONS: Record<McpCapability, string> = {
-  'mail.read': 'List, search, and read mail; inspect status and folders; list scheduled sends; download attachments.',
+  'mail.read':
+    'List, search, and read mail; inspect status, folders, and labels; list scheduled sends; download attachments.',
   'mail.drafts': 'Create, update, and delete drafts; cancel scheduled sends.',
-  'mail.organize': 'Mark read or unread, star, archive, move, and manage user labels.',
+  'mail.organize': 'Mark read or unread, star, archive, move, and manage labels or Outlook categories.',
   'mail.trash': 'Move messages to or from Trash.',
   'mail.delete': 'Permanently delete messages.',
   'mail.send': 'Send or schedule messages.',
@@ -33,7 +34,7 @@ export type NamedPermissionProfile = (typeof NAMED_PERMISSION_PROFILES)[number];
 export type PermissionProfile = NamedPermissionProfile | 'custom';
 
 export const PERMISSION_PROFILE_DESCRIPTIONS: Record<NamedPermissionProfile, string> = {
-  'read-only': 'Read and search mail, inspect folders and scheduled sends, and download attachments.',
+  'read-only': 'Read and search mail, inspect folders, labels, and scheduled sends, and download attachments.',
   'read-write': 'Read mail, manage drafts, organize messages, and move messages to or from Trash.',
   full: 'Use every Fluxmail email capability, including sending mail and permanently deleting messages.',
 };

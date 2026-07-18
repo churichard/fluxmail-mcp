@@ -1,7 +1,7 @@
 export type Provider = 'gmail' | 'outlook' | 'imap';
 
 export interface Capabilities {
-  /** Gmail: many-to-many labels. Outlook/IMAP: a message lives in exactly one folder. */
+  /** Gmail labels and Outlook categories. */
   labels: boolean;
   /** Gmail/Outlook thread server-side; IMAP threads are synthesized from References headers. */
   serverThreads: boolean;
@@ -43,6 +43,19 @@ export interface Folder {
   unreadCount?: number;
 }
 
+export interface Label {
+  id: string;
+  name: string;
+  color?: {
+    /** Gmail label background color. */
+    background?: string;
+    /** Gmail label text color. */
+    text?: string;
+    /** Outlook category preset color name. */
+    preset?: string;
+  };
+}
+
 export interface AttachmentMeta {
   id: string;
   filename: string;
@@ -72,7 +85,7 @@ export interface Message {
   draftId?: string;
   /** Canonical location. Gmail: derived from labels; Outlook/IMAP: the containing folder. */
   folder?: Folder;
-  /** Gmail only (capabilities.labels). Label names. */
+  /** Gmail label or Outlook category names when capabilities.labels is true. */
   labels?: string[];
   from?: EmailAddress;
   to: EmailAddress[];

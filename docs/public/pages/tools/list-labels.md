@@ -1,14 +1,14 @@
 ---
-title: 'List folders'
-description: 'List navigable folders for an account, with roles (inbox, sent, drafts, trash, spam, starred).'
+title: 'List labels'
+description: 'List Gmail user labels or Outlook categories for an account.'
 updated: '2026-07-15'
 ---
 
 <!-- This page is generated from the MCP tool definitions. Run pnpm docs:generate to update it. -->
 
-`list_folders`
+`list_labels`
 
-List navigable folders for an account, with roles (inbox, sent, drafts, trash, spam, starred).
+List Gmail user labels or Outlook categories for an account.
 
 ## Permissions
 

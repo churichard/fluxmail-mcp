@@ -21,6 +21,7 @@ import {
   type FolderRole,
   type GetAttachmentOpts,
   type GetMessageOpts,
+  type Label,
   type Message,
   type ModifyAction,
   type Page,
@@ -291,6 +292,10 @@ export class ImapProvider implements EmailProvider {
 
   async listFolders(): Promise<Folder[]> {
     return (await this.refreshFolders()).folders;
+  }
+
+  async listLabels(): Promise<Label[]> {
+    throw new EmailError('unsupported_capability', 'IMAP accounts do not support labels');
   }
 
   private rolePath(role: FolderRole, folders: ResolvedFolders): string | undefined {

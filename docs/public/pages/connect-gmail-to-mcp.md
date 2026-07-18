@@ -146,4 +146,10 @@ Open the printed link and choose the Google account that matches the mailbox you
 
 Reauthorization updates the stored token for the same mailbox. It does not add another mailbox or change the mailbox owner.
 
+## How Gmail labels work
+
+Fluxmail returns Gmail user labels in both folder and label listings. The folder listing lets clients navigate a label as a mailbox view. The label listing describes tags that can be added to or removed from messages, including the label colors configured in Gmail.
+
+Adding a label by name creates it when it does not exist. Removing a missing label has no effect. Use the dedicated read, star, archive, trash, and move actions for Gmail system labels.
+
 Continue with [Connect an MCP client](/docs/connect-an-mcp-client), [Build with REST](/docs/build-with-rest), or [Use the CLI](/docs/use-the-cli).

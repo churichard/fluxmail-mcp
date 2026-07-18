@@ -43,6 +43,7 @@ export function parseGraphMessage(
     accountId: context.accountId,
     ...(raw.isDraft ? { draftId: id } : {}),
     ...(context.folder ? { folder: context.folder } : {}),
+    ...(raw.categories?.length ? { labels: raw.categories } : {}),
     ...(address(raw.from) ? { from: address(raw.from) } : {}),
     to: addresses(raw.toRecipients),
     ...(addresses(raw.ccRecipients).length ? { cc: addresses(raw.ccRecipients) } : {}),

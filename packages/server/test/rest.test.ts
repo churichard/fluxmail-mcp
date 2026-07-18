@@ -61,6 +61,7 @@ function fixture() {
     status: vi.fn(async () => ({ accounts: [], providersAvailable: ['gmail'], scheduled: { pending: 0 } })),
     listAccounts: vi.fn(() => [account]),
     listFolders: vi.fn(async () => [{ id: 'INBOX', name: 'Inbox', role: 'inbox' as const }]),
+    listLabels: vi.fn(async () => [{ id: 'Label_1', name: 'private-project' }]),
     listMessages: vi.fn(async () => ({ items: [message], nextPageToken: 'next_1' })),
     getMessage: vi.fn(async () => message),
     getThread: vi.fn(async () => ({ id: 'thread_1', subject: 'Hello', messages: [message] })),
@@ -154,6 +155,7 @@ describe('REST API discovery and authentication', () => {
     expect(Object.keys(document.paths)).toEqual(
       expect.arrayContaining([
         '/api/v1/accounts/{accountId}/messages',
+        '/api/v1/accounts/{accountId}/labels',
         '/api/v1/accounts/{accountId}/send',
         '/api/v1/accounts/{accountId}/messages/{messageId}/attachments/{attachmentId}',
       ]),
@@ -195,6 +197,10 @@ describe('REST email operations', () => {
     const { app, auth, service } = fixture();
     expect((await app.request('/api/v1/accounts', { headers: auth })).status).toBe(200);
     expect((await app.request('/api/v1/accounts/acct_1/folders', { headers: auth })).status).toBe(200);
+    const labels = await app.request('/api/v1/accounts/acct_1/labels', { headers: auth });
+    expect(labels.status).toBe(200);
+    await expect(labels.json()).resolves.toEqual({ data: [{ id: 'Label_1', name: 'private-project' }] });
+    expect(service.listLabels).toHaveBeenCalledWith('acct_1');
 
     const listed = await app.request('/api/v1/accounts/acct_1/messages?unreadOnly=true&pageSize=25', { headers: auth });
     expect(listed.status).toBe(200);
@@ -356,6 +362,9 @@ describe('REST email operations', () => {
     });
     expect((await app.request('/api/v1')).status).toBe(200);
     expect((await app.request('/api/v1/status', { headers: auth })).status).toBe(200);
+    expect((await app.request('/api/v1/accounts/acct_1/labels', { headers: auth })).status).toBe(200);
+    service.listLabels.mockRejectedValueOnce(new EmailError('permission_denied', 'private-project denied'));
+    expect((await app.request('/api/v1/accounts/acct_1/labels', { headers: auth })).status).toBe(403);
     expect(capture).toHaveBeenCalledWith(
       'operation completed',
       expect.objectContaining({ product_surface: 'rest', operation: 'getApiInfo', outcome: 'success' }),
@@ -364,7 +373,21 @@ describe('REST email operations', () => {
       'operation completed',
       expect.objectContaining({ product_surface: 'rest', operation: 'getStatus', outcome: 'success' }),
     );
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({ product_surface: 'rest', operation: 'listLabels', outcome: 'success' }),
+    );
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'listLabels',
+        outcome: 'error',
+        error_code: 'permission_denied',
+      }),
+    );
     expect(JSON.stringify(capture.mock.calls)).not.toContain('me@example.com');
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('private-project');
   });
 });
 

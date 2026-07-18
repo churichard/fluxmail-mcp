@@ -90,6 +90,10 @@ async function waitForMessage(provider: ImapProvider, folder: string, subject: s
   throw new Error(`Timed out waiting for ${subject} in ${folder}`);
 }
 
+it('reports labels as unsupported without connecting to the server', async () => {
+  await expect(makeProvider().listLabels()).rejects.toMatchObject({ code: 'unsupported_capability' });
+});
+
 describe.skipIf(!host).sequential('GreenMail integration', () => {
   const store = new MemoryStore();
   const provider = makeProvider(store);

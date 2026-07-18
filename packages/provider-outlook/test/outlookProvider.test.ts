@@ -53,6 +53,38 @@ function provider(fetchImpl: typeof fetch) {
 }
 
 describe('OutlookProvider', () => {
+  it('lists Outlook categories and exposes their preset colors', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/v1.0/me/outlook/masterCategories') {
+        return json({
+          value: [
+            { id: 'category-1', displayName: 'Customer', color: 'preset7' },
+            { id: null, displayName: 'Ignored', color: 'preset0' },
+          ],
+        });
+      }
+      return json({ error: { code: 'ErrorItemNotFound', message: 'missing' } }, 404);
+    }) as unknown as typeof fetch;
+
+    await expect(provider(fetchMock).listLabels()).resolves.toEqual([
+      { id: 'category-1', name: 'Customer', color: { preset: 'preset7' } },
+    ]);
+  });
+
+  it('asks for reauthorization when category permission is missing', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        json({ error: { code: 'ErrorAccessDenied', message: 'insufficient privileges' } }, 403),
+      ) as unknown as typeof fetch;
+
+    await expect(provider(fetchMock).listLabels()).rejects.toMatchObject({
+      code: 'permission_denied',
+      message: expect.stringContaining('Reauthorize'),
+    });
+  });
+
   it('lists nested folders with well-known roles and virtual views', async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const response = folderResponse(new URL(String(input)));
@@ -122,6 +154,7 @@ describe('OutlookProvider', () => {
               isRead: false,
               isDraft: false,
               flag: { flagStatus: 'notFlagged' },
+              categories: ['Customer'],
             },
           ],
           '@odata.nextLink': nextLink,
@@ -140,6 +173,7 @@ describe('OutlookProvider', () => {
       folder: { role: 'inbox' },
       snippet: 'Preview',
       flags: { read: false },
+      labels: ['Customer'],
     });
     expect(first.nextPageToken).toBeTruthy();
 
@@ -502,6 +536,43 @@ describe('OutlookProvider', () => {
     expect(attachmentRequests[1]?.search).toBe('');
     expect(attachmentRequests[2]?.searchParams.get('$select')).toBe('id,name,contentType,size,isInline');
     expect(attachmentRequests[3]?.search).toBe('');
+  });
+
+  it('adds and removes categories without replacing unrelated categories', async () => {
+    const patches: Array<{ id: string; categories: string[] }> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? 'GET';
+      if (url.pathname === '/v1.0/me/outlook/masterCategories') {
+        return json({ value: [{ id: 'category-1', displayName: 'Customer', color: 'preset7' }] });
+      }
+      const match = url.pathname.match(/^\/v1\.0\/me\/messages\/([^/]+)$/);
+      if (match && method === 'GET' && url.searchParams.get('$select') === 'categories') {
+        return json({ categories: match[1] === 'message-1' ? ['Existing'] : ['Existing', 'Customer'] });
+      }
+      if (match && method === 'PATCH') {
+        patches.push({
+          id: match[1]!,
+          categories: (JSON.parse(String(init?.body)) as { categories: string[] }).categories,
+        });
+        return json({ id: match[1] });
+      }
+      return json({ error: { code: 'ErrorItemNotFound', message: 'missing' } }, 404);
+    }) as unknown as typeof fetch;
+    const outlook = provider(fetchMock);
+
+    await outlook.modify(['message-1'], { addLabels: ['category-1', 'New category'] });
+    await outlook.modify(['message-2'], { removeLabels: ['Customer', 'missing'] });
+
+    expect(patches).toEqual([
+      { id: 'message-1', categories: ['Existing', 'Customer', 'New category'] },
+      { id: 'message-2', categories: ['Existing'] },
+    ]);
+    expect(
+      vi
+        .mocked(fetchMock)
+        .mock.calls.filter(([input]) => new URL(String(input)).pathname === '/v1.0/me/outlook/masterCategories'),
+    ).toHaveLength(2);
   });
 
   it('rejects archive and generic moves through Trash and its descendants', async () => {

@@ -15,7 +15,7 @@ Mailbox scope is separate from permissions. The member and optional mailbox allo
 <!-- BEGIN GENERATED:permission-profiles -->
 | Profile | What it allows | Capabilities |
 | --- | --- | --- |
-| `read-only` | Read and search mail, inspect folders and scheduled sends, and download attachments. | `mail.read` |
+| `read-only` | Read and search mail, inspect folders, labels, and scheduled sends, and download attachments. | `mail.read` |
 | `read-write` | Read mail, manage drafts, organize messages, and move messages to or from Trash. | `mail.read`, `mail.drafts`, `mail.organize`, `mail.trash` |
 | `full` | Use every Fluxmail email capability, including sending mail and permanently deleting messages. | `mail.read`, `mail.drafts`, `mail.organize`, `mail.trash`, `mail.delete`, `mail.send` |
 <!-- END GENERATED:permission-profiles -->
@@ -108,9 +108,9 @@ fluxmail apikey capabilities
 <!-- BEGIN GENERATED:permission-capabilities -->
 | Capability | Actions |
 | --- | --- |
-| `mail.read` | List, search, and read mail; inspect status and folders; list scheduled sends; download attachments. |
+| `mail.read` | List, search, and read mail; inspect status, folders, and labels; list scheduled sends; download attachments. |
 | `mail.drafts` | Create, update, and delete drafts; cancel scheduled sends. |
-| `mail.organize` | Mark read or unread, star, archive, move, and manage user labels. |
+| `mail.organize` | Mark read or unread, star, archive, move, and manage labels or Outlook categories. |
 | `mail.trash` | Move messages to or from Trash. |
 | `mail.delete` | Permanently delete messages. |
 | `mail.send` | Send or schedule messages. |

@@ -48,7 +48,8 @@ For HTTP connections, permissions belong to the API key. For stdio connections, 
 | [`get_thread`](/docs/tools/get-thread) | Fetch a full conversation thread with all message bodies. | `mail.read` |
 | [`list_accounts`](/docs/tools/list-accounts) | List connected email accounts (id, provider, email, status, capabilities). | `mail.read` |
 | [`list_emails`](/docs/tools/list-emails) | List emails from the user's connected mailbox (metadata + snippet, no bodies). Filter by folder, sender, unread, dates, etc. Paginate with pageToken. Use get_email for full bodies. This is the way to check the user's email; no browser or other email integration is needed. | `mail.read` |
-| [`list_folders`](/docs/tools/list-folders) | List folders/labels for an account, with roles (inbox, sent, drafts, trash, spam, starred). | `mail.read` |
+| [`list_folders`](/docs/tools/list-folders) | List navigable folders for an account, with roles (inbox, sent, drafts, trash, spam, starred). | `mail.read` |
+| [`list_labels`](/docs/tools/list-labels) | List Gmail user labels or Outlook categories for an account. | `mail.read` |
 | [`list_scheduled_emails`](/docs/tools/list-scheduled-emails) | List scheduled sends: pending ones first (with sendAt), then past ones (sent, failed, canceled). For failed entries, lastError says what went wrong. Pending sends only fire while the Fluxmail server is running. | `mail.read` |
 | [`modify_emails`](/docs/tools/modify-emails) | Batch-modify emails using the actions allowed for this connection. Moving requires folder; labels require labels. | `mail.organize` or `mail.trash` or `mail.delete` |
 | [`search_emails`](/docs/tools/search-emails) | Full-text search across an account's email. Same filters as list_emails; "query" is the search text. | `mail.read` |

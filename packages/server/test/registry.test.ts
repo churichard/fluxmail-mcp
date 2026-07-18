@@ -197,7 +197,7 @@ describe('AccountRegistry', () => {
     expect(account).toMatchObject({
       provider: 'outlook',
       displayName: 'Example User',
-      capabilities: { labels: false, serverThreads: true, serverSearch: 'rich', snippets: true },
+      capabilities: { labels: true, serverThreads: true, serverSearch: 'rich', snippets: true },
     });
     const row = db.select().from(accountCredentials).get();
     expect(row?.encryptedCredentials).not.toContain('ms_refresh_secret');

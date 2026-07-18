@@ -11,6 +11,7 @@ import {
   type FolderRole,
   type GetAttachmentOpts,
   type GetMessageOpts,
+  type Label,
   type Message,
   type ModifyAction,
   type Page,
@@ -21,7 +22,7 @@ import {
 import { GraphHttpError, isRetryableGraphError, toEmailError } from './errors.js';
 import { parseGraphAttachment, parseGraphMessage, toGraphRecipients } from './parse.js';
 import { toGraphQuery } from './query.js';
-import type { GraphAttachment, GraphCollection, GraphFolder, GraphMessage } from './types.js';
+import type { GraphAttachment, GraphCategory, GraphCollection, GraphFolder, GraphMessage } from './types.js';
 
 const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0';
 const DEFAULT_PAGE_SIZE = 25;
@@ -49,6 +50,7 @@ const MESSAGE_LIST_FIELDS = [
   'isDraft',
   'flag',
   'hasAttachments',
+  'categories',
 ].join(',');
 
 const MESSAGE_FULL_FIELDS = `${MESSAGE_LIST_FIELDS},body`;
@@ -75,7 +77,7 @@ export interface OutlookProviderOptions {
 }
 
 export const OUTLOOK_CAPABILITIES: Capabilities = {
-  labels: false,
+  labels: true,
   serverThreads: true,
   serverSearch: 'rich',
   snippets: true,
@@ -370,6 +372,50 @@ export class OutlookProvider implements EmailProvider {
 
   async listFolders(): Promise<Folder[]> {
     return (await this.folderSnapshot(true)).folders;
+  }
+
+  async listLabels(): Promise<Label[]> {
+    let categories: GraphCategory[];
+    try {
+      categories = await this.collection<GraphCategory>('/me/outlook/masterCategories?$top=100');
+    } catch (error) {
+      if (error instanceof EmailError && error.code === 'permission_denied') {
+        throw new EmailError(
+          'permission_denied',
+          'This Outlook connection cannot read categories. Reauthorize the account to grant MailboxSettings.Read.',
+        );
+      }
+      throw error;
+    }
+    return categories.flatMap((category) => {
+      if (!category.id || !category.displayName) return [];
+      return [
+        {
+          id: category.id,
+          name: category.displayName,
+          ...(category.color ? { color: { preset: category.color } } : {}),
+        },
+      ];
+    });
+  }
+
+  private async resolveCategoryNames(values: string[], createIfMissing: boolean): Promise<string[]> {
+    const categories = await this.listLabels();
+    const resolved = values.flatMap((value) => {
+      const normalized = value.toLowerCase();
+      const category = categories.find(
+        (candidate) => candidate.id === value || candidate.name.toLowerCase() === normalized,
+      );
+      if (category) return [category.name];
+      return createIfMissing ? [value] : [];
+    });
+    const seen = new Set<string>();
+    return resolved.filter((name) => {
+      const normalized = name.toLowerCase();
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    });
   }
 
   private async resolveFolder(value: string): Promise<Folder> {
@@ -668,7 +714,32 @@ export class OutlookProvider implements EmailProvider {
   async modify(ids: string[], action: ModifyAction): Promise<void> {
     if (!ids.length) return;
     if (typeof action === 'object' && ('addLabels' in action || 'removeLabels' in action)) {
-      throw new EmailError('unsupported_capability', 'Outlook folders do not support Gmail-style labels');
+      const adding = 'addLabels' in action;
+      const requested = [...new Set(adding ? action.addLabels : action.removeLabels)];
+      const resolved = await this.resolveCategoryNames(requested, adding);
+      if (!resolved.length) return;
+      const requestedNames = new Set(resolved.map((label) => label.toLowerCase()));
+      await Promise.all(
+        ids.map(async (id) => {
+          const message = await this.request<GraphMessage>(
+            `/me/messages/${encodeURIComponent(id)}?${new URLSearchParams({ $select: 'categories' })}`,
+          );
+          const current = message.categories ?? [];
+          const categories = adding
+            ? [
+                ...current,
+                ...resolved.filter((label) => !current.some((item) => item.toLowerCase() === label.toLowerCase())),
+              ]
+            : current.filter((label) => !requestedNames.has(label.toLowerCase()));
+          if (categories.length === current.length && categories.every((label, index) => label === current[index]))
+            return;
+          await this.request(`/me/messages/${encodeURIComponent(id)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ categories }),
+          });
+        }),
+      );
+      return;
     }
     if (action === 'archive') {
       const archive = await this.resolveFolder('archive');

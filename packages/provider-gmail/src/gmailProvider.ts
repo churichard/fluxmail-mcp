@@ -13,6 +13,7 @@ import {
   type FolderRole,
   type GetAttachmentOpts,
   type GetMessageOpts,
+  type Label,
   type Message,
   type ModifyAction,
   type Page,
@@ -354,6 +355,29 @@ export class GmailProvider implements EmailProvider {
     return folders;
   }
 
+  async listLabels(): Promise<Label[]> {
+    const labels = await this.labels(true);
+    return labels.flatMap((label) => {
+      if (!label.id || !label.name || label.type !== 'user') return [];
+      const background = label.color?.backgroundColor ?? undefined;
+      const text = label.color?.textColor ?? undefined;
+      return [
+        {
+          id: label.id,
+          name: label.name,
+          ...(background || text
+            ? {
+                color: {
+                  ...(background ? { background } : {}),
+                  ...(text ? { text } : {}),
+                },
+              }
+            : {}),
+        },
+      ];
+    });
+  }
+
   /** Resolve reply threading (headers + Gmail thread id) from the message being replied to. */
   private async resolveReply(
     replyToMessageId: string,
@@ -550,8 +574,20 @@ export class GmailProvider implements EmailProvider {
       if (labels.length > 100) {
         throw new EmailError('invalid_request', 'Gmail allows at most 100 labels in one modification');
       }
-      removeLabelIds = await Promise.all(labels.map((label) => this.resolveLabelId(label, false, false)));
+      const resolved = await Promise.all(
+        labels.map(async (label) => {
+          try {
+            return await this.resolveLabelId(label, false, false);
+          } catch (error) {
+            if (isEmailError(error) && error.code === 'not_found') return undefined;
+            throw error;
+          }
+        }),
+      );
+      removeLabelIds = resolved.filter((label): label is string => label !== undefined);
     }
+
+    if (!addLabelIds.length && !removeLabelIds.length) return;
 
     for (let offset = 0; offset < ids.length; offset += BATCH_MODIFY_MAX_IDS) {
       const chunk = ids.slice(offset, offset + BATCH_MODIFY_MAX_IDS);

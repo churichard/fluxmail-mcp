@@ -11,6 +11,7 @@ import {
   type EmailAddress,
   type EmailQuery,
   type Folder,
+  type Label,
   type Message,
   type ModifyAction,
   type Page,
@@ -324,6 +325,10 @@ export class EmailService {
 
   listFolders(accountId?: string): Promise<Folder[]> {
     return this.withProvider(accountId, (p) => p.listFolders());
+  }
+
+  listLabels(accountId?: string): Promise<Label[]> {
+    return this.withProvider(accountId, (p) => p.listLabels());
   }
 
   listMessages(accountId: string | undefined, q: EmailQuery, page?: PageOpts): Promise<Page<Message>> {

@@ -101,6 +101,21 @@ const FolderSchema = z
   })
   .strict()
   .openapi('Folder');
+const LabelSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    color: z
+      .object({
+        background: z.string().optional(),
+        text: z.string().optional(),
+        preset: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .openapi('Label');
 const MessageSchema = z
   .object({
     id: z.string(),
@@ -994,6 +1009,26 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     const { accountId } = c.req.valid('param');
     return runJson(c, deps, { operation: 'listFolders', capabilities: ['mail.read'] }, async () => ({
       data: await c.get('restService').listFolders(accountId),
+    }));
+  });
+
+  const labelsRoute = createRoute({
+    method: 'get',
+    path: '/api/v1/accounts/{accountId}/labels',
+    operationId: 'listLabels',
+    summary: 'List labels',
+    description: 'List Gmail user labels or Outlook categories in an email account.',
+    request: { params: accountParams },
+    ...protectedRoute,
+    responses: {
+      200: { content: { 'application/json': { schema: dataEnvelope(z.array(LabelSchema)) } }, description: 'Labels' },
+      ...errorResponses,
+    },
+  });
+  app.openapi(labelsRoute, (c) => {
+    const { accountId } = c.req.valid('param');
+    return runJson(c, deps, { operation: 'listLabels', capabilities: ['mail.read'] }, async () => ({
+      data: await c.get('restService').listLabels(accountId),
     }));
   });
 

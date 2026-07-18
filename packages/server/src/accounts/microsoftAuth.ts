@@ -11,6 +11,7 @@ export const MICROSOFT_SCOPES = [
   'User.Read',
   'Mail.ReadWrite',
   'Mail.Send',
+  'MailboxSettings.Read',
 ];
 
 export interface MicrosoftCredentials {
@@ -134,12 +135,13 @@ export async function refreshMicrosoftCredentials(
 ): Promise<MicrosoftCredentials> {
   const clientAuth =
     credentials.clientAuth ?? (requireMicrosoftConfig(config).clientSecret ? 'confidential' : 'public');
+  const refreshScope = credentials.scope?.trim();
   const payload = await tokenRequest(
     config,
     {
       grant_type: 'refresh_token',
       refresh_token: credentials.refreshToken,
-      scope: MICROSOFT_SCOPES.join(' '),
+      ...(refreshScope ? { scope: refreshScope } : {}),
     },
     clientAuth,
   );

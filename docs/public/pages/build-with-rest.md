@@ -45,6 +45,8 @@ curl "$FLUXMAIL_API_URL/accounts" \
 
 Copy the account ID from `data`. You will use it in mailbox requests. API keys can be limited to selected mailboxes and permission profiles through [Permissions](/docs/permissions).
 
+Folders and labels are separate resources. Use `/accounts/<account-id>/folders` for navigable mailbox locations. Use `/accounts/<account-id>/labels` for Gmail user labels or Outlook categories. Gmail user labels appear in both responses because they are navigable views and message tags. IMAP accounts return an unsupported capability error for labels.
+
 ## List messages
 
 Get the 10 most recent inbox messages:

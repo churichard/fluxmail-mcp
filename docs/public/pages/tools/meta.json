@@ -14,6 +14,7 @@
     "list-accounts",
     "list-emails",
     "list-folders",
+    "list-labels",
     "list-scheduled-emails",
     "modify-emails",
     "search-emails",

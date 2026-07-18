@@ -98,6 +98,45 @@ describe('GmailProvider list hydration', () => {
   });
 });
 
+describe('GmailProvider labels', () => {
+  it('lists user labels with colors while keeping them available as folders', async () => {
+    const gmailLabels = [
+      { id: 'INBOX', name: 'INBOX', type: 'system', messagesUnread: 2 },
+      {
+        id: 'Label_1',
+        name: 'Projects',
+        type: 'user',
+        messagesUnread: 1,
+        color: { backgroundColor: '#16a766', textColor: '#ffffff' },
+      },
+    ];
+    const provider = new GmailProvider({
+      accountId: 'acct_1',
+      email: 'me@example.com',
+      auth: new OAuth2Client(),
+    });
+    const internals = provider as unknown as {
+      gmail: { users: { labels: { list: ReturnType<typeof vi.fn> } } };
+    };
+    internals.gmail = {
+      users: { labels: { list: vi.fn().mockResolvedValue({ data: { labels: gmailLabels } }) } },
+    };
+
+    await expect(provider.listLabels()).resolves.toEqual([
+      {
+        id: 'Label_1',
+        name: 'Projects',
+        color: { background: '#16a766', text: '#ffffff' },
+      },
+    ]);
+    await expect(provider.listFolders()).resolves.toContainEqual({
+      id: 'Label_1',
+      name: 'Projects',
+      unreadCount: 1,
+    });
+  });
+});
+
 describe('GmailProvider getDraft', () => {
   function providerWithDraftsGet(draftsGet: ReturnType<typeof vi.fn>) {
     const provider = new GmailProvider({
@@ -332,6 +371,13 @@ describe('GmailProvider modify', () => {
     await expect(provider.modify(['m1'], { addLabels: labels })).rejects.toMatchObject({
       code: 'invalid_request',
     });
+    expect(batchModify).not.toHaveBeenCalled();
+  });
+
+  it('treats removing an unknown label as a no-op', async () => {
+    const { provider, batchModify } = providerWithBatchModify();
+
+    await expect(provider.modify(['m1'], { removeLabels: ['missing'] })).resolves.toBeUndefined();
     expect(batchModify).not.toHaveBeenCalled();
   });
 });

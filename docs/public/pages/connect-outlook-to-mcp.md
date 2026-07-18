@@ -25,6 +25,7 @@ Open **API permissions** for the app registration and add these delegated Micros
 - `User.Read`
 - `Mail.ReadWrite`
 - `Mail.Send`
+- `MailboxSettings.Read`
 
 Fluxmail also requests standard OpenID Connect and offline access scopes during sign-in so it can identify the mailbox and refresh access tokens. An Entra administrator may need to grant consent when organizational policy blocks user consent.
 
@@ -142,5 +143,11 @@ fluxmail accounts add outlook --reauthorize <account-id>
 ```
 
 For Docker, prefix the command with `docker compose exec fluxmail`. Choose the Microsoft account that matches the mailbox you are reconnecting. Reauthorization updates the stored tokens without changing the mailbox owner or access rules.
+
+Accounts connected before category support can keep reading and sending mail without reconnecting. Listing Outlook categories requires `MailboxSettings.Read`. If Fluxmail reports that this permission is missing, reauthorize the account after adding it to the Entra app registration.
+
+## How Outlook categories work
+
+Fluxmail exposes Outlook mail folders as folders and Outlook master categories as labels. Message label lists contain category names. Adding or removing a label updates the message's categories without replacing its other categories. Assigning a category name that does not exist creates it in Outlook.
 
 Continue with [Connect an MCP client](/docs/connect-an-mcp-client), [Build with REST](/docs/build-with-rest), or [Use the CLI](/docs/use-the-cli).

@@ -412,11 +412,22 @@ export function buildMcpServer(service: EmailService, options: BuildMcpServerOpt
     server.registerTool(
       'list_folders',
       {
-        description: 'List folders/labels for an account, with roles (inbox, sent, drafts, trash, spam, starred).',
+        description: 'List navigable folders for an account, with roles (inbox, sent, drafts, trash, spam, starred).',
         inputSchema: { accountId: accountIdParam },
         annotations: { readOnlyHint: true },
       },
       gated('list_folders', 'mail.read', async (args: { accountId?: string }) => service.listFolders(args.accountId)),
+    );
+
+  if (can('mail.read'))
+    server.registerTool(
+      'list_labels',
+      {
+        description: 'List Gmail user labels or Outlook categories for an account.',
+        inputSchema: { accountId: accountIdParam },
+        annotations: { readOnlyHint: true },
+      },
+      gated('list_labels', 'mail.read', async (args: { accountId?: string }) => service.listLabels(args.accountId)),
     );
 
   if (can('mail.read'))

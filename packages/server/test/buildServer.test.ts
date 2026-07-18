@@ -55,6 +55,7 @@ describe('MCP permissions', () => {
     'list_accounts',
     'list_emails',
     'list_folders',
+    'list_labels',
     'list_scheduled_emails',
     'search_emails',
   ];
@@ -386,6 +387,31 @@ describe('reply permissions', () => {
 });
 
 describe('tool telemetry', () => {
+  it('lists labels and records sanitized success telemetry', async () => {
+    const { telemetry, capture } = telemetrySpy();
+    const listLabels = vi.fn().mockResolvedValue([{ id: 'private-id', name: 'private-project' }]);
+    const client = await connectMcp({ enforceQuota: () => undefined, listLabels } as Partial<EmailService>, {
+      telemetry,
+      transport: 'http',
+    });
+
+    const result = await client.callTool({ name: 'list_labels', arguments: { accountId: 'private-account' } });
+
+    expect(result.isError).toBeFalsy();
+    expect(listLabels).toHaveBeenCalledWith('private-account');
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'mcp',
+        operation: 'list_labels',
+        transport: 'http',
+        outcome: 'success',
+      }),
+    );
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('private-account');
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('private-project');
+  });
+
   it('captures the tool, transport, outcome, and allowlisted feature properties', async () => {
     const { telemetry, capture, beginActivity, finishActivity } = telemetrySpy();
     const service = {
@@ -421,23 +447,23 @@ describe('tool telemetry', () => {
     expect(finishActivity).toHaveBeenCalledOnce();
   });
 
-  it('captures a safe error code without the error message', async () => {
+  it('captures a safe label error code without the error message', async () => {
     const { telemetry, capture } = telemetrySpy();
     const service = {
       enforceQuota: () => undefined,
-      listAccounts: vi.fn(() => {
+      listLabels: vi.fn(() => {
         throw new EmailError('provider_unavailable', 'private provider response');
       }),
     } as Partial<EmailService>;
     const client = await connectMcp(service, { telemetry, transport: 'stdio' });
 
-    await client.callTool({ name: 'list_accounts', arguments: {} });
+    await client.callTool({ name: 'list_labels', arguments: {} });
 
     expect(capture).toHaveBeenCalledWith(
       'operation completed',
       expect.objectContaining({
         product_surface: 'mcp',
-        operation: 'list_accounts',
+        operation: 'list_labels',
         transport: 'stdio',
         outcome: 'error',
         error_code: 'provider_unavailable',
