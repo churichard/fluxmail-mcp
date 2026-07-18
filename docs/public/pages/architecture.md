@@ -1,7 +1,7 @@
 ---
 title: 'Architecture'
 description: 'Where Fluxmail keeps your data and how MCP, REST, and CLI requests reach each email provider.'
-updated: '2026-07-17'
+updated: '2026-07-18'
 ---
 
 ## Where your data lives
@@ -10,9 +10,9 @@ Fluxmail keeps its SQLite database on the machine where it runs. Google and Micr
 
 ## How requests flow
 
-Agents connect through MCP, while apps and backend workflows use REST. Both interfaces send email requests through the same service. Fluxmail selects the mailbox, checks access and plan limits, then passes the operation to Gmail, Microsoft Graph, or an IMAP/SMTP server. Mailbox routing, replies, forwards, and provider capabilities stay consistent across MCP and REST.
+Agents connect through MCP, apps and backend workflows use REST, and people or scripts can use the CLI. All three interfaces send email requests through the same service. Fluxmail selects the mailbox, checks access and plan limits, then passes the operation to Gmail, Microsoft Graph, or an IMAP/SMTP server. Mailbox routing, replies, forwards, and provider capabilities stay consistent across CLI, MCP, and REST.
 
-The CLI is Fluxmail's control interface. It connects mailboxes, manages members and API keys, changes configuration, and starts the MCP and REST services. Local management commands call the control-plane route handlers in the Fluxmail process. Remote CLI profiles call those handlers over HTTPS. Each route resolves the member session or API key, applies the centralized access policy, and then calls the account, member, license, or mail service.
+The CLI also connects mailboxes, manages members and API keys, changes configuration, and starts the MCP and REST services. Local CLI commands call route handlers in the Fluxmail process. Remote CLI profiles call the same routes over HTTPS. Each route resolves the member session or API key, applies the centralized access policy, and then calls the account, member, license, or mail service.
 
 ```text
 Local CLI --------------------\
@@ -20,7 +20,7 @@ Remote CLI and REST -----------> routes -> principal -> policy -> services -> SQ
 HTTP MCP with an API key ------/
 ```
 
-CLI management commands use the same database and provider connections as the running server. The CLI does not duplicate the MCP and REST mailbox-operation APIs.
+CLI commands use the same REST operations, database, and provider connections as the running server. The CLI only handles terminal concerns such as flags, JSON input, local attachment files, and formatted output.
 
 Provider differences still affect the available behavior. Folders are places you can navigate, such as Inbox or Archive. Labels are tags that a message can have alongside its folder. Gmail user labels work as both navigable views and tags, so they appear in folder and label listings. Outlook folders appear as folders, while Outlook categories appear as labels. IMAP has folders but does not support label actions. It also uses the mail server's basic search and has no server-side thread model. Fluxmail reconstructs IMAP threads from standard email headers.
 

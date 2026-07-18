@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { EmailError } from '@fluxmail/core';
+import { EmailError, type EmailErrorCode } from '@fluxmail/core';
 import { resolveDataDir } from './config.js';
 import { createContext } from './context.js';
 import { createApp } from './http/app.js';
@@ -19,6 +19,41 @@ export type InstanceProfile = LocalInstanceProfile | RemoteInstanceProfile;
 export interface CliInstanceConfig {
   active?: string;
   instances: Record<string, InstanceProfile>;
+}
+
+export interface ApiEnvelope<T> {
+  data: T;
+  meta?: Record<string, unknown>;
+  warnings?: string[];
+}
+
+const EMAIL_ERROR_CODES = new Set<EmailErrorCode>([
+  'auth_expired',
+  'rate_limited',
+  'not_found',
+  'invalid_request',
+  'provider_unavailable',
+  'entitlement_exceeded',
+  'permission_denied',
+  'unsupported_capability',
+]);
+
+export class InstanceApiError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status: number,
+    readonly data?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'InstanceApiError';
+  }
+}
+
+export function apiErrorCode(error: unknown): string {
+  if (error instanceof InstanceApiError) return error.code;
+  if (error instanceof EmailError) return error.code;
+  return 'internal';
 }
 
 interface CliCredentials {
@@ -190,11 +225,42 @@ export class InstanceClient {
   }
 
   async json<T>(pathname: string, init: RequestInit = {}, authenticated = true): Promise<T> {
+    return (await this.jsonEnvelope<T>(pathname, init, authenticated)).data;
+  }
+
+  async jsonEnvelope<T>(pathname: string, init: RequestInit = {}, authenticated = true): Promise<ApiEnvelope<T>> {
     const response = await this.request(pathname, init, authenticated);
-    const body = (await response.json()) as { data?: T; error?: { message?: string } };
-    if (!response.ok)
-      throw new EmailError('invalid_request', body.error?.message ?? `Request failed with HTTP ${response.status}.`);
-    return body.data as T;
+    let body: {
+      data?: T;
+      meta?: Record<string, unknown>;
+      warnings?: string[];
+      error?: { code?: string; message?: string; data?: Record<string, unknown> };
+    };
+    try {
+      body = (await response.json()) as typeof body;
+    } catch {
+      throw new InstanceApiError(
+        'invalid_response',
+        `Instance ${this.name} returned invalid JSON with HTTP ${response.status}.`,
+        response.status,
+      );
+    }
+    if (!response.ok) {
+      const code = body.error?.code ?? 'request_failed';
+      const message = body.error?.message ?? `Request failed with HTTP ${response.status}.`;
+      if (EMAIL_ERROR_CODES.has(code as EmailErrorCode)) {
+        throw new EmailError(code as EmailErrorCode, message, body.error?.data);
+      }
+      throw new InstanceApiError(code, message, response.status, body.error?.data);
+    }
+    if (!('data' in body)) {
+      throw new InstanceApiError('invalid_response', `Instance ${this.name} returned no data.`, response.status);
+    }
+    return {
+      data: body.data as T,
+      ...(body.meta ? { meta: body.meta } : {}),
+      ...(body.warnings ? { warnings: body.warnings } : {}),
+    };
   }
 }
 

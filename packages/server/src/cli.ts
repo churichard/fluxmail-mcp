@@ -69,6 +69,7 @@ import { authenticateBearer, recoverAdminPassword, setupInitialAdmin } from './a
 import { recordAdminAuditEvent } from './storage/adminAudit.js';
 import { canManageOwnedAccount } from './authorization.js';
 import { createCliUpdateNotifier, type CliUpdateNotifier, type CliUpdateNotifierFactory } from './updateNotifier.js';
+import { registerMailCommands } from './cliMail.js';
 
 interface AddAccountOptions {
   reauthorize?: string;
@@ -280,12 +281,14 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   const program = new Command();
   program
     .name('fluxmail')
-    .description('Fluxmail, a self-hosted MCP server for your email')
+    .description('Fluxmail, a self-hosted email API with MCP, REST, and CLI access')
     .option('--instance <name>', 'Use a named local or remote instance')
+    .option('-a, --account <id-or-email>', 'Use an email account by ID or address')
     .option('--no-update-notifier', 'Skip the automatic update check for this command')
     .version(VERSION, '-v, --version');
 
   const selectedInstance = (): string | undefined => program.opts<{ instance?: string }>().instance;
+  const selectedAccount = (): string | undefined => program.opts<{ account?: string }>().account;
 
   function commandPath(command: Command): string {
     const names: string[] = [];
@@ -1634,6 +1637,16 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       const dataDir = resolveDataDir();
       console.log(`Telemetry is ${isTelemetryEnabled(dataDir) ? 'enabled' : 'disabled'}.`);
     });
+
+  registerMailCommands(program, {
+    selectedInstance,
+    selectedAccount,
+    reportError: (error, code) => {
+      finishCliOperation(program, 'error', code);
+      console.error(`Error [${code}]: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    },
+  });
 
   program
     .command('status')

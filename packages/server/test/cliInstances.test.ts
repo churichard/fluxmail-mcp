@@ -86,4 +86,34 @@ describe('CLI instance profiles', () => {
     );
     await expect(client.request('/https://other.example.com/steal')).rejects.toMatchObject({ code: 'invalid_request' });
   });
+
+  it('can retain REST metadata and safe error codes', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: ['message'], meta: { nextPageToken: 'next' }, warnings: ['renew'] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { code: 'idempotency_conflict', message: 'Use a new key.' } }), {
+          status: 409,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new InstanceClient('work', { kind: 'remote', serverUrl: 'https://mail.example.com' }, 'fms_secret');
+
+    await expect(client.jsonEnvelope('/api/v1/messages')).resolves.toEqual({
+      data: ['message'],
+      meta: { nextPageToken: 'next' },
+      warnings: ['renew'],
+    });
+    await expect(client.jsonEnvelope('/api/v1/send')).rejects.toMatchObject({
+      code: 'idempotency_conflict',
+      status: 409,
+      message: 'Use a new key.',
+    });
+  });
 });

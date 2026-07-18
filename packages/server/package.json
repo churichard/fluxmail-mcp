@@ -82,12 +82,14 @@
     "drizzle-orm": "^0.45.2",
     "google-auth-library": "10.5.0",
     "hono": "^4.7.11",
+    "mime-types": "^3.0.2",
     "posthog-node": "^5.41.0",
     "update-notifier": "7.3.1",
     "zod": "^3.25.67"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/mime-types": "^3.0.1",
     "@types/node": "^22.15.0",
     "@types/update-notifier": "6.0.8",
     "imapflow": "^1.4.7"

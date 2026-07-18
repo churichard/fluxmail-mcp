@@ -1,12 +1,12 @@
 ---
 title: 'CLI reference'
-description: 'Run the Fluxmail server and manage accounts, members, API keys, configuration, and licenses from the command line.'
+description: 'Work with email and manage the Fluxmail server from the command line.'
 updated: '2026-07-15'
 ---
 
-The Fluxmail CLI starts local MCP and REST servers and manages a selected local or remote instance. Run `fluxmail setup` for a new local instance, or use `fluxmail login` to add an existing instance. See [Authentication and instances](/docs/authentication-and-instances) for profiles, sessions, and remote URL rules.
+The Fluxmail CLI reads and manages email through a selected local or remote instance. It also starts MCP and REST servers and handles instance administration. Run `fluxmail setup` for a new local instance, or use `fluxmail login` to add an existing instance. See [Authentication and instances](/docs/authentication-and-instances) for profiles, sessions, and remote URL rules.
 
-See [Use the CLI](/docs/use-the-cli) for common setup and administration workflows. This page is the complete command reference.
+See [Use the CLI](/docs/use-the-cli) for email, setup, and administration workflows. This page is the complete command reference.
 
 ## Install the CLI
 
@@ -78,6 +78,28 @@ docker compose exec fluxmail fluxmail accounts list
 | [`fluxmail telemetry disable`](/docs/cli/telemetry-disable) | Stop sending anonymous usage telemetry |
 | [`fluxmail telemetry enable`](/docs/cli/telemetry-enable) | Allow anonymous usage telemetry |
 | [`fluxmail telemetry status`](/docs/cli/telemetry-status) | Show whether anonymous usage telemetry is enabled |
+| [`fluxmail folders`](/docs/cli/folders) | Work with navigable mailbox folders |
+| [`fluxmail folders list`](/docs/cli/folders-list) | List folders in an email account |
+| [`fluxmail labels`](/docs/cli/labels) | Work with Gmail labels and Outlook categories |
+| [`fluxmail labels list`](/docs/cli/labels-list) | List Gmail user labels or Outlook categories |
+| [`fluxmail emails`](/docs/cli/emails) | Read, send, and organize email |
+| [`fluxmail emails list`](/docs/cli/emails-list) | List and filter messages |
+| [`fluxmail emails search`](/docs/cli/emails-search) | Search messages |
+| [`fluxmail emails get`](/docs/cli/emails-get) | Get a complete message |
+| [`fluxmail emails send`](/docs/cli/emails-send) | Send or schedule a message |
+| [`fluxmail emails forward`](/docs/cli/emails-forward) | Forward a message |
+| [`fluxmail emails modify`](/docs/cli/emails-modify) | Apply one action to one or more messages |
+| [`fluxmail threads`](/docs/cli/threads) | Read email threads |
+| [`fluxmail threads get`](/docs/cli/threads-get) | Get a complete thread |
+| [`fluxmail drafts`](/docs/cli/drafts) | Create and manage drafts |
+| [`fluxmail drafts create`](/docs/cli/drafts-create) | Create a draft |
+| [`fluxmail drafts update`](/docs/cli/drafts-update) | Replace the content of a draft |
+| [`fluxmail drafts delete`](/docs/cli/drafts-delete) | Delete a draft |
+| [`fluxmail scheduled`](/docs/cli/scheduled) | Manage scheduled sends |
+| [`fluxmail scheduled list`](/docs/cli/scheduled-list) | List scheduled sends |
+| [`fluxmail scheduled cancel`](/docs/cli/scheduled-cancel) | Cancel a scheduled send and keep its draft |
+| [`fluxmail attachments`](/docs/cli/attachments) | Download message attachments |
+| [`fluxmail attachments download`](/docs/cli/attachments-download) | Download an attachment |
 | [`fluxmail status`](/docs/cli/status) | Show mailbox and provider status for the selected instance |
 <!-- END GENERATED:cli-command-reference -->
 
