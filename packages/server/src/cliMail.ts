@@ -258,7 +258,10 @@ function queryString(options: QueryOptions, searchText?: string): string {
   return query.size ? `?${query}` : '';
 }
 
-async function resolveAccount(client: InstanceClient, requested?: string): Promise<AccountSummary> {
+async function resolveAccountId(client: InstanceClient, requested?: string): Promise<string> {
+  const requestedRef = requested?.trim();
+  if (requestedRef && /^acct_[^@\s]+$/.test(requestedRef)) return requestedRef;
+
   const listed = await client.json<AccountSummary[]>('/api/v1/accounts');
   if (listed.length === 0) {
     throw new EmailError('invalid_request', 'No email accounts are available. Connect an account first.');
@@ -268,13 +271,13 @@ async function resolveAccount(client: InstanceClient, requested?: string): Promi
     (account) =>
       account.ownerMemberId === member.id || account.sharedWithAll || account.grantedMemberIds.includes(member.id),
   );
-  if (requested) {
-    const normalized = requested.trim().toLowerCase();
+  if (requestedRef) {
+    const normalized = requestedRef.toLowerCase();
     const account = accounts.find(
-      (candidate) => candidate.id === requested || candidate.email.toLowerCase() === normalized,
+      (candidate) => candidate.id === requestedRef || candidate.email.toLowerCase() === normalized,
     );
-    if (!account) throw new EmailError('not_found', `No accessible account has id or email "${requested}".`);
-    return account;
+    if (!account) throw new EmailError('not_found', `No accessible account has id or email "${requestedRef}".`);
+    return account.id;
   }
   if (accounts.length === 0) {
     throw new EmailError('invalid_request', 'No email accounts are accessible to this member.');
@@ -287,7 +290,7 @@ async function resolveAccount(client: InstanceClient, requested?: string): Promi
         .join(', ')}.`,
     );
   }
-  return accounts[0]!;
+  return accounts[0]!.id;
 }
 
 async function responseError(response: Response): Promise<never> {
@@ -326,10 +329,10 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
         options.reportError(error, apiErrorCode(error));
       }
     };
-  const accountContext = async (): Promise<{ client: InstanceClient; account: AccountSummary }> => {
+  const accountContext = async (): Promise<{ client: InstanceClient; accountId: string }> => {
     const client = instanceClient(options.selectedInstance());
-    const account = await resolveAccount(client, options.selectedAccount());
-    return { client, account };
+    const accountId = await resolveAccountId(client, options.selectedAccount());
+    return { client, accountId };
   };
   const printEnvelope = async <T>(request: Promise<ApiEnvelope<T>>): Promise<void> => printJson(await request);
 
@@ -339,8 +342,8 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
     .description('List folders in an email account')
     .action(
       run(async () => {
-        const { client, account } = await accountContext();
-        await printEnvelope(client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(account.id)}/folders`));
+        const { client, accountId } = await accountContext();
+        await printEnvelope(client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(accountId)}/folders`));
       }),
     );
 
@@ -350,8 +353,8 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
     .description('List Gmail user labels or Outlook categories')
     .action(
       run(async () => {
-        const { client, account } = await accountContext();
-        await printEnvelope(client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(account.id)}/labels`));
+        const { client, accountId } = await accountContext();
+        await printEnvelope(client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(accountId)}/labels`));
       }),
     );
 
@@ -359,9 +362,9 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
   const listEmails = addQueryOptions(emails.command('list').description('List and filter messages'), true);
   listEmails.action(async (query: QueryOptions) =>
     run(async () => {
-      const { client, account } = await accountContext();
+      const { client, accountId } = await accountContext();
       await printEnvelope(
-        client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(account.id)}/messages${queryString(query)}`),
+        client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(accountId)}/messages${queryString(query)}`),
       );
     })(),
   );
@@ -372,10 +375,10 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
   );
   search.action(async (query: string, queryOptions: QueryOptions) =>
     run(async () => {
-      const { client, account } = await accountContext();
+      const { client, accountId } = await accountContext();
       await printEnvelope(
         client.jsonEnvelope(
-          `/api/v1/accounts/${encodeURIComponent(account.id)}/messages${queryString(queryOptions, query)}`,
+          `/api/v1/accounts/${encodeURIComponent(accountId)}/messages${queryString(queryOptions, query)}`,
         ),
       );
     })(),
@@ -387,10 +390,10 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
     .description('Get a complete message')
     .action(async (messageId: string) =>
       run(async () => {
-        const { client, account } = await accountContext();
+        const { client, accountId } = await accountContext();
         await printEnvelope(
           client.jsonEnvelope(
-            `/api/v1/accounts/${encodeURIComponent(account.id)}/messages/${encodeURIComponent(messageId)}`,
+            `/api/v1/accounts/${encodeURIComponent(accountId)}/messages/${encodeURIComponent(messageId)}`,
           ),
         );
       })(),
@@ -422,10 +425,10 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
           ...(sendOptions.sendAt ? { sendAt: sendOptions.sendAt } : {}),
         };
       }
-      const { client, account } = await accountContext();
+      const { client, accountId } = await accountContext();
       await printEnvelope(
         client.jsonEnvelope(
-          `/api/v1/accounts/${encodeURIComponent(account.id)}/send`,
+          `/api/v1/accounts/${encodeURIComponent(accountId)}/send`,
           jsonRequest(request, { 'idempotency-key': sendOptions.idempotencyKey ?? randomUUID() }),
         ),
       );
@@ -463,10 +466,10 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
           includeAttachments: forwardOptions.attachments,
         };
       }
-      const { client, account } = await accountContext();
+      const { client, accountId } = await accountContext();
       await printEnvelope(
         client.jsonEnvelope(
-          `/api/v1/accounts/${encodeURIComponent(account.id)}/messages/${encodeURIComponent(messageId)}/forward`,
+          `/api/v1/accounts/${encodeURIComponent(accountId)}/messages/${encodeURIComponent(messageId)}/forward`,
           jsonRequest(request, { 'idempotency-key': forwardOptions.idempotencyKey ?? randomUUID() }),
         ),
       );
@@ -509,10 +512,10 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
             ...(modifyOptions.label.length ? { labels: modifyOptions.label } : {}),
           };
         }
-        const { client, account } = await accountContext();
+        const { client, accountId } = await accountContext();
         await printEnvelope(
           client.jsonEnvelope(
-            `/api/v1/accounts/${encodeURIComponent(account.id)}/messages/actions`,
+            `/api/v1/accounts/${encodeURIComponent(accountId)}/messages/actions`,
             jsonRequest(request),
           ),
         );
@@ -526,10 +529,10 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
     .description('Get a complete thread')
     .action(async (threadId: string) =>
       run(async () => {
-        const { client, account } = await accountContext();
+        const { client, accountId } = await accountContext();
         await printEnvelope(
           client.jsonEnvelope(
-            `/api/v1/accounts/${encodeURIComponent(account.id)}/threads/${encodeURIComponent(threadId)}`,
+            `/api/v1/accounts/${encodeURIComponent(accountId)}/threads/${encodeURIComponent(threadId)}`,
           ),
         );
       })(),
@@ -540,9 +543,9 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
   createDraft.action(async (draftOptions: MessageContentOptions) =>
     run(async () => {
       const request = messageRequest(draftOptions);
-      const { client, account } = await accountContext();
+      const { client, accountId } = await accountContext();
       await printEnvelope(
-        client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(account.id)}/drafts`, jsonRequest(request)),
+        client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(accountId)}/drafts`, jsonRequest(request)),
       );
     })(),
   );
@@ -552,12 +555,12 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
   updateDraft.action(async (draftId: string, draftOptions: MessageContentOptions) =>
     run(async () => {
       const request = messageRequest(draftOptions);
-      const { client, account } = await accountContext();
+      const { client, accountId } = await accountContext();
       await printEnvelope(
-        client.jsonEnvelope(
-          `/api/v1/accounts/${encodeURIComponent(account.id)}/drafts/${encodeURIComponent(draftId)}`,
-          { ...jsonRequest(request), method: 'PUT' },
-        ),
+        client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(accountId)}/drafts/${encodeURIComponent(draftId)}`, {
+          ...jsonRequest(request),
+          method: 'PUT',
+        }),
       );
     })(),
   );
@@ -567,10 +570,10 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
     .description('Delete a draft')
     .action(async (draftId: string) =>
       run(async () => {
-        const { client, account } = await accountContext();
+        const { client, accountId } = await accountContext();
         await printEnvelope(
           client.jsonEnvelope(
-            `/api/v1/accounts/${encodeURIComponent(account.id)}/drafts/${encodeURIComponent(draftId)}`,
+            `/api/v1/accounts/${encodeURIComponent(accountId)}/drafts/${encodeURIComponent(draftId)}`,
             { method: 'DELETE' },
           ),
         );
@@ -583,8 +586,8 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
     .description('List scheduled sends')
     .action(
       run(async () => {
-        const { client, account } = await accountContext();
-        await printEnvelope(client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(account.id)}/scheduled-sends`));
+        const { client, accountId } = await accountContext();
+        await printEnvelope(client.jsonEnvelope(`/api/v1/accounts/${encodeURIComponent(accountId)}/scheduled-sends`));
       }),
     );
   scheduled
@@ -593,10 +596,10 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
     .description('Cancel a scheduled send and keep its draft')
     .action(async (scheduleId: string) =>
       run(async () => {
-        const { client, account } = await accountContext();
+        const { client, accountId } = await accountContext();
         await printEnvelope(
           client.jsonEnvelope(
-            `/api/v1/accounts/${encodeURIComponent(account.id)}/scheduled-sends/${encodeURIComponent(scheduleId)}`,
+            `/api/v1/accounts/${encodeURIComponent(accountId)}/scheduled-sends/${encodeURIComponent(scheduleId)}`,
             { method: 'DELETE' },
           ),
         );
@@ -617,9 +620,9 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
         if (!downloadOptions.force && existsSync(outputPath)) {
           throw new EmailError('invalid_request', `Output file already exists: ${outputPath}`);
         }
-        const { client, account } = await accountContext();
+        const { client, accountId } = await accountContext();
         const response = await client.request(
-          `/api/v1/accounts/${encodeURIComponent(account.id)}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+          `/api/v1/accounts/${encodeURIComponent(accountId)}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
         );
         if (!response.ok) await responseError(response);
         const content = Buffer.from(await response.arrayBuffer());

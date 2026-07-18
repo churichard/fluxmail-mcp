@@ -186,6 +186,15 @@ describe('CLI email commands', () => {
     expect(requests.at(-1)?.url.pathname).toBe('/api/v1/accounts/acct_2/folders');
   });
 
+  it('uses an explicit account ID without account discovery requests', async () => {
+    const { requests } = setupRemote();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await run(['drafts', 'create', '--body', 'draft']);
+
+    expect(requests.map((request) => request.url.pathname)).toEqual(['/api/v1/accounts/acct_1/drafts']);
+  });
+
   it('requires account selection when more than one account is accessible', async () => {
     setupRemote();
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});

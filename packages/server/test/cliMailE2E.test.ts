@@ -17,6 +17,7 @@ import { createApiKey } from '../src/storage/apiKeys.js';
 import { accounts, openDb } from '../src/storage/db.js';
 import { addMember } from '../src/storage/members.js';
 import { saveLocalInstance, saveRemoteInstance, saveSessionToken } from '../src/cliInstances.js';
+import { customPermissionPolicy } from '../src/permissions.js';
 
 const cliPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/cli.ts');
 
@@ -164,9 +165,18 @@ describe('CLI mail process integration', () => {
     if (!server.listening) await new Promise<void>((resolve) => server.once('listening', resolve));
     const address = server.address() as AddressInfo;
     const { key } = createApiKey(db, 'cli-e2e', member.id);
+    const { key: composeKey } = createApiKey(
+      db,
+      'cli-e2e-compose',
+      member.id,
+      customPermissionPolicy(['mail.send', 'mail.drafts']),
+      [account.id],
+    );
     vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
     saveRemoteInstance('e2e', `http://127.0.0.1:${address.port}`);
     saveSessionToken('e2e', key);
+    saveRemoteInstance('e2e-compose', `http://127.0.0.1:${address.port}`);
+    saveSessionToken('e2e-compose', composeKey);
     vi.unstubAllEnvs();
   });
 
@@ -208,6 +218,29 @@ describe('CLI mail process integration', () => {
       }),
     );
     expect(JSON.parse(created.stdout)).toMatchObject({ data: { draftId: 'draft_e2e' } });
+  });
+
+  it('uses an explicit account ID with an API key that cannot read mail', async () => {
+    const selection = { instance: 'e2e-compose', account: account.id };
+    const listed = await runCli(dataDir, ['emails', 'list'], undefined, selection);
+    expect(listed.status).toBe(1);
+    expect(listed.stderr).toContain('Error [permission_denied]');
+
+    const drafted = await runCli(
+      dataDir,
+      ['drafts', 'create', '--to', 'recipient@example.com', '--body', 'restricted draft'],
+      undefined,
+      selection,
+    );
+    expect(drafted.status, drafted.stderr).toBe(0);
+
+    const sent = await runCli(
+      dataDir,
+      ['emails', 'send', '--to', 'recipient@example.com', '--body', 'restricted send'],
+      undefined,
+      selection,
+    );
+    expect(sent.status, sent.stderr).toBe(0);
   });
 
   it('passes REST JSON stdin and binary attachments across the process and HTTP boundaries', async () => {
