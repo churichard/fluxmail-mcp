@@ -109,6 +109,91 @@ describe('CLI telemetry', () => {
 
     expect(capture).not.toHaveBeenCalled();
   });
+
+  it('shows an update notice after command output without changing telemetry', async () => {
+    vi.stubEnv('FLUXMAIL_DATA_DIR', mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-update-')));
+    const events: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation(() => events.push('command output'));
+    const notify = vi.fn(() => events.push('update notice'));
+    const updateNotifierFactory = vi.fn(() => ({ notify }));
+    const { capture, telemetry } = telemetrySpy();
+
+    await createCliProgram({ telemetry, updateNotifierFactory }).parseAsync([
+      'node',
+      'fluxmail',
+      'telemetry',
+      'status',
+    ]);
+
+    expect(updateNotifierFactory).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledOnce();
+    expect(events).toEqual(['command output', 'update notice']);
+    expect(capture).toHaveBeenCalledWith('operation completed', {
+      product_surface: 'cli',
+      operation: 'telemetry status',
+      outcome: 'success',
+      duration_ms: expect.any(Number),
+    });
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('update');
+  });
+
+  it.each([
+    ['before the command', ['--no-update-notifier', 'telemetry', 'status']],
+    ['after the command', ['telemetry', 'status', '--no-update-notifier']],
+  ])('supports the update opt-out flag %s', async (_name, args) => {
+    vi.stubEnv('FLUXMAIL_DATA_DIR', mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-update-')));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const updateNotifierFactory = vi.fn(() => ({ notify: vi.fn() }));
+    const { capture, telemetry } = telemetrySpy();
+
+    await createCliProgram({ telemetry, updateNotifierFactory }).parseAsync(['node', 'fluxmail', ...args]);
+
+    expect(updateNotifierFactory).not.toHaveBeenCalled();
+    expect(capture).toHaveBeenCalledWith('operation completed', {
+      product_surface: 'cli',
+      operation: 'telemetry status',
+      outcome: 'success',
+      duration_ms: expect.any(Number),
+    });
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('no-update-notifier');
+  });
+
+  it('does not create an update notifier for stdio MCP', async () => {
+    vi.stubEnv('FLUXMAIL_DATA_DIR', mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-update-')));
+    const updateNotifierFactory = vi.fn(() => ({ notify: vi.fn() }));
+    const { telemetry } = telemetrySpy();
+
+    await expect(
+      createCliProgram({ telemetry, updateNotifierFactory }).parseAsync(['node', 'fluxmail', 'stdio']),
+    ).rejects.toThrow();
+
+    expect(updateNotifierFactory).not.toHaveBeenCalled();
+  });
+
+  it('does not fail the command when an update notice cannot be displayed', async () => {
+    vi.stubEnv('FLUXMAIL_DATA_DIR', mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-update-')));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const updateNotifierFactory = vi.fn(() => ({
+      notify: vi.fn(() => {
+        throw new Error('private terminal failure');
+      }),
+    }));
+    const { capture, telemetry } = telemetrySpy();
+
+    await createCliProgram({ telemetry, updateNotifierFactory }).parseAsync([
+      'node',
+      'fluxmail',
+      'telemetry',
+      'status',
+    ]);
+
+    expect(capture).toHaveBeenCalledWith('operation completed', {
+      product_surface: 'cli',
+      operation: 'telemetry status',
+      outcome: 'success',
+      duration_ms: expect.any(Number),
+    });
+  });
 });
 
 describe('API key permission options', () => {

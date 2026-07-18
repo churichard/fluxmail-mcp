@@ -68,6 +68,7 @@ import {
 import { authenticateBearer, recoverAdminPassword, setupInitialAdmin } from './auth.js';
 import { recordAdminAuditEvent } from './storage/adminAudit.js';
 import { canManageOwnedAccount } from './authorization.js';
+import { createCliUpdateNotifier, type CliUpdateNotifier, type CliUpdateNotifierFactory } from './updateNotifier.js';
 
 interface AddAccountOptions {
   reauthorize?: string;
@@ -233,6 +234,7 @@ function warnLicense(db: FluxmailDb, log: (line: string) => void = console.error
 
 export interface CliProgramOptions {
   telemetry?: Telemetry;
+  updateNotifierFactory?: CliUpdateNotifierFactory;
 }
 
 interface ActiveCliOperation {
@@ -243,6 +245,7 @@ interface ActiveCliOperation {
 }
 
 const activeCliOperations = new WeakMap<Command, ActiveCliOperation>();
+const activeUpdateNotifiers = new WeakMap<Command, CliUpdateNotifier>();
 
 function finishCliOperation(program: Command, outcome: 'success' | 'error', errorCode?: string): void {
   const active = activeCliOperations.get(program);
@@ -279,6 +282,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .name('fluxmail')
     .description('Fluxmail, a self-hosted MCP server for your email')
     .option('--instance <name>', 'Use a named local or remote instance')
+    .option('--no-update-notifier', 'Skip the automatic update check for this command')
     .version(VERSION, '-v, --version');
 
   const selectedInstance = (): string | undefined => program.opts<{ instance?: string }>().instance;
@@ -325,6 +329,15 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
 
   program.hook('preAction', (_command, actionCommand) => {
     const command = commandPath(actionCommand);
+    const updateNotifierEnabled = program.opts<{ updateNotifier: boolean }>().updateNotifier;
+    if (updateNotifierEnabled && actionCommand.name() !== 'stdio') {
+      try {
+        const notifier = options.updateNotifierFactory?.();
+        if (notifier) activeUpdateNotifiers.set(program, notifier);
+      } catch {
+        // Update checks must not affect command execution.
+      }
+    }
     // Respect the opt-out before creating a telemetry client or recording this command.
     if (command === 'telemetry disable') return;
     activeCliOperations.set(program, {
@@ -343,8 +356,18 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       process.exitCode !== undefined &&
       process.exitCode !== 0;
     finishCliOperation(program, failed ? 'error' : 'success', failed ? 'command_failed' : undefined);
-    if (!options.telemetry && actionCommand.name() !== 'serve' && actionCommand.name() !== 'stdio') {
-      await shutdownTelemetry();
+    try {
+      if (!options.telemetry && actionCommand.name() !== 'serve' && actionCommand.name() !== 'stdio') {
+        await shutdownTelemetry();
+      }
+    } finally {
+      const notifier = activeUpdateNotifiers.get(program);
+      activeUpdateNotifiers.delete(program);
+      try {
+        notifier?.notify();
+      } catch {
+        // Update notices must not affect the command outcome.
+      }
     }
   });
 
@@ -1629,7 +1652,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
 }
 
 export async function runCli(argv: readonly string[] = process.argv): Promise<void> {
-  const program = createCliProgram();
+  const program = createCliProgram({ updateNotifierFactory: createCliUpdateNotifier });
   try {
     await program.parseAsync([...argv]);
   } catch (err) {
