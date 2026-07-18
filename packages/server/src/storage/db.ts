@@ -1,6 +1,49 @@
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import path from 'node:path';
+import { VERSION } from '../version.js';
+import { withFileLock } from './fileLock.js';
+
+export const CURRENT_STORE_FORMAT = 1;
+export const MIN_SUPPORTED_STORE_FORMAT = 1;
+export const MAX_SUPPORTED_STORE_FORMAT = CURRENT_STORE_FORMAT;
+export const LEGACY_STORE_FORMAT = 0;
+
+const MIGRATION_LOCK_TIMEOUT_MS = 5 * 60_000;
+const MIGRATION_LOCK_STALE_MS = 30 * 60_000;
+
+export interface StoreCompatibility {
+  engineVersion: string;
+  dataDir: string;
+  dbPath: string;
+  storeFormat: number;
+  minimumSupportedFormat: number;
+  maximumSupportedFormat: number;
+  compatible: boolean;
+  requiresMigration: boolean;
+}
+
+export class IncompatibleStoreError extends Error {
+  readonly code = 'incompatible_store';
+
+  constructor(readonly compatibility: StoreCompatibility) {
+    const supportedFormats =
+      compatibility.minimumSupportedFormat === compatibility.maximumSupportedFormat
+        ? `format ${compatibility.minimumSupportedFormat}`
+        : `formats ${compatibility.minimumSupportedFormat} through ${compatibility.maximumSupportedFormat}`;
+    const action =
+      compatibility.storeFormat > compatibility.maximumSupportedFormat
+        ? 'Update Fluxmail'
+        : 'Use a Fluxmail version that supports this store';
+    super(
+      `This Fluxmail data uses store format ${compatibility.storeFormat}, but Fluxmail ${compatibility.engineVersion} supports ${supportedFormats}. ${action} before opening ${compatibility.dataDir}. Fluxmail did not change the store.`,
+    );
+    this.name = 'IncompatibleStoreError';
+  }
+}
 
 export const members = sqliteTable(
   'members',
@@ -60,6 +103,7 @@ export const accountCredentials = sqliteTable('account_credentials', {
   /** AES-256-GCM encrypted provider-specific credentials. */
   encryptedCredentials: text('encrypted_credentials').notNull(),
   updatedAt: integer('updated_at').notNull(),
+  revision: integer('revision').notNull().default(1),
 });
 
 export const imapMessages = sqliteTable(
@@ -287,7 +331,8 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
 CREATE TABLE IF NOT EXISTS account_credentials (
   account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
   encrypted_credentials TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS imap_messages (
   id TEXT PRIMARY KEY,
@@ -445,10 +490,79 @@ function tableColumns(sqlite: Database.Database, table: string): Set<string> {
   );
 }
 
-export function openDb(dbPath: string): FluxmailDb {
-  const sqlite = new Database(dbPath);
-  sqlite.pragma('journal_mode = WAL');
-  sqlite.pragma('foreign_keys = ON');
+function readStoreFormat(sqlite: Database.Database): number {
+  return sqlite.pragma('user_version', { simple: true }) as number;
+}
+
+function compatibilityFor(dbPath: string, dataDir: string, storeFormat: number): StoreCompatibility {
+  return {
+    engineVersion: VERSION,
+    dataDir,
+    dbPath,
+    storeFormat,
+    minimumSupportedFormat: MIN_SUPPORTED_STORE_FORMAT,
+    maximumSupportedFormat: MAX_SUPPORTED_STORE_FORMAT,
+    compatible:
+      storeFormat === LEGACY_STORE_FORMAT ||
+      (storeFormat >= MIN_SUPPORTED_STORE_FORMAT && storeFormat <= MAX_SUPPORTED_STORE_FORMAT),
+    requiresMigration: storeFormat === LEGACY_STORE_FORMAT || storeFormat < CURRENT_STORE_FORMAT,
+  };
+}
+
+export function inspectStoreCompatibility(
+  dbPath: string,
+  dataDir = dbPath === ':memory:' ? ':memory:' : path.dirname(dbPath),
+): StoreCompatibility {
+  if (dbPath === ':memory:' || !existsSync(dbPath) || statSync(dbPath).size === 0) {
+    return compatibilityFor(dbPath, dataDir, LEGACY_STORE_FORMAT);
+  }
+  const sqlite = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    return compatibilityFor(dbPath, dataDir, readStoreFormat(sqlite));
+  } finally {
+    sqlite.close();
+  }
+}
+
+function assertCompatible(compatibility: StoreCompatibility): void {
+  if (!compatibility.compatible) throw new IncompatibleStoreError(compatibility);
+}
+
+function backupForMigration(
+  sqlite: Database.Database,
+  dbPath: string,
+  fromFormat: number,
+  toFormat: number,
+): string | undefined {
+  if (dbPath === ':memory:' || !existsSync(dbPath) || statSync(dbPath).size === 0) return undefined;
+  const backupDir = path.join(path.dirname(dbPath), 'backups');
+  mkdirSync(backupDir, { recursive: true });
+  const stamp = new Date().toISOString().replaceAll(/[:.]/g, '-');
+  const databaseName = path.basename(dbPath, path.extname(dbPath)) || 'fluxmail';
+  const suffix = randomBytes(4).toString('hex');
+  const destination = path.join(
+    backupDir,
+    `${databaseName}-format-${fromFormat}-to-${toFormat}-${stamp}-${process.pid}-${suffix}.db`,
+  );
+  sqlite.exec(`VACUUM INTO '${destination.replaceAll("'", "''")}'`);
+  return destination;
+}
+
+function syncLegacyCredentialRows(sqlite: Database.Database): void {
+  // Keep the generic credential row in sync if an older binary updated the
+  // legacy Gmail token table before this version reopened the database.
+  sqlite.exec(`
+    INSERT INTO account_credentials (account_id, encrypted_credentials, updated_at, revision)
+    SELECT account_id, encrypted_tokens, updated_at, 1 FROM oauth_tokens WHERE true
+    ON CONFLICT(account_id) DO UPDATE SET
+      encrypted_credentials = excluded.encrypted_credentials,
+      updated_at = excluded.updated_at,
+      revision = account_credentials.revision + 1
+    WHERE excluded.updated_at > account_credentials.updated_at
+  `);
+}
+
+function migrateToFormatOne(sqlite: Database.Database): void {
   const existingMemberColumns = tableColumns(sqlite, 'members');
   const existingApiKeyColumns = tableColumns(sqlite, 'api_keys');
   const existingAccountColumns = tableColumns(sqlite, 'accounts');
@@ -456,79 +570,71 @@ export function openDb(dbPath: string): FluxmailDb {
   const legacyAuthentication =
     (existingMemberColumns.size > 0 && !existingMemberColumns.has('status')) ||
     (existingMemberColumns.size === 0 && existingApiKeyColumns.size > 0);
-  try {
-    sqlite.exec('BEGIN IMMEDIATE');
-    sqlite.exec(BOOTSTRAP_SQL);
-    // Keep the generic credential row in sync if an older binary updated the
-    // legacy Gmail token table before this version reopened the database.
+  sqlite.exec(BOOTSTRAP_SQL);
+  const credentialCols = tableColumns(sqlite, 'account_credentials');
+  if (!credentialCols.has('revision')) {
+    sqlite.exec('ALTER TABLE account_credentials ADD COLUMN revision INTEGER NOT NULL DEFAULT 1');
+  }
+  const scheduledCols = tableColumns(sqlite, 'scheduled_sends');
+  if (!scheduledCols.has('claim_token')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_token TEXT');
+  if (!scheduledCols.has('claim_until')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_until INTEGER');
+  const memberCols = tableColumns(sqlite, 'members');
+  if (!memberCols.has('role')) {
+    sqlite.exec("ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'member'");
+    // Existing installations gain one administrator: the earliest member.
     sqlite.exec(`
-    INSERT INTO account_credentials (account_id, encrypted_credentials, updated_at)
-    SELECT account_id, encrypted_tokens, updated_at FROM oauth_tokens WHERE true
-    ON CONFLICT(account_id) DO UPDATE SET
-      encrypted_credentials = excluded.encrypted_credentials,
-      updated_at = excluded.updated_at
-    WHERE excluded.updated_at > account_credentials.updated_at
-  `);
-    const scheduledCols = tableColumns(sqlite, 'scheduled_sends');
-    if (!scheduledCols.has('claim_token')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_token TEXT');
-    if (!scheduledCols.has('claim_until')) sqlite.exec('ALTER TABLE scheduled_sends ADD COLUMN claim_until INTEGER');
-    const memberCols = tableColumns(sqlite, 'members');
-    if (!memberCols.has('role')) {
-      sqlite.exec("ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'member'");
-      // Existing installations gain one administrator: the earliest member.
-      sqlite.exec(`
       UPDATE members SET role = 'admin'
       WHERE id = (SELECT id FROM members ORDER BY created_at, id LIMIT 1)
     `);
-    }
-    if (!memberCols.has('status')) {
-      sqlite.exec("ALTER TABLE members ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
-    }
+  }
+  if (!memberCols.has('status')) {
+    sqlite.exec("ALTER TABLE members ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
+  }
 
-    if (!tableColumns(sqlite, 'accounts').has('member_id')) {
-      sqlite.exec('ALTER TABLE accounts ADD COLUMN member_id TEXT REFERENCES members(id) ON DELETE SET NULL');
-    }
-    const accountCols = tableColumns(sqlite, 'accounts');
-    if (!accountCols.has('shared_with_all')) {
-      sqlite.exec('ALTER TABLE accounts ADD COLUMN shared_with_all INTEGER NOT NULL DEFAULT 0');
-      sqlite.exec(
-        existingAccountColumns.has('sharing_mode')
-          ? "UPDATE accounts SET shared_with_all = CASE WHEN sharing_mode = 'all' THEN 1 ELSE 0 END"
-          : 'UPDATE accounts SET shared_with_all = CASE WHEN member_id IS NULL THEN 1 ELSE 0 END',
-      );
-    }
-    sqlite.exec(`
+  if (!tableColumns(sqlite, 'accounts').has('member_id')) {
+    sqlite.exec('ALTER TABLE accounts ADD COLUMN member_id TEXT REFERENCES members(id) ON DELETE SET NULL');
+  }
+  const accountCols = tableColumns(sqlite, 'accounts');
+  if (!accountCols.has('shared_with_all')) {
+    sqlite.exec('ALTER TABLE accounts ADD COLUMN shared_with_all INTEGER NOT NULL DEFAULT 0');
+    sqlite.exec(
+      existingAccountColumns.has('sharing_mode')
+        ? "UPDATE accounts SET shared_with_all = CASE WHEN sharing_mode = 'all' THEN 1 ELSE 0 END"
+        : 'UPDATE accounts SET shared_with_all = CASE WHEN member_id IS NULL THEN 1 ELSE 0 END',
+    );
+  }
+  sqlite.exec(`
     CREATE TABLE IF NOT EXISTS account_member_grants (
       account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
       member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
       PRIMARY KEY (account_id, member_id)
     )
   `);
-    if (hadLegacyAccountShares) {
-      sqlite.exec(`
+  if (hadLegacyAccountShares) {
+    sqlite.exec(`
       INSERT OR IGNORE INTO account_member_grants (account_id, member_id)
       SELECT account_id, member_id FROM account_member_shares
     `);
-      sqlite.exec('DROP TABLE account_member_shares');
-    }
-    if (accountCols.has('sharing_mode')) sqlite.exec('ALTER TABLE accounts DROP COLUMN sharing_mode');
-    if (!tableColumns(sqlite, 'api_keys').has('member_id')) {
-      sqlite.exec('ALTER TABLE api_keys ADD COLUMN member_id TEXT REFERENCES members(id) ON DELETE SET NULL');
-    }
-    const apiKeyCols = tableColumns(sqlite, 'api_keys');
-    if (!apiKeyCols.has('permission_profile')) {
-      sqlite.exec("ALTER TABLE api_keys ADD COLUMN permission_profile TEXT NOT NULL DEFAULT 'full'");
-    }
-    if (!apiKeyCols.has('custom_capabilities')) {
-      sqlite.exec('ALTER TABLE api_keys ADD COLUMN custom_capabilities TEXT');
-    }
-    if (!apiKeyCols.has('supplemental_capabilities')) {
-      sqlite.exec("ALTER TABLE api_keys ADD COLUMN supplemental_capabilities TEXT NOT NULL DEFAULT '[]'");
-      // Preserve the account-management authority held by legacy administrator
-      // keys before administrative capabilities existed. Broader capabilities
-      // must still be granted explicitly. The breaking auth migration below
-      // revokes these keys before authenticated service access resumes.
-      sqlite.exec(`
+    sqlite.exec('DROP TABLE account_member_shares');
+  }
+  if (accountCols.has('sharing_mode')) sqlite.exec('ALTER TABLE accounts DROP COLUMN sharing_mode');
+  if (!tableColumns(sqlite, 'api_keys').has('member_id')) {
+    sqlite.exec('ALTER TABLE api_keys ADD COLUMN member_id TEXT REFERENCES members(id) ON DELETE SET NULL');
+  }
+  const apiKeyCols = tableColumns(sqlite, 'api_keys');
+  if (!apiKeyCols.has('permission_profile')) {
+    sqlite.exec("ALTER TABLE api_keys ADD COLUMN permission_profile TEXT NOT NULL DEFAULT 'full'");
+  }
+  if (!apiKeyCols.has('custom_capabilities')) {
+    sqlite.exec('ALTER TABLE api_keys ADD COLUMN custom_capabilities TEXT');
+  }
+  if (!apiKeyCols.has('supplemental_capabilities')) {
+    sqlite.exec("ALTER TABLE api_keys ADD COLUMN supplemental_capabilities TEXT NOT NULL DEFAULT '[]'");
+    // Preserve the account-management authority held by legacy administrator
+    // keys before administrative capabilities existed. Broader capabilities
+    // must still be granted explicitly. The breaking auth migration below
+    // revokes these keys before authenticated service access resumes.
+    sqlite.exec(`
       UPDATE api_keys
       SET supplemental_capabilities = '["admin.accounts"]'
       WHERE permission_profile != 'custom'
@@ -537,7 +643,7 @@ export function openDb(dbPath: string): FluxmailDb {
           OR member_id IN (SELECT id FROM members WHERE role = 'admin')
         )
     `);
-      sqlite.exec(`
+    sqlite.exec(`
       UPDATE api_keys
       SET custom_capabilities = json_insert(
         COALESCE(custom_capabilities, '[]'),
@@ -549,44 +655,44 @@ export function openDb(dbPath: string): FluxmailDb {
           OR member_id IN (SELECT id FROM members WHERE role = 'admin')
         )
     `);
+  }
+  if (!apiKeyCols.has('account_ids')) {
+    sqlite.exec('ALTER TABLE api_keys ADD COLUMN account_ids TEXT');
+  }
+  if (legacyAuthentication) sqlite.exec('DELETE FROM api_keys');
+  if (!tableColumns(sqlite, 'admin_audit_events').has('actor_session_id')) {
+    sqlite.exec('ALTER TABLE admin_audit_events ADD COLUMN actor_session_id TEXT');
+  }
+  const grantCols = tableColumns(sqlite, 'gmail_connection_grants');
+  if (!grantCols.has('owner_member_id')) {
+    sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN owner_member_id TEXT');
+    if (grantCols.has('member_id')) {
+      sqlite.exec('UPDATE gmail_connection_grants SET owner_member_id = member_id');
     }
-    if (!apiKeyCols.has('account_ids')) {
-      sqlite.exec('ALTER TABLE api_keys ADD COLUMN account_ids TEXT');
+  }
+  if (!grantCols.has('shared_with_all')) {
+    sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN shared_with_all INTEGER');
+    if (grantCols.has('sharing_mode')) {
+      sqlite.exec(
+        "UPDATE gmail_connection_grants SET shared_with_all = CASE sharing_mode WHEN 'all' THEN 1 WHEN 'explicit' THEN 0 ELSE NULL END",
+      );
     }
-    if (legacyAuthentication) sqlite.exec('DELETE FROM api_keys');
-    if (!tableColumns(sqlite, 'admin_audit_events').has('actor_session_id')) {
-      sqlite.exec('ALTER TABLE admin_audit_events ADD COLUMN actor_session_id TEXT');
-    }
-    const grantCols = tableColumns(sqlite, 'gmail_connection_grants');
-    if (!grantCols.has('owner_member_id')) {
-      sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN owner_member_id TEXT');
-      if (grantCols.has('member_id')) {
-        sqlite.exec('UPDATE gmail_connection_grants SET owner_member_id = member_id');
-      }
-    }
-    if (!grantCols.has('shared_with_all')) {
-      sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN shared_with_all INTEGER');
-      if (grantCols.has('sharing_mode')) {
-        sqlite.exec(
-          "UPDATE gmail_connection_grants SET shared_with_all = CASE sharing_mode WHEN 'all' THEN 1 WHEN 'explicit' THEN 0 ELSE NULL END",
-        );
-      }
-    }
-    if (!grantCols.has('granted_member_ids')) {
-      sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN granted_member_ids TEXT');
-      if (grantCols.has('shared_member_ids')) {
-        sqlite.exec('UPDATE gmail_connection_grants SET granted_member_ids = shared_member_ids');
-      }
-    }
-    if (grantCols.has('member_id')) sqlite.exec('ALTER TABLE gmail_connection_grants DROP COLUMN member_id');
-    if (grantCols.has('sharing_mode')) sqlite.exec('ALTER TABLE gmail_connection_grants DROP COLUMN sharing_mode');
+  }
+  if (!grantCols.has('granted_member_ids')) {
+    sqlite.exec('ALTER TABLE gmail_connection_grants ADD COLUMN granted_member_ids TEXT');
     if (grantCols.has('shared_member_ids')) {
-      sqlite.exec('ALTER TABLE gmail_connection_grants DROP COLUMN shared_member_ids');
+      sqlite.exec('UPDATE gmail_connection_grants SET granted_member_ids = shared_member_ids');
     }
+  }
+  if (grantCols.has('member_id')) sqlite.exec('ALTER TABLE gmail_connection_grants DROP COLUMN member_id');
+  if (grantCols.has('sharing_mode')) sqlite.exec('ALTER TABLE gmail_connection_grants DROP COLUMN sharing_mode');
+  if (grantCols.has('shared_member_ids')) {
+    sqlite.exec('ALTER TABLE gmail_connection_grants DROP COLUMN shared_member_ids');
+  }
 
-    // Login emails are case-insensitive. Keep the earliest duplicate address
-    // and require later legacy records to receive a new email before enrollment.
-    sqlite.exec(`
+  // Login emails are case-insensitive. Keep the earliest duplicate address
+  // and require later legacy records to receive a new email before enrollment.
+  sqlite.exec(`
     UPDATE members
     SET email = NULL
     WHERE email IS NOT NULL
@@ -600,12 +706,12 @@ export function openDb(dbPath: string): FluxmailDb {
           )
       )
   `);
-    sqlite.exec('DROP INDEX IF EXISTS members_email_unique');
-    sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS members_email_unique_ci ON members(lower(email))');
+  sqlite.exec('DROP INDEX IF EXISTS members_email_unique');
+  sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS members_email_unique_ci ON members(lower(email))');
 
-    // Account identity is the mailbox address, regardless of provider. Gmail
-    // wins when an older database contains the same address as both Gmail and IMAP.
-    sqlite.exec(`
+  // Account identity is the mailbox address, regardless of provider. Gmail
+  // wins when an older database contains the same address as both Gmail and IMAP.
+  sqlite.exec(`
     DELETE FROM accounts
     WHERE EXISTS (
       SELECT 1 FROM accounts AS winner
@@ -624,20 +730,73 @@ export function openDb(dbPath: string): FluxmailDb {
         )
     )
   `);
-    sqlite.exec('DROP INDEX IF EXISTS accounts_provider_email_unique');
-    sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_unique_ci ON accounts(lower(email))');
-    sqlite.exec(`
+  sqlite.exec('DROP INDEX IF EXISTS accounts_provider_email_unique');
+  sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_unique_ci ON accounts(lower(email))');
+  sqlite.exec(`
     INSERT INTO instance_settings (key, value) VALUES ('schema_version', '2')
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `);
-    sqlite.exec(`
+  sqlite.exec(`
     INSERT OR IGNORE INTO instance_settings (key, value) VALUES ('bootstrap_complete', '0')
   `);
-    sqlite.exec('COMMIT');
+}
+
+const MIGRATIONS = [{ format: 1, run: migrateToFormatOne }] as const;
+
+function openCompatibleDb(dbPath: string, dataDir: string, options: { backupBeforeMigration?: boolean }): FluxmailDb {
+  const sqlite = new Database(dbPath);
+  try {
+    sqlite.pragma('busy_timeout = 5000');
+    sqlite.pragma('foreign_keys = ON');
+
+    const beforeMigration = compatibilityFor(dbPath, dataDir, readStoreFormat(sqlite));
+    assertCompatible(beforeMigration);
+    if (beforeMigration.requiresMigration && options.backupBeforeMigration !== false) {
+      backupForMigration(sqlite, dbPath, beforeMigration.storeFormat, CURRENT_STORE_FORMAT);
+    }
+
+    const migrate = sqlite.transaction(() => {
+      let storeFormat = readStoreFormat(sqlite);
+      assertCompatible(compatibilityFor(dbPath, dataDir, storeFormat));
+      for (const migration of MIGRATIONS) {
+        if (storeFormat >= migration.format) continue;
+        migration.run(sqlite);
+        sqlite.pragma(`user_version = ${migration.format}`);
+        storeFormat = migration.format;
+      }
+      if (storeFormat !== CURRENT_STORE_FORMAT) {
+        throw new Error(`Fluxmail has no migration from store format ${storeFormat} to ${CURRENT_STORE_FORMAT}`);
+      }
+      syncLegacyCredentialRows(sqlite);
+    });
+    migrate.immediate();
+    sqlite.pragma('journal_mode = WAL');
+    return drizzle(sqlite);
   } catch (error) {
-    if (sqlite.inTransaction) sqlite.exec('ROLLBACK');
     sqlite.close();
     throw error;
   }
-  return drizzle(sqlite);
+}
+
+export function openDb(
+  dbPath: string,
+  options: { dataDir?: string; backupBeforeMigration?: boolean } = {},
+): FluxmailDb {
+  const dataDir = options.dataDir ?? (dbPath === ':memory:' ? ':memory:' : path.dirname(dbPath));
+  const inspected = inspectStoreCompatibility(dbPath, dataDir);
+  assertCompatible(inspected);
+
+  if (dbPath === ':memory:' || !inspected.requiresMigration) {
+    return openCompatibleDb(dbPath, dataDir, options);
+  }
+
+  return withFileLock(
+    `${dbPath}.migration.lock`,
+    {
+      timeoutMs: MIGRATION_LOCK_TIMEOUT_MS,
+      staleMs: MIGRATION_LOCK_STALE_MS,
+      description: `migration of ${dbPath}`,
+    },
+    () => openCompatibleDb(dbPath, dataDir, options),
+  );
 }

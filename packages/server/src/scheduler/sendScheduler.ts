@@ -29,8 +29,7 @@ const PERMANENT_CODES = new Set(['not_found', 'invalid_request', 'unsupported_ca
 /**
  * Fires scheduled sends when their time comes. Owned by the long-lived
  * processes (serve/stdio); one-shot CLI commands construct it but never
- * start() it. Assumes a single long-lived process per database; there is
- * no cross-process locking.
+ * start() it. Database claims allow multiple schedulers to share a store.
  */
 export class SendScheduler {
   private timer: NodeJS.Timeout | undefined;

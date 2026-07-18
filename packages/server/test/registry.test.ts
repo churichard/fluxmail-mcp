@@ -71,7 +71,11 @@ describe('AccountRegistry', () => {
       refresh_token: 'rt_secret',
       fluxmailOAuthClient: { clientId: 'id', clientSecret: 'secret' },
     });
-    expect(db.select().from(oauthTokens).get()?.encryptedTokens).toBe(row?.encryptedCredentials);
+    expect(row?.revision).toBe(1);
+    expect(db.select().from(oauthTokens).get()).toMatchObject({
+      encryptedTokens: row?.encryptedCredentials,
+      updatedAt: row?.updatedAt,
+    });
   });
 
   it('keeps each Gmail account on the OAuth client that issued its refresh token', () => {
@@ -251,6 +255,71 @@ describe('AccountRegistry', () => {
       decryptString(config.encryptionKey, db.select().from(accountCredentials).get()!.encryptedCredentials),
     );
     expect(stored).toMatchObject({ accessToken: 'fresh-access', refreshToken: 'fresh-refresh' });
+  });
+
+  it('does not let a stale token refresh overwrite newer credentials', () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-refresh-race-'));
+    const config = {
+      ...testConfig(),
+      dataDir,
+      dbPath: path.join(dataDir, 'fluxmail.db'),
+    };
+    const firstDb = openDb(config.dbPath);
+    const firstRegistry = new AccountRegistry(firstDb, config);
+    const owner = addMember(firstDb, { name: 'Owner' });
+    const account = firstRegistry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
+    const secondDb = openDb(config.dbPath);
+    const secondRegistry = new AccountRegistry(secondDb, config);
+    const firstProvider = firstRegistry.getProvider(account.id) as unknown as {
+      auth: { emit(event: string, credentials: object): void };
+    };
+    const secondProvider = secondRegistry.getProvider(account.id) as unknown as {
+      auth: { emit(event: string, credentials: object): void };
+    };
+
+    firstProvider.auth.emit('tokens', { access_token: 'fresh-access-1', refresh_token: 'fresh-refresh-1' });
+    secondProvider.auth.emit('tokens', { access_token: 'fresh-access-2', refresh_token: 'fresh-refresh-2' });
+
+    const row = firstDb.select().from(accountCredentials).get()!;
+    expect(row.revision).toBe(2);
+    expect(JSON.parse(decryptString(config.encryptionKey, row.encryptedCredentials))).toMatchObject({
+      access_token: 'fresh-access-1',
+      refresh_token: 'fresh-refresh-1',
+      fluxmailOAuthClient: { clientId: 'id', clientSecret: 'secret' },
+    });
+  });
+
+  it('rolls back refreshed credentials when the legacy token mirror cannot be updated', () => {
+    const config = testConfig();
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, config);
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
+    const provider = registry.getProvider(account.id) as unknown as {
+      auth: { emit(event: string, credentials: object): void };
+    };
+    const before = db.select().from(accountCredentials).get()!;
+    const sqlite = (db as unknown as { $client: { exec(sql: string): void } }).$client;
+    sqlite.exec(`
+      CREATE TRIGGER reject_legacy_token_update
+      BEFORE UPDATE ON oauth_tokens
+      BEGIN
+        SELECT RAISE(ABORT, 'legacy token write failed');
+      END;
+    `);
+
+    expect(() =>
+      provider.auth.emit('tokens', {
+        access_token: 'fresh-access',
+        refresh_token: 'fresh-refresh',
+      }),
+    ).toThrow(/legacy token write failed/);
+
+    expect(db.select().from(accountCredentials).get()).toEqual(before);
+    expect(db.select().from(oauthTokens).get()).toMatchObject({
+      encryptedTokens: before.encryptedCredentials,
+      updatedAt: before.updatedAt,
+    });
   });
 
   it('updates IMAP folder configuration and evicts the cached provider', () => {
@@ -520,6 +589,52 @@ describe('AccountRegistry', () => {
     secondRegistry.addGmailAccount('me@example.com', { ...tokens, refresh_token: 'rt_new' });
 
     expect(firstRegistry.getProvider(account.id)).not.toBe(cachedProvider);
+  });
+
+  it('reloads credentials written without changing the revision', () => {
+    const config = testConfig();
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, config);
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
+    const cachedProvider = registry.getProvider(account.id);
+    const current = JSON.parse(
+      decryptString(config.encryptionKey, db.select().from(accountCredentials).get()!.encryptedCredentials),
+    );
+    const legacyCredentials = encryptString(
+      config.encryptionKey,
+      JSON.stringify({ ...current, refresh_token: 'legacy-refresh' }),
+    );
+
+    db.update(accountCredentials).set({ encryptedCredentials: legacyCredentials, updatedAt: Date.now() }).run();
+
+    expect(registry.getProvider(account.id)).not.toBe(cachedProvider);
+  });
+
+  it('imports a newer credential written only to the legacy token table', () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-legacy-token-'));
+    const config = { ...testConfig(), dataDir, dbPath: path.join(dataDir, 'fluxmail.db') };
+    const db = openDb(config.dbPath);
+    const registry = new AccountRegistry(db, config);
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
+    const before = db.select().from(accountCredentials).get()!;
+    const legacyCredentials = encryptString(
+      config.encryptionKey,
+      JSON.stringify({ ...tokens, refresh_token: 'legacy-only-refresh' }),
+    );
+    db.update(oauthTokens)
+      .set({ encryptedTokens: legacyCredentials, updatedAt: before.updatedAt + 1 })
+      .where(eq(oauthTokens.accountId, account.id))
+      .run();
+
+    const reopened = openDb(config.dbPath);
+    const imported = reopened.select().from(accountCredentials).get()!;
+
+    expect(imported.revision).toBe(before.revision + 1);
+    expect(JSON.parse(decryptString(config.encryptionKey, imported.encryptedCredentials))).toMatchObject({
+      refresh_token: 'legacy-only-refresh',
+    });
   });
 
   it('resolveAccountId defaults to the sole account and errors when ambiguous or empty', () => {
