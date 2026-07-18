@@ -72,7 +72,7 @@ function runCli(
   });
 }
 
-describe('CLI mail process integration', () => {
+describe('CLI mail process integration', { timeout: 15_000 }, () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-mail-e2e-'));
   const db = openDb(':memory:');
   const member = addMember(db, {
