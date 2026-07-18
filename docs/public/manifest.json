@@ -140,7 +140,6 @@
     "configuration",
     "teams-and-plans",
     "architecture",
-    "upgrades/0.5.0",
-    "authentication-migration"
+    "upgrades/0.5.0"
   ]
 }

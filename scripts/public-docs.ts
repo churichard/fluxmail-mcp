@@ -20,7 +20,6 @@ export interface PublicDocsFrontmatter {
   description: string;
   updated: string;
   draft?: boolean;
-  hidden?: boolean;
 }
 
 export interface PublicDocPage {
@@ -121,7 +120,7 @@ export function parseFrontmatter(source: string, filename = 'page'): PublicDocsF
     }
     values[key] = value;
   }
-  const allowed = new Set(['title', 'description', 'updated', 'draft', 'hidden']);
+  const allowed = new Set(['title', 'description', 'updated', 'draft']);
   const unexpected = Object.keys(values).filter((key) => !allowed.has(key));
   if (unexpected.length) throw new Error(`${filename} has unsupported frontmatter: ${unexpected.join(', ')}.`);
   if (typeof values.title !== 'string' || !values.title.trim()) throw new Error(`${filename} needs a title.`);
@@ -132,8 +131,6 @@ export function parseFrontmatter(source: string, filename = 'page'): PublicDocsF
   }
   if (values.draft !== undefined && typeof values.draft !== 'boolean')
     throw new Error(`${filename} draft must be true or false.`);
-  if (values.hidden !== undefined && typeof values.hidden !== 'boolean')
-    throw new Error(`${filename} hidden must be true or false.`);
   return values as unknown as PublicDocsFrontmatter;
 }
 
@@ -167,11 +164,6 @@ export function pageFiles(root = PUBLIC_DOCS_ROOT): string[] {
   return files.sort();
 }
 
-export function slugFromPageFilename(filename: string): string {
-  const slug = filename.replace(/\.md$/, '');
-  return slug.endsWith('/index') ? slug.slice(0, -'/index'.length) : slug;
-}
-
 export function publicDocPages(meta: PublicDocsMeta, root = PUBLIC_DOCS_ROOT): PublicDocPage[] {
   const pagesRoot = path.join(root, 'pages');
 
@@ -198,20 +190,6 @@ export function publicDocPages(meta: PublicDocsMeta, root = PUBLIC_DOCS_ROOT): P
   }
 
   return visit(meta.pages, pagesRoot, '');
-}
-
-export function publicDocManifestPages(meta: PublicDocsMeta, root = PUBLIC_DOCS_ROOT): PublicDocPage[] {
-  const navigationPages = publicDocPages(meta, root);
-  const navigationFiles = new Set(navigationPages.map((page) => page.filename));
-  const hiddenPages = pageFiles(root)
-    .filter((filename) => !navigationFiles.has(filename))
-    .map((filename) => ({ slug: slugFromPageFilename(filename), filename }));
-  const pages = [...navigationPages, ...hiddenPages];
-  validatePagePaths(
-    pages.map((page) => page.slug),
-    'Documentation',
-  );
-  return pages;
 }
 
 function escapeRegExp(value: string): string {

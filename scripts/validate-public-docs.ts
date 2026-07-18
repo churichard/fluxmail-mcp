@@ -6,23 +6,20 @@ import {
   compatibilityManifest,
   pageFiles,
   parseFrontmatter,
-  publicDocManifestPages,
   publicDocPages,
   readPublicDocsMeta,
   readPublicDocsManifest,
-  slugFromPageFilename,
 } from './public-docs.js';
 
 const meta = readPublicDocsMeta();
 const pages = publicDocPages(meta);
-const manifestPages = publicDocManifestPages(meta);
 const manifest = readPublicDocsManifest();
 const expectedManifest = compatibilityManifest(
   meta,
-  manifestPages.map((page) => page.slug),
+  pages.map((page) => page.slug),
 );
 if (JSON.stringify(manifest) !== JSON.stringify(expectedManifest)) {
-  throw new Error('Compatibility manifest differs from the public documentation files. Run pnpm docs:generate.');
+  throw new Error('Compatibility manifest differs from pages/meta.json. Run pnpm docs:generate.');
 }
 
 const RESERVED_MAIL_SLUGS = new Set([
@@ -51,22 +48,19 @@ for (const slug of meta.pages) {
   }
 }
 
+const expectedFiles = pages.map((page) => page.filename).sort();
 const actualFiles = pageFiles();
-const pageByFilename = new Map(pages.map((page) => [page.filename, page]));
+if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+  throw new Error(
+    `Metadata and pages directory differ. Expected ${expectedFiles.join(', ')}, found ${actualFiles.join(', ')}.`,
+  );
+}
 
 const sources = new Map<string, string>();
-for (const relativeFilename of actualFiles) {
+for (const { slug, filename: relativeFilename } of pages) {
   const filename = path.join(PUBLIC_DOCS_ROOT, 'pages', relativeFilename);
   const source = readFileSync(filename, 'utf8');
-  const page = pageByFilename.get(relativeFilename);
-  const slug = page?.slug ?? slugFromPageFilename(relativeFilename);
-  const frontmatter = parseFrontmatter(source, `${slug}.md`);
-  if (!page && frontmatter.hidden !== true) {
-    throw new Error(`${slug}.md is missing from meta.json and is not marked hidden.`);
-  }
-  if (page && frontmatter.hidden === true) {
-    throw new Error(`${slug}.md is listed in meta.json but is marked hidden.`);
-  }
+  parseFrontmatter(source, `${slug}.md`);
   if (/[—–]/u.test(source)) throw new Error(`${slug}.md contains an em dash or en dash. Rewrite it in plain language.`);
   sources.set(slug, source);
 }
