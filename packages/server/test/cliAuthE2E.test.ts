@@ -2,8 +2,10 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { issueMemberAuthToken, setupInitialAdmin } from '../src/auth.js';
 import { createCliProgram } from '../src/cli.js';
-import { resolveInstance, saveRemoteInstance } from '../src/cliInstances.js';
+import { resolveInstance, saveLocalInstance, saveRemoteInstance } from '../src/cliInstances.js';
+import { createContext } from '../src/context.js';
 
 describe('CLI authentication flow', () => {
   afterEach(() => {
@@ -94,6 +96,76 @@ describe('CLI authentication flow', () => {
     expect(error).toHaveBeenCalledWith('Error: Password must contain between 8 and 256 characters.');
     expect(output).toHaveBeenCalledWith(expect.stringContaining('Fluxmail is ready'));
     expect(resolveInstance('local').token).toMatch(/^fms_/);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('re-prompts when a reset password fails member-specific validation on the server', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-reset-password-'));
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    vi.stubEnv('FLUXMAIL_ENCRYPTION_KEY', '44'.repeat(32));
+    vi.stubEnv('FLUXMAIL_TELEMETRY', '0');
+    const context = createContext();
+    const setup = await setupInitialAdmin(context.db, {
+      name: 'Reset Owner',
+      email: 'owner@example.com',
+      password: 'Granite harbor compass 2026!',
+    });
+    const reset = issueMemberAuthToken(context.db, {
+      memberId: setup.member.id,
+      kind: 'password_reset',
+      createdByMemberId: setup.member.id,
+    });
+    saveLocalInstance('local');
+    vi.stubEnv('FLUXMAIL_RESET_CODE', reset.token);
+    const prompt = vi.fn().mockResolvedValueOnce('owner-2026!').mockResolvedValueOnce('River42!');
+    const output = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await createCliProgram({ passwordPrompt: prompt }).parseAsync([
+      'node',
+      'fluxmail',
+      '--instance',
+      'local',
+      'login',
+      '--reset',
+    ]);
+
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(error).toHaveBeenCalledWith('Error: Choose a password that is not common or based on your member details.');
+    expect(output).toHaveBeenCalledWith('Logged in to local as Reset Owner.');
+    expect(resolveInstance('local').token).toMatch(/^fms_/);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('uses the administrator details when retrying a recovery password', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-recovery-password-'));
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    vi.stubEnv('FLUXMAIL_ENCRYPTION_KEY', '55'.repeat(32));
+    vi.stubEnv('FLUXMAIL_TELEMETRY', '0');
+    const context = createContext();
+    const setup = await setupInitialAdmin(context.db, {
+      name: 'Recovery Owner',
+      email: 'recovery@example.com',
+      password: 'Granite harbor compass 2026!',
+    });
+    saveLocalInstance('local');
+    const prompt = vi.fn().mockResolvedValueOnce('recovery-2026!').mockResolvedValueOnce('River42!');
+    const output = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await createCliProgram({ passwordPrompt: prompt }).parseAsync([
+      'node',
+      'fluxmail',
+      '--instance',
+      'local',
+      'auth',
+      'recover-admin',
+      setup.member.id,
+    ]);
+
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(error).toHaveBeenCalledWith('Error: Choose a password that is not common or based on your member details.');
+    expect(output).toHaveBeenCalledWith("Reset Recovery Owner's password and revoked existing sessions.");
     expect(process.exitCode).toBeUndefined();
   });
 });

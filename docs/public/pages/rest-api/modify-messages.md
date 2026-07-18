@@ -83,7 +83,7 @@ Content type: `application/json`
         "minLength": 1
       },
       "maxItems": 100,
-      "description": "Required when action is addLabels or removeLabels. Change system labels with dedicated actions."
+      "description": "Required when action is addLabels or removeLabels. Change Gmail system labels with dedicated actions."
     }
   },
   "required": [

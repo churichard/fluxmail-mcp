@@ -301,7 +301,9 @@ const ModifyRequestSchema = z
       .array(z.string().min(1))
       .max(100)
       .optional()
-      .describe('Required when action is addLabels or removeLabels. Change system labels with dedicated actions.'),
+      .describe(
+        'Required when action is addLabels or removeLabels. Change Gmail system labels with dedicated actions.',
+      ),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -359,8 +361,6 @@ const MODIFY_CAPABILITIES: Record<ModifyActionName, McpCapability> = {
   removeLabels: 'mail.organize',
 };
 const PROTECTED_MOVE_DESTINATIONS = new Set(['archive', 'trash']);
-const SYSTEM_LABELS = new Set(['inbox', 'sent', 'draft', 'drafts', 'trash', 'spam', 'starred', 'unread', 'important']);
-
 interface ApiFailure {
   status: number;
   payload: { error: { code: string; message: string; data?: Record<string, unknown> } };
@@ -724,9 +724,6 @@ function modifyAction(input: z.infer<typeof ModifyRequestSchema>): ModifyAction 
   }
   if (input.action === 'addLabels' || input.action === 'removeLabels') {
     const labels = input.labels!;
-    if (labels.some((label) => SYSTEM_LABELS.has(label.trim().toLowerCase()))) {
-      throw new EmailError('invalid_request', 'System labels must be changed with their dedicated message action.');
-    }
     return input.action === 'addLabels' ? { addLabels: labels } : { removeLabels: labels };
   }
   return input.action;

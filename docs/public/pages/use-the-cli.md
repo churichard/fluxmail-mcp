@@ -23,7 +23,7 @@ fluxmail members list
 Mail commands use the only accessible mailbox when there is exactly one. If you can access several mailboxes, pass the global account option with an account ID or email address:
 
 ```bash
-fluxmail --account you@example.com emails list --folder inbox
+fluxmail --mail-account you@example.com emails list --folder inbox
 fluxmail -a <account-id> labels list
 ```
 

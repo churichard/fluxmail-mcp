@@ -38,6 +38,19 @@ const EMAIL_ERROR_CODES = new Set<EmailErrorCode>([
   'unsupported_capability',
 ]);
 
+const SAFE_INSTANCE_API_TELEMETRY_CODES = new Set([
+  'https_required',
+  'idempotency_conflict',
+  'idempotency_in_progress',
+  'internal',
+  'invalid_response',
+  'request_failed',
+  'request_too_large',
+  'setup_required',
+  'unauthorized',
+  'unsupported_media_type',
+]);
+
 export class InstanceApiError extends Error {
   constructor(
     readonly code: string,
@@ -50,9 +63,23 @@ export class InstanceApiError extends Error {
   }
 }
 
+export function instanceResponseError(
+  code: string,
+  message: string,
+  status: number,
+  data?: Record<string, unknown>,
+): Error {
+  if (EMAIL_ERROR_CODES.has(code as EmailErrorCode)) {
+    return new EmailError(code as EmailErrorCode, message, data);
+  }
+  return new InstanceApiError(code, message, status, data);
+}
+
 export function apiErrorCode(error: unknown): string {
-  if (error instanceof InstanceApiError) return error.code;
   if (error instanceof EmailError) return error.code;
+  if (error instanceof InstanceApiError) {
+    return SAFE_INSTANCE_API_TELEMETRY_CODES.has(error.code) ? error.code : 'request_failed';
+  }
   return 'internal';
 }
 
@@ -248,10 +275,7 @@ export class InstanceClient {
     if (!response.ok) {
       const code = body.error?.code ?? 'request_failed';
       const message = body.error?.message ?? `Request failed with HTTP ${response.status}.`;
-      if (EMAIL_ERROR_CODES.has(code as EmailErrorCode)) {
-        throw new EmailError(code as EmailErrorCode, message, body.error?.data);
-      }
-      throw new InstanceApiError(code, message, response.status, body.error?.data);
+      throw instanceResponseError(code, message, response.status, body.error?.data);
     }
     if (!('data' in body)) {
       throw new InstanceApiError('invalid_response', `Instance ${this.name} returned no data.`, response.status);

@@ -5,9 +5,9 @@ import { lookup as lookupMimeType } from 'mime-types';
 import { EmailError, parseSingleAddress, type AttachmentInput, type EmailAddress } from '@fluxmail/core';
 import type { Command } from 'commander';
 import {
-  InstanceApiError,
   apiErrorCode,
   instanceClient,
+  instanceResponseError,
   type ApiEnvelope,
   type InstanceClient,
 } from './cliInstances.js';
@@ -282,7 +282,7 @@ async function resolveAccount(client: InstanceClient, requested?: string): Promi
   if (accounts.length > 1) {
     throw new EmailError(
       'invalid_request',
-      `Multiple accounts are available. Pass --account with one of: ${accounts
+      `Multiple accounts are available. Pass --mail-account or -a with one of: ${accounts
         .map((account) => `${account.id} (${account.email})`)
         .join(', ')}.`,
     );
@@ -300,7 +300,7 @@ async function responseError(response: Response): Promise<never> {
   } catch {
     // The fallback below does not expose response content.
   }
-  throw new InstanceApiError(
+  throw instanceResponseError(
     error?.code ?? 'request_failed',
     error?.message ?? `Request failed with HTTP ${response.status}.`,
     response.status,

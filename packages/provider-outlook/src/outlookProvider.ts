@@ -399,15 +399,14 @@ export class OutlookProvider implements EmailProvider {
     });
   }
 
-  private async resolveCategoryNames(values: string[], createIfMissing: boolean): Promise<string[]> {
+  private async resolveCategoryNames(values: string[]): Promise<string[]> {
     const categories = await this.listLabels();
     const resolved = values.flatMap((value) => {
       const normalized = value.toLowerCase();
       const category = categories.find(
         (candidate) => candidate.id === value || candidate.name.toLowerCase() === normalized,
       );
-      if (category) return [category.name];
-      return createIfMissing ? [value] : [];
+      return [category?.name ?? value];
     });
     const seen = new Set<string>();
     return resolved.filter((name) => {
@@ -716,7 +715,7 @@ export class OutlookProvider implements EmailProvider {
     if (typeof action === 'object' && ('addLabels' in action || 'removeLabels' in action)) {
       const adding = 'addLabels' in action;
       const requested = [...new Set(adding ? action.addLabels : action.removeLabels)];
-      const resolved = await this.resolveCategoryNames(requested, adding);
+      const resolved = await this.resolveCategoryNames(requested);
       if (!resolved.length) return;
       const requestedNames = new Set(resolved.map((label) => label.toLowerCase()));
       await Promise.all(

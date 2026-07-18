@@ -148,6 +148,6 @@ Accounts connected before category support can keep reading and sending mail wit
 
 ## How Outlook categories work
 
-Fluxmail exposes Outlook mail folders as folders and Outlook master categories as labels. Message label lists contain category names. Adding or removing a label updates the message's categories without replacing its other categories. Assigning a category name that does not exist creates it in Outlook.
+Fluxmail exposes Outlook mail folders as folders and Outlook master categories as labels. Message label lists contain category names. Adding or removing a label updates the message's categories without replacing its other categories. If a category name is not in the master list, Outlook adds the name to the message without assigning a color. It does not appear in label listings.
 
 Continue with [Connect an MCP client](/docs/connect-an-mcp-client), [Build with REST](/docs/build-with-rest), or [Use the CLI](/docs/use-the-cli).

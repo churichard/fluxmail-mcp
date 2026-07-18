@@ -45,7 +45,7 @@ function runCli(
         '--no-update-notifier',
         '--instance',
         selection.instance,
-        '--account',
+        '--mail-account',
         selection.account,
         ...args,
       ],

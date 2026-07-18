@@ -81,7 +81,7 @@ async function run(
     'fluxmail',
     '--instance',
     'work',
-    '--account',
+    '--mail-account',
     'acct_1',
     ...args,
   ]);
@@ -177,7 +177,7 @@ describe('CLI email commands', () => {
       'fluxmail',
       '--instance',
       'work',
-      '--account',
+      '--mail-account',
       'TWO@example.com',
       'folders',
       'list',
@@ -194,6 +194,30 @@ describe('CLI email commands', () => {
 
     expect(process.exitCode).toBe(1);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Multiple accounts are available'));
+  });
+
+  it('keeps API key mailbox scopes separate from the mail selector', async () => {
+    const { requests } = setupRemote(() =>
+      envelope({ id: 'key_1', name: 'Scoped key', permissionProfile: 'full', key: 'fmk_private' }),
+    );
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await createCliProgram().parseAsync([
+      'node',
+      'fluxmail',
+      '--instance',
+      'work',
+      'apikey',
+      'create',
+      '--name',
+      'Scoped key',
+      '--account',
+      'acct_1',
+    ]);
+
+    const request = requests.at(-1)!;
+    expect(request.url.pathname).toBe('/api/v1/me/api-keys');
+    expect(request.body).toMatchObject({ accountIds: ['acct_1'] });
   });
 
   it('infers one accessible account and reports when none are available', async () => {
@@ -596,12 +620,28 @@ describe('CLI email commands', () => {
     expect(error).toHaveBeenCalledWith('Error [rate_limited]: Try later.');
   });
 
+  it('preserves standard REST error codes for attachment downloads', async () => {
+    const { dataDir } = setupRemote(
+      () =>
+        new Response(JSON.stringify({ error: { code: 'not_found', message: 'Attachment missing.' } }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await run(['attachments', 'download', 'msg_1', 'att_1', '--output', path.join(dataDir, 'missing.txt')]);
+
+    expect(process.exitCode).toBe(1);
+    expect(error).toHaveBeenCalledWith('Error [not_found]: Attachment missing.');
+  });
+
   it('records safe success and REST error telemetry without private input', async () => {
     const privateQuery = 'customer-secret-query';
     const { requests } = setupRemote((request) => {
       if (request.url.searchParams.get('text') === privateQuery) {
         return new Response(
-          JSON.stringify({ error: { code: 'provider_unavailable', message: 'private provider response' } }),
+          JSON.stringify({ error: { code: `private-${privateQuery}`, message: 'private provider response' } }),
           { status: 503, headers: { 'content-type': 'application/json' } },
         );
       }
@@ -625,7 +665,7 @@ describe('CLI email commands', () => {
         product_surface: 'cli',
         operation: 'emails search',
         outcome: 'error',
-        error_code: 'provider_unavailable',
+        error_code: 'request_failed',
       }),
     );
     expect(JSON.stringify(capture.mock.calls)).not.toContain(privateQuery);

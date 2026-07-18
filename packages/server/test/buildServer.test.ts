@@ -133,7 +133,7 @@ describe('MCP permissions', () => {
     }
   });
 
-  it('does not let generic move or label permissions change Trash', async () => {
+  it('does not let generic move permissions change protected folders', async () => {
     const modify = vi.fn().mockResolvedValue(undefined);
     const client = await connectMcp({ enforceQuota: () => undefined, modify } as Partial<EmailService>, {
       permissions: customPermissionPolicy(['mail.organize']),
@@ -142,13 +142,26 @@ describe('MCP permissions', () => {
     for (const arguments_ of [
       { messageIds: ['m1'], action: 'move', folder: 'Trash' },
       { messageIds: ['m1'], action: 'move', folder: 'Archive' },
-      { messageIds: ['m1'], action: 'addLabels', labels: ['TRASH'] },
-      { messageIds: ['m1'], action: 'removeLabels', labels: ['INBOX'] },
     ]) {
       const result = await client.callTool({ name: 'modify_emails', arguments: arguments_ });
       expect(result.isError).toBe(true);
     }
     expect(modify).not.toHaveBeenCalled();
+  });
+
+  it('defers label-name validation to the provider', async () => {
+    const modify = vi.fn().mockResolvedValue(undefined);
+    const client = await connectMcp({ enforceQuota: () => undefined, modify } as Partial<EmailService>, {
+      permissions: customPermissionPolicy(['mail.organize']),
+    });
+
+    const result = await client.callTool({
+      name: 'modify_emails',
+      arguments: { messageIds: ['m1'], action: 'addLabels', labels: ['Important'] },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(modify).toHaveBeenCalledWith(undefined, ['m1'], { addLabels: ['Important'] });
   });
 
   it('requires read access to expose forwarding', async () => {

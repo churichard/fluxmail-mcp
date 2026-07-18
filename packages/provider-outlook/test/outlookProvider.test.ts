@@ -548,7 +548,13 @@ describe('OutlookProvider', () => {
       }
       const match = url.pathname.match(/^\/v1\.0\/me\/messages\/([^/]+)$/);
       if (match && method === 'GET' && url.searchParams.get('$select') === 'categories') {
-        return json({ categories: match[1] === 'message-1' ? ['Existing'] : ['Existing', 'Customer'] });
+        const categories =
+          match[1] === 'message-1'
+            ? ['Existing']
+            : match[1] === 'message-2'
+              ? ['Existing', 'Customer']
+              : ['Existing', 'Orphaned'];
+        return json({ categories });
       }
       if (match && method === 'PATCH') {
         patches.push({
@@ -563,16 +569,18 @@ describe('OutlookProvider', () => {
 
     await outlook.modify(['message-1'], { addLabels: ['category-1', 'New category'] });
     await outlook.modify(['message-2'], { removeLabels: ['Customer', 'missing'] });
+    await outlook.modify(['message-3'], { removeLabels: ['Orphaned'] });
 
     expect(patches).toEqual([
       { id: 'message-1', categories: ['Existing', 'Customer', 'New category'] },
       { id: 'message-2', categories: ['Existing'] },
+      { id: 'message-3', categories: ['Existing'] },
     ]);
     expect(
       vi
         .mocked(fetchMock)
         .mock.calls.filter(([input]) => new URL(String(input)).pathname === '/v1.0/me/outlook/masterCategories'),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   it('rejects archive and generic moves through Trash and its descendants', async () => {

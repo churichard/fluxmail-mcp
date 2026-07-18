@@ -426,19 +426,24 @@ describe('REST permissions', () => {
     ).toBe(201);
   });
 
-  it('keeps protected folders and system labels behind dedicated actions', async () => {
+  it('keeps protected folders behind dedicated actions', async () => {
     const { app, auth, service } = fixture();
     const move = await app.request(
       '/api/v1/accounts/acct_1/messages/actions',
       jsonRequest('POST', { messageIds: ['msg_1'], action: 'move', folder: 'Trash' }, auth),
     );
     expect(move.status).toBe(400);
+    expect(service.modify).not.toHaveBeenCalled();
+  });
+
+  it('defers label-name validation to the provider', async () => {
+    const { app, auth, service } = fixture();
     const labels = await app.request(
       '/api/v1/accounts/acct_1/messages/actions',
-      jsonRequest('POST', { messageIds: ['msg_1'], action: 'addLabels', labels: ['inbox'] }, auth),
+      jsonRequest('POST', { messageIds: ['msg_1'], action: 'addLabels', labels: ['Important'] }, auth),
     );
-    expect(labels.status).toBe(400);
-    expect(service.modify).not.toHaveBeenCalled();
+    expect(labels.status).toBe(200);
+    expect(service.modify).toHaveBeenCalledWith('acct_1', ['msg_1'], { addLabels: ['Important'] });
   });
 
   it('maps each message action to its own capability', async () => {
