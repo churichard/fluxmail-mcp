@@ -25,10 +25,13 @@ const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
 const RATE_WINDOW_MS = 15 * 60 * 1000;
 const SESSION_TOUCH_INTERVAL_MS = 60 * 60 * 1000;
 const COMMON_PASSWORDS = new Set([
+  '12345678',
   '123456789012345',
   'correcthorsebatterystaple',
   'letmeinletmeinletmein',
+  'password',
   'passwordpassword',
+  'qwertyuiop',
   'qwertyqwertyqwerty',
 ]);
 
@@ -148,8 +151,8 @@ function releaseLoginAttempt(db: FluxmailDb, key: string, windowStartedAt: numbe
 export function normalizeAndValidatePassword(password: string, member?: Pick<MemberInfo, 'name' | 'email'>): string {
   const normalized = password.normalize('NFC');
   const length = [...normalized].length;
-  if (length < 15 || length > 256) {
-    throw new EmailError('invalid_request', 'Password must contain between 15 and 256 characters.');
+  if (length < 8 || length > 256) {
+    throw new EmailError('invalid_request', 'Password must contain between 8 and 256 characters.');
   }
   const lower = normalized.toLowerCase();
   const context = [member?.name, member?.email, member?.email?.split('@')[0], 'fluxmail']

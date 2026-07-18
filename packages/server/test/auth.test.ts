@@ -387,7 +387,9 @@ describe('member authentication', () => {
 
   it('normalizes passwords and stores the required Argon2id parameters', async () => {
     const { db } = fixture();
-    expect(() => normalizeAndValidatePassword('too short')).toThrow(/between 15 and 256/);
+    expect(normalizeAndValidatePassword('eight888')).toBe('eight888');
+    expect(() => normalizeAndValidatePassword('short7')).toThrow(/between 8 and 256/);
+    expect(() => normalizeAndValidatePassword('password')).toThrow(/not common/);
     expect(() => normalizeAndValidatePassword('passwordpassword')).toThrow(/not common/);
     expect(() =>
       normalizeAndValidatePassword('Alice has a very long password', {
@@ -403,7 +405,7 @@ describe('member authentication', () => {
     const credential = db.select().from(memberCredentials).where(eq(memberCredentials.memberId, setup.member.id)).get();
     expect(credential?.passwordHash).toMatch(/^\$argon2id\$v=19\$m=19456,t=2,p=1\$/);
     expect(credential?.passwordHash).not.toContain(strongPassword);
-    await expect(hashPassword('short')).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(hashPassword('short7')).rejects.toMatchObject({ code: 'invalid_request' });
   });
 
   it('uses generic login failures and persistently throttles repeated attempts', async () => {

@@ -65,7 +65,7 @@ import {
   saveSessionToken,
   useInstance,
 } from './cliInstances.js';
-import { authenticateBearer, recoverAdminPassword, setupInitialAdmin } from './auth.js';
+import { authenticateBearer, normalizeAndValidatePassword, recoverAdminPassword, setupInitialAdmin } from './auth.js';
 import { recordAdminAuditEvent } from './storage/adminAudit.js';
 import { canManageOwnedAccount } from './authorization.js';
 import { createCliUpdateNotifier, type CliUpdateNotifier, type CliUpdateNotifierFactory } from './updateNotifier.js';
@@ -167,9 +167,9 @@ async function hiddenPrompt(label: string): Promise<string> {
   if (!process.stdin.isTTY || !process.stdin.setRawMode) {
     throw new EmailError('invalid_request', `${label} must be supplied through a password environment variable.`);
   }
+  const wasFlowing = process.stdin.readableFlowing === true;
   emitKeypressEvents(process.stdin);
   const wasRaw = process.stdin.isRaw;
-  const wasPaused = process.stdin.isPaused();
   process.stdout.write(`${label}: `);
   process.stdin.setRawMode(true);
   process.stdin.resume();
@@ -178,7 +178,7 @@ async function hiddenPrompt(label: string): Promise<string> {
     const finish = (error?: Error) => {
       process.stdin.off('keypress', onKeypress);
       process.stdin.setRawMode(wasRaw);
-      if (wasPaused) process.stdin.pause();
+      if (!wasFlowing) process.stdin.pause();
       process.stdout.write('\n');
       if (error) reject(error);
       else resolve(value);
@@ -215,6 +215,24 @@ async function loginPassword(label = 'Password'): Promise<string> {
   return process.env.FLUXMAIL_PASSWORD ?? hiddenPrompt(label);
 }
 
+async function newPassword(
+  label: string,
+  member: Parameters<typeof normalizeAndValidatePassword>[1],
+  prompt: (label: string) => Promise<string>,
+): Promise<string> {
+  const configured = process.env.FLUXMAIL_PASSWORD;
+  if (configured !== undefined) return normalizeAndValidatePassword(configured, member);
+  for (;;) {
+    const password = await prompt(label);
+    try {
+      return normalizeAndValidatePassword(password, member);
+    } catch (error) {
+      if (!(error instanceof EmailError) || error.code !== 'invalid_request') throw error;
+      console.error(`Error: ${error.message}`);
+    }
+  }
+}
+
 async function accountSecret(envName: string | undefined, label: string): Promise<string> {
   if (!envName) return hiddenPrompt(label);
   const value = process.env[envName];
@@ -236,6 +254,7 @@ function warnLicense(db: FluxmailDb, log: (line: string) => void = console.error
 export interface CliProgramOptions {
   telemetry?: Telemetry;
   updateNotifierFactory?: CliUpdateNotifierFactory;
+  passwordPrompt?: (label: string) => Promise<string>;
 }
 
 interface ActiveCliOperation {
@@ -384,7 +403,11 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       try {
         const name = opts.name ?? (opts.existingAdmin ? undefined : await textPrompt('Administrator name'));
         const email = opts.email ?? (await textPrompt('Administrator email'));
-        const password = await loginPassword('New password');
+        const password = await newPassword(
+          'New password',
+          { name: name ?? '', email },
+          options.passwordPrompt ?? hiddenPrompt,
+        );
         const context = createContext();
         const result = await setupInitialAdmin(context.db, {
           ...(name ? { name } : {}),
@@ -439,7 +462,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
                     token:
                       (opts.reset ? process.env.FLUXMAIL_RESET_CODE : process.env.FLUXMAIL_INVITE_CODE) ??
                       (await hiddenPrompt(opts.reset ? 'Password reset code' : 'Enrollment code')),
-                    password: await loginPassword('New password'),
+                    password: await newPassword('New password', undefined, options.passwordPrompt ?? hiddenPrompt),
                     deviceName,
                   }),
                 },
@@ -538,7 +561,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
             'Administrator recovery is only available on the local instance host.',
           );
         }
-        const password = await loginPassword('New password');
+        const password = await newPassword('New password', undefined, options.passwordPrompt ?? hiddenPrompt);
         const context = createContext();
         const member = await recoverAdminPassword(context.db, memberRef, password);
         recordAdminAuditEvent(context.db, {

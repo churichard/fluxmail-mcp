@@ -70,4 +70,30 @@ describe('CLI authentication flow', () => {
       token: expect.stringMatching(/^fms_/),
     });
   });
+
+  it('re-prompts for an invalid interactive setup password and accepts eight characters', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-password-'));
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    vi.stubEnv('FLUXMAIL_ENCRYPTION_KEY', '33'.repeat(32));
+    vi.stubEnv('FLUXMAIL_TELEMETRY', '0');
+    const prompt = vi.fn().mockResolvedValueOnce('short7').mockResolvedValueOnce('River42!');
+    const output = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await createCliProgram({ passwordPrompt: prompt }).parseAsync([
+      'node',
+      'fluxmail',
+      'setup',
+      '--name',
+      'CLI Admin',
+      '--email',
+      'cli@example.com',
+    ]);
+
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(error).toHaveBeenCalledWith('Error: Password must contain between 8 and 256 characters.');
+    expect(output).toHaveBeenCalledWith(expect.stringContaining('Fluxmail is ready'));
+    expect(resolveInstance('local').token).toMatch(/^fms_/);
+    expect(process.exitCode).toBeUndefined();
+  });
 });

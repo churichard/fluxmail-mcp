@@ -16,7 +16,7 @@ fluxmail setup --name "Your name" --email you@example.com
 
 Fluxmail asks for a password without displaying it. The command creates the first administrator, adds a CLI profile named `local`, and saves a 90-day device session.
 
-Passwords must contain 15 to 256 Unicode characters. Fluxmail rejects common passwords and passwords based on the member's name or email address. It does not require a mix of uppercase letters, numbers, and symbols.
+Passwords must contain 8 to 256 Unicode characters. Fluxmail rejects common passwords and passwords based on the member's name or email address. It does not require a mix of uppercase letters, numbers, and symbols.
 
 ## Log in to a remote instance
 
