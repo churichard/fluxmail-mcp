@@ -25,7 +25,7 @@ import {
   PUBLIC_DOCS_ROOT,
   compatibilityManifest,
   parseFrontmatter,
-  publicDocPages,
+  publicDocManifestPages,
   readPublicDocsMeta,
   replaceGeneratedSection,
 } from './public-docs.js';
@@ -170,7 +170,7 @@ async function main(): Promise<void> {
   const nextManifest = `${JSON.stringify(
     compatibilityManifest(
       meta,
-      publicDocPages(meta).map((page) => page.slug),
+      publicDocManifestPages(meta).map((page) => page.slug),
     ),
     null,
     2,

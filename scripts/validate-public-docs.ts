@@ -6,20 +6,23 @@ import {
   compatibilityManifest,
   pageFiles,
   parseFrontmatter,
+  publicDocManifestPages,
   publicDocPages,
   readPublicDocsMeta,
   readPublicDocsManifest,
+  slugFromPageFilename,
 } from './public-docs.js';
 
 const meta = readPublicDocsMeta();
 const pages = publicDocPages(meta);
+const manifestPages = publicDocManifestPages(meta);
 const manifest = readPublicDocsManifest();
 const expectedManifest = compatibilityManifest(
   meta,
-  pages.map((page) => page.slug),
+  manifestPages.map((page) => page.slug),
 );
 if (JSON.stringify(manifest) !== JSON.stringify(expectedManifest)) {
-  throw new Error('Compatibility manifest differs from pages/meta.json. Run pnpm docs:generate.');
+  throw new Error('Compatibility manifest differs from the public documentation files. Run pnpm docs:generate.');
 }
 
 const RESERVED_MAIL_SLUGS = new Set([
@@ -39,6 +42,8 @@ const RESERVED_MAIL_SLUGS = new Set([
   'insights',
   'privacy-and-security',
 ]);
+const DOC_PATH_SEGMENT = String.raw`(?:[a-z0-9]+(?:-[a-z0-9]+)*|[0-9]+(?:\.[0-9]+){2})`;
+const DOC_LINK_PATTERN = new RegExp(String.raw`\]\(/docs/(${DOC_PATH_SEGMENT}(?:/${DOC_PATH_SEGMENT})*)(?:[)#?])`, 'g');
 
 for (const slug of meta.pages) {
   if (RESERVED_MAIL_SLUGS.has(slug)) {
@@ -46,19 +51,22 @@ for (const slug of meta.pages) {
   }
 }
 
-const expectedFiles = pages.map((page) => page.filename).sort();
 const actualFiles = pageFiles();
-if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
-  throw new Error(
-    `Metadata and pages directory differ. Expected ${expectedFiles.join(', ')}, found ${actualFiles.join(', ')}.`,
-  );
-}
+const pageByFilename = new Map(pages.map((page) => [page.filename, page]));
 
 const sources = new Map<string, string>();
-for (const { slug, filename: relativeFilename } of pages) {
+for (const relativeFilename of actualFiles) {
   const filename = path.join(PUBLIC_DOCS_ROOT, 'pages', relativeFilename);
   const source = readFileSync(filename, 'utf8');
-  parseFrontmatter(source, `${slug}.md`);
+  const page = pageByFilename.get(relativeFilename);
+  const slug = page?.slug ?? slugFromPageFilename(relativeFilename);
+  const frontmatter = parseFrontmatter(source, `${slug}.md`);
+  if (!page && frontmatter.hidden !== true) {
+    throw new Error(`${slug}.md is missing from meta.json and is not marked hidden.`);
+  }
+  if (page && frontmatter.hidden === true) {
+    throw new Error(`${slug}.md is listed in meta.json but is marked hidden.`);
+  }
   if (/[—–]/u.test(source)) throw new Error(`${slug}.md contains an em dash or en dash. Rewrite it in plain language.`);
   sources.set(slug, source);
 }
@@ -67,9 +75,9 @@ for (const [slug, source] of sources) {
   if (/\]\(\/docs\/mcp(?:\/|[)#?])/.test(source)) {
     throw new Error(`${slug}.md contains a nested /docs/mcp link. Use /docs/.`);
   }
-  for (const match of source.matchAll(/\]\(\/docs\/([a-z0-9-]+(?:\/[a-z0-9-]+)*)(?:[)#?])/g)) {
+  for (const match of source.matchAll(DOC_LINK_PATTERN)) {
     const target = match[1];
-    if (target && !pages.some((page) => page.slug === target) && !RESERVED_MAIL_SLUGS.has(target)) {
+    if (target && !sources.has(target) && !RESERVED_MAIL_SLUGS.has(target)) {
       throw new Error(`${slug}.md links to unknown documentation page /docs/${target}.`);
     }
   }

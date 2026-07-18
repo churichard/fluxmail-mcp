@@ -7,6 +7,7 @@ import {
   parseFrontmatter,
   parseManifest,
   parseMeta,
+  publicDocManifestPages,
   publicDocPages,
   replaceGeneratedSection,
 } from './public-docs.js';
@@ -24,6 +25,7 @@ describe('public docs bundle validation', () => {
     expect(parseMeta({ title: 'REST API', pagesIndex: 'index', defaultOpen: false, pages: ['list-accounts'] })).toEqual(
       { title: 'REST API', pagesIndex: 'index', defaultOpen: false, pages: ['list-accounts'] },
     );
+    expect(parseMeta({ title: 'Upgrade guides', pages: ['0.5.0'] }).pages).toEqual(['0.5.0']);
   });
 
   it('derives the compatibility manifest from Fumadocs metadata', () => {
@@ -41,6 +43,7 @@ describe('public docs bundle validation', () => {
       'rest-api',
       'rest-api/list-accounts',
     ]);
+    expect(parseManifest({ ...manifest, pages: ['upgrades/0.5.0'] }).pages).toEqual(['upgrades/0.5.0']);
   });
 
   it('rejects unsafe paths and duplicate slugs', () => {
@@ -54,14 +57,20 @@ describe('public docs bundle validation', () => {
 
   it('requires the public frontmatter contract', () => {
     expect(
-      parseFrontmatter("---\ntitle: 'Test'\ndescription: 'A page'\nupdated: '2026-07-14'\ndraft: false\n---\n"),
+      parseFrontmatter(
+        "---\ntitle: 'Test'\ndescription: 'A page'\nupdated: '2026-07-14'\ndraft: false\nhidden: true\n---\n",
+      ),
     ).toMatchObject({
       title: 'Test',
       draft: false,
+      hidden: true,
     });
     expect(() => parseFrontmatter("---\ntitle: 'Test'\ndescription: 'A page'\nupdated: '2026-02-30'\n---\n")).toThrow(
       /updated date/,
     );
+    expect(() =>
+      parseFrontmatter("---\ntitle: 'Test'\ndescription: 'A page'\nupdated: '2026-07-14'\nhidden: yes\n---\n"),
+    ).toThrow(/hidden/);
     expect(() => parseFrontmatter("---\ntitle: 'Test'\ncategory: 'Wrong owner'\n---\n")).toThrow();
   });
 
@@ -103,6 +112,26 @@ describe('public docs bundle validation', () => {
         { slug: 'overview', filename: 'overview.md' },
         { slug: 'rest-api', filename: 'rest-api/index.md' },
         { slug: 'rest-api/list-accounts', filename: 'rest-api/list-accounts.md' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps hidden routes in the compatibility manifest without adding them to navigation', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'fluxmail-public-docs-'));
+    try {
+      const pages = path.join(root, 'pages');
+      mkdirSync(pages, { recursive: true });
+      writeFileSync(path.join(pages, 'overview.md'), 'overview');
+      writeFileSync(path.join(pages, 'legacy.md'), 'legacy');
+
+      expect(publicDocPages({ title: 'Fluxmail', pages: ['overview'] }, root)).toEqual([
+        { slug: 'overview', filename: 'overview.md' },
+      ]);
+      expect(publicDocManifestPages({ title: 'Fluxmail', pages: ['overview'] }, root)).toEqual([
+        { slug: 'overview', filename: 'overview.md' },
+        { slug: 'legacy', filename: 'legacy.md' },
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });

@@ -139,7 +139,8 @@
     "permissions",
     "configuration",
     "teams-and-plans",
-    "authentication-migration",
-    "architecture"
+    "architecture",
+    "upgrades/0.5.0",
+    "authentication-migration"
   ]
 }

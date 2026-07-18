@@ -23,7 +23,8 @@
     "permissions",
     "configuration",
     "teams-and-plans",
-    "authentication-migration",
-    "architecture"
+    "architecture",
+    "---Upgrade guides---",
+    "upgrades"
   ]
 }

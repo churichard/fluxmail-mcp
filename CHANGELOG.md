@@ -8,7 +8,7 @@ Fluxmail records user-facing changes in this file. The format follows [Common Ch
 
 ### Changed
 
-- **Breaking:** require member authentication for every instance, remove `FLUXMAIL_AUTH=none`, revoke legacy API keys during migration, and require a backup to return to an older version; [back up the data directory and claim the instance](https://fluxmail.ai/docs/authentication-migration/) before reconnecting clients ([#58](https://github.com/churichard/fluxmail/pull/58))
+- **Breaking:** require member authentication for every instance, remove `FLUXMAIL_AUTH=none`, revoke legacy API keys during migration, and require a backup to return to an older version; [back up the data directory and claim the instance](https://fluxmail.ai/docs/upgrades/0.5.0/) before reconnecting clients ([#58](https://github.com/churichard/fluxmail/pull/58))
 - **Breaking:** replace the `Account` fields `ownerId`, `sharingMode`, `sharedMemberIds`, and `memberId` with `ownerMemberId`, `sharedWithAll`, and `grantedMemberIds`; update API clients to use the new fields ([#58](https://github.com/churichard/fluxmail/pull/58))
 - **Breaking:** make the CLI use named local or remote instances for administration, and require a logged-in local session before starting stdio MCP ([#58](https://github.com/churichard/fluxmail/pull/58))
 - Record CLI, MCP, and REST operations with one anonymous telemetry schema that excludes arguments, request data, identifiers, and error messages ([#55](https://github.com/churichard/fluxmail/pull/55))
