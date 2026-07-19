@@ -4,7 +4,7 @@ import { accounts, licenseLease, members, type FluxmailDb } from '../storage/db.
 import { licensePublicKeys, verifyLease } from './lease.js';
 
 /** After a lease expires, paid limits are honored this much longer before the plan lapses. */
-export const GRACE_PERIOD_MS = 21 * 24 * 60 * 60 * 1000;
+export const GRACE_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface Entitlements {
   /** 'personal' when unlicensed, otherwise the plan name from the signed lease. */

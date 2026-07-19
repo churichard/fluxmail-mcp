@@ -92,7 +92,7 @@ drop the old pin.
 - Revalidates roughly daily while a server runs; the lease lives ~7 days.
 - Enforcement is fully offline against the cached lease; no request ever
   blocks on the license server.
-- When the lease expires without renewal, paid caps continue through a 21-day
+- When the lease expires without renewal, paid caps continue through a 7-day
   grace period (`GRACE_PERIOD_MS` in `entitlements.ts`), with renewal warnings
   in the CLI and on MCP tool results.
 - After the grace period, the instance drops to Personal-plan caps. If usage
