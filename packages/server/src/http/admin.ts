@@ -367,11 +367,12 @@ const OAuthProviderSchema = z.enum(['google', 'outlook']).openapi({ example: 'go
 const OAuthAppInputSchema = z
   .object({
     clientId: z.string().trim().min(1).max(2048).openapi({ example: 'client-id.apps.example.com' }),
-    clientSecret: z.string().min(1).max(16_384).optional().openapi({ example: 'client-secret' }),
+    clientSecret: z.string().trim().min(1).max(16_384).optional().openapi({ example: 'client-secret' }),
     tenantId: z.string().trim().min(1).max(2048).optional().openapi({ example: 'common' }),
     publicClient: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .openapi({ example: { clientId: 'client-id.apps.example.com', clientSecret: 'client-secret' } });
 const OAuthAppsResponseSchema = z
   .object({
     data: z.object({

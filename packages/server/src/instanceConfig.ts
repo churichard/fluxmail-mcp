@@ -1,6 +1,6 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { decryptString, encryptString } from './storage/crypto.js';
-import { instanceSettings, type FluxmailDb } from './storage/db.js';
+import { accountCredentials, accounts, instanceSettings, oauthTokens, type FluxmailDb } from './storage/db.js';
 
 const ENVELOPE_PREFIX = 'v1:';
 
@@ -61,6 +61,13 @@ export class InstanceConfigStore {
     return this.db.select().from(instanceSettings).where(eq(instanceSettings.key, key)).get()?.value;
   }
 
+  dataVersion(): number {
+    const sqlite = this.db as unknown as {
+      $client: { pragma(source: string, options: { simple: true }): unknown };
+    };
+    return sqlite.$client.pragma('data_version', { simple: true }) as number;
+  }
+
   private readEncrypted(key: string): unknown | undefined {
     const value = this.raw(key);
     if (value === undefined) return undefined;
@@ -107,6 +114,60 @@ export class InstanceConfigStore {
 
   setMicrosoft(value: StoredMicrosoftOAuthApp): void {
     this.writeEncrypted(INSTANCE_CONFIG_KEYS.microsoft, parseMicrosoft(value));
+  }
+
+  pinMicrosoftOAuthAppForAccounts(value: StoredMicrosoftOAuthApp): number {
+    const application = parseMicrosoft(value);
+    const sqlite = this.db as unknown as {
+      $client: { transaction<T>(operation: () => T): { immediate(): T } };
+    };
+    return sqlite.$client
+      .transaction(() => {
+        const rows = this.db
+          .select({
+            accountId: accountCredentials.accountId,
+            encryptedCredentials: accountCredentials.encryptedCredentials,
+          })
+          .from(accountCredentials)
+          .innerJoin(accounts, eq(accounts.id, accountCredentials.accountId))
+          .where(eq(accounts.provider, 'outlook'))
+          .all();
+        let pinned = 0;
+        for (const row of rows) {
+          const decoded = JSON.parse(decryptString(this.encryptionKey, row.encryptedCredentials)) as unknown;
+          if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
+            throw new Error('The encrypted Outlook credentials are invalid');
+          }
+          const credentials = decoded as Record<string, unknown>;
+          if (credentials.fluxmailOAuthClient !== undefined) continue;
+
+          const encryptedCredentials = encryptString(
+            this.encryptionKey,
+            JSON.stringify({ ...credentials, fluxmailOAuthClient: application }),
+          );
+          const updatedAt = Date.now();
+          this.db
+            .update(accountCredentials)
+            .set({
+              encryptedCredentials,
+              updatedAt,
+              revision: sql`${accountCredentials.revision} + 1`,
+            })
+            .where(eq(accountCredentials.accountId, row.accountId))
+            .run();
+          this.db
+            .insert(oauthTokens)
+            .values({ accountId: row.accountId, encryptedTokens: encryptedCredentials, updatedAt })
+            .onConflictDoUpdate({
+              target: oauthTokens.accountId,
+              set: { encryptedTokens: encryptedCredentials, updatedAt },
+            })
+            .run();
+          pinned += 1;
+        }
+        return pinned;
+      })
+      .immediate();
   }
 
   removeMicrosoft(): boolean {

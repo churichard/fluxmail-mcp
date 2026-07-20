@@ -35,6 +35,7 @@ import { canAdminister, canSeeAccountMetadata } from '../authorization.js';
 import type { LicenseController } from '../licensing/refresher.js';
 import { administrationUsesHttps as administrationRequestUsesHttps, requestBodyExceedsLimit } from './admin.js';
 import { recordAdminAuditEvent } from '../storage/adminAudit.js';
+import type { StoredGoogleOAuthApp, StoredMicrosoftOAuthApp } from '../instanceConfig.js';
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -51,10 +52,18 @@ export interface AppDeps {
 export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
   const { config, configuration, db, registry, service, telemetry, licenseController } = deps;
   const app = new Hono<{ Bindings: HttpBindings }>();
-  const googleOauthStates = new Map<string, { expiresAt: number; intent?: GmailConnectionIntent }>();
+  const googleOauthStates = new Map<
+    string,
+    { expiresAt: number; oauthClient: StoredGoogleOAuthApp; intent?: GmailConnectionIntent }
+  >();
   const microsoftOauthStates = new Map<
     string,
-    { expiresAt: number; verifier: string; intent?: GmailConnectionIntent }
+    {
+      expiresAt: number;
+      verifier: string;
+      oauthClient: StoredMicrosoftOAuthApp;
+      intent?: GmailConnectionIntent;
+    }
   >();
 
   const escapeHtml = (value: string): string =>
@@ -114,20 +123,24 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     `<button type="submit">Continue with ${identityProvider}</button></form></body></html>`;
 
   const beginGoogleOAuth = (intent?: GmailConnectionIntent): string => {
-    requireHostedGoogleConfig(config);
+    const oauthClient = { ...requireHostedGoogleConfig(config) };
     const now = Date.now();
     for (const [state, pending] of googleOauthStates) {
       if (pending.expiresAt < now) googleOauthStates.delete(state);
     }
     const state = randomBytes(16).toString('hex');
-    googleOauthStates.set(state, { expiresAt: now + OAUTH_STATE_TTL_MS, ...(intent ? { intent } : {}) });
-    const client = createOAuthClient(config, `${config.publicUrl}/auth/google/callback`);
-    return buildAuthUrl(client, state, gmailScopes(config));
+    googleOauthStates.set(state, {
+      expiresAt: now + OAUTH_STATE_TTL_MS,
+      oauthClient,
+      ...(intent ? { intent } : {}),
+    });
+    const client = createOAuthClient(config, `${config.publicUrl}/auth/google/callback`, oauthClient);
+    return buildAuthUrl(client, state, gmailScopes(config, oauthClient));
   };
 
   const beginMicrosoftOAuth = (intent?: GmailConnectionIntent): string => {
-    const microsoft = requireMicrosoftConfig(config);
-    if (!microsoft.clientSecret) {
+    const oauthClient = { ...requireMicrosoftConfig(config) };
+    if (!oauthClient.clientSecret) {
       throw new EmailError('invalid_request', 'MICROSOFT_CLIENT_SECRET is required for hosted Outlook connections.');
     }
     const now = Date.now();
@@ -139,9 +152,10 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     microsoftOauthStates.set(state, {
       expiresAt: now + OAUTH_STATE_TTL_MS,
       verifier,
+      oauthClient,
       ...(intent ? { intent } : {}),
     });
-    return buildMicrosoftAuthUrl(config, `${config.publicUrl}/auth/microsoft/callback`, state, verifier);
+    return buildMicrosoftAuthUrl(config, `${config.publicUrl}/auth/microsoft/callback`, state, verifier, oauthClient);
   };
 
   // Legacy connection routes use the same administrator policy as the REST API.
@@ -435,7 +449,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     const code = c.req.query('code');
     if (!code) return c.text('Missing code parameter.', 400);
 
-    const client = createOAuthClient(config, `${config.publicUrl}/auth/google/callback`);
+    const client = createOAuthClient(config, `${config.publicUrl}/auth/google/callback`, pending.oauthClient);
     try {
       const { email, displayName, tokens } = await exchangeCode(client, code);
       const reauthorizeAccount = pending.intent?.reauthorizeAccountId
@@ -457,10 +471,17 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
       if (duplicate && !reauthorizeAccount && pending.intent?.ownerMemberId !== duplicate.ownerMemberId) {
         throw new EmailError('permission_denied', 'This mailbox is already owned by another member.');
       }
-      const account = registry.addGmailAccount(email, tokens, displayName, pending.intent?.ownerMemberId, {
-        sharedWithAll: pending.intent?.sharedWithAll ?? false,
-        grantedMemberIds: pending.intent?.grantedMemberIds ?? [],
-      });
+      const account = registry.addGmailAccount(
+        email,
+        tokens,
+        displayName,
+        pending.intent?.ownerMemberId,
+        {
+          sharedWithAll: pending.intent?.sharedWithAll ?? false,
+          grantedMemberIds: pending.intent?.grantedMemberIds ?? [],
+        },
+        pending.oauthClient,
+      );
       recordAdminAuditEvent(db, {
         operation: 'account.connection.complete',
         outcome: 'success',
@@ -560,6 +581,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
         `${config.publicUrl}/auth/microsoft/callback`,
         pending.verifier,
         'confidential',
+        pending.oauthClient,
       );
       const reauthorizeAccount = pending.intent?.reauthorizeAccountId
         ? registry.getAccount(pending.intent.reauthorizeAccountId)

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { EmailError } from '@fluxmail/core';
 import type { FluxmailConfig } from '../config.js';
+import type { StoredMicrosoftOAuthApp } from '../instanceConfig.js';
 
 export const MICROSOFT_SCOPES = [
   'openid',
@@ -21,6 +22,8 @@ export interface MicrosoftCredentials {
   scope?: string;
   /** Hosted callbacks use a confidential client; loopback callbacks use PKCE only. */
   clientAuth?: 'public' | 'confidential';
+  /** OAuth application that issued the refresh token. */
+  fluxmailOAuthClient?: StoredMicrosoftOAuthApp;
 }
 
 interface MicrosoftTokenResponse {
@@ -48,9 +51,8 @@ export function requireMicrosoftConfig(config: FluxmailConfig): NonNullable<Flux
   return config.microsoft;
 }
 
-function tenantEndpoint(config: FluxmailConfig, path: 'authorize' | 'token'): string {
-  const { tenantId } = requireMicrosoftConfig(config);
-  return `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/${path}`;
+function tenantEndpoint(microsoft: StoredMicrosoftOAuthApp, path: 'authorize' | 'token'): string {
+  return `https://login.microsoftonline.com/${encodeURIComponent(microsoft.tenantId)}/oauth2/v2.0/${path}`;
 }
 
 function codeChallenge(verifier: string): string {
@@ -62,11 +64,12 @@ export function buildMicrosoftAuthUrl(
   redirectUri: string,
   state: string,
   verifier: string,
+  oauthClient: StoredMicrosoftOAuthApp = requireMicrosoftConfig(config),
 ): string {
-  const { clientId } = requireMicrosoftConfig(config);
-  const url = new URL(tenantEndpoint(config, 'authorize'));
+  const microsoft = oauthClient;
+  const url = new URL(tenantEndpoint(microsoft, 'authorize'));
   url.search = new URLSearchParams({
-    client_id: clientId,
+    client_id: microsoft.clientId,
     response_type: 'code',
     redirect_uri: redirectUri,
     response_mode: 'query',
@@ -80,11 +83,10 @@ export function buildMicrosoftAuthUrl(
 }
 
 async function tokenRequest(
-  config: FluxmailConfig,
+  microsoft: StoredMicrosoftOAuthApp,
   params: Record<string, string>,
   clientAuth: 'public' | 'confidential',
 ): Promise<MicrosoftTokenResponse> {
-  const microsoft = requireMicrosoftConfig(config);
   if (clientAuth === 'confidential' && !microsoft.clientSecret) {
     throw new EmailError('invalid_request', 'MICROSOFT_CLIENT_SECRET is required for hosted Outlook connections.');
   }
@@ -93,7 +95,7 @@ async function tokenRequest(
     ...params,
     ...(clientAuth === 'confidential' ? { client_secret: microsoft.clientSecret! } : {}),
   });
-  const response = await fetch(tenantEndpoint(config, 'token'), {
+  const response = await fetch(tenantEndpoint(microsoft, 'token'), {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
@@ -110,6 +112,7 @@ async function tokenRequest(
 function credentialsFromToken(
   payload: MicrosoftTokenResponse,
   clientAuth: 'public' | 'confidential',
+  microsoft: StoredMicrosoftOAuthApp,
   previousRefreshToken?: string,
 ): MicrosoftCredentials {
   if (!payload.access_token) throw new EmailError('provider_unavailable', 'Microsoft did not return an access token');
@@ -125,6 +128,7 @@ function credentialsFromToken(
     refreshToken,
     expiresAt: Date.now() + Math.max(payload.expires_in ?? 3_600, 60) * 1_000,
     clientAuth,
+    fluxmailOAuthClient: { ...microsoft },
     ...(payload.scope ? { scope: payload.scope } : {}),
   };
 }
@@ -133,11 +137,11 @@ export async function refreshMicrosoftCredentials(
   config: FluxmailConfig,
   credentials: MicrosoftCredentials,
 ): Promise<MicrosoftCredentials> {
-  const clientAuth =
-    credentials.clientAuth ?? (requireMicrosoftConfig(config).clientSecret ? 'confidential' : 'public');
+  const microsoft = credentials.fluxmailOAuthClient ?? requireMicrosoftConfig(config);
+  const clientAuth = credentials.clientAuth ?? (microsoft.clientSecret ? 'confidential' : 'public');
   const refreshScope = credentials.scope?.trim();
   const payload = await tokenRequest(
-    config,
+    microsoft,
     {
       grant_type: 'refresh_token',
       refresh_token: credentials.refreshToken,
@@ -145,7 +149,7 @@ export async function refreshMicrosoftCredentials(
     },
     clientAuth,
   );
-  return credentialsFromToken(payload, clientAuth, credentials.refreshToken);
+  return credentialsFromToken(payload, clientAuth, microsoft, credentials.refreshToken);
 }
 
 async function microsoftIdentity(accessToken: string): Promise<{ email: string; displayName?: string }> {
@@ -199,9 +203,11 @@ export async function exchangeMicrosoftCode(
   redirectUri: string,
   verifier: string,
   clientAuth: 'public' | 'confidential' = 'public',
+  oauthClient: StoredMicrosoftOAuthApp = requireMicrosoftConfig(config),
 ): Promise<MicrosoftOAuthResult> {
+  const microsoft = { ...oauthClient };
   const payload = await tokenRequest(
-    config,
+    microsoft,
     {
       grant_type: 'authorization_code',
       code,
@@ -211,7 +217,7 @@ export async function exchangeMicrosoftCode(
     },
     clientAuth,
   );
-  const credentials = credentialsFromToken(payload, clientAuth);
+  const credentials = credentialsFromToken(payload, clientAuth, microsoft);
   const identity = await microsoftIdentity(credentials.accessToken);
   await verifyMicrosoftMailbox(credentials.accessToken);
   return { ...identity, credentials };
@@ -254,7 +260,7 @@ export async function runMicrosoftLoopbackFlow<T = MicrosoftOAuthResult>(
   onAuthUrl: (url: string) => void,
   onAuthorized?: (result: MicrosoftOAuthResult) => T | Promise<T>,
 ): Promise<T> {
-  requireMicrosoftConfig(config);
+  const oauthClient = { ...requireMicrosoftConfig(config) };
   const redirectUri = `http://localhost:${config.oauthPort}/oauth/microsoft/callback`;
   const state = randomBytes(16).toString('hex');
   const verifier = randomBytes(48).toString('base64url');
@@ -290,7 +296,7 @@ export async function runMicrosoftLoopbackFlow<T = MicrosoftOAuthResult>(
           response.writeHead(400).end('Missing code parameter.');
           return;
         }
-        const result = await exchangeMicrosoftCode(config, code, redirectUri, verifier);
+        const result = await exchangeMicrosoftCode(config, code, redirectUri, verifier, 'public', oauthClient);
         const accepted = onAuthorized ? await onAuthorized(result) : (result as T);
         finish(() => resolve(accepted));
         response
@@ -309,7 +315,7 @@ export async function runMicrosoftLoopbackFlow<T = MicrosoftOAuthResult>(
     });
     server.on('error', (error) => reject(listenerError(error, config.oauthPort)));
     server.listen(config.oauthPort, config.oauthHost, () => {
-      onAuthUrl(buildMicrosoftAuthUrl(config, redirectUri, state, verifier));
+      onAuthUrl(buildMicrosoftAuthUrl(config, redirectUri, state, verifier, oauthClient));
     });
   });
 }

@@ -215,17 +215,17 @@ function telemetryDisabledFile(dataDir: string): string {
   return path.join(dataDir, 'telemetry.disabled');
 }
 
-export function telemetryDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+export function telemetryOptedOut(env: NodeJS.ProcessEnv = process.env): boolean {
   const setting = env.FLUXMAIL_TELEMETRY?.toLowerCase();
-  return (
-    setting === '0' ||
-    setting === 'false' ||
-    setting === 'no' ||
-    setting === 'off' ||
-    isTruthy(env.DO_NOT_TRACK) ||
-    env.NODE_ENV === 'test' ||
-    env.VITEST !== undefined
-  );
+  return setting === '0' || setting === 'false' || setting === 'no' || setting === 'off' || isTruthy(env.DO_NOT_TRACK);
+}
+
+export function telemetryDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return telemetryOptedOut(env) || env.NODE_ENV === 'test' || env.VITEST !== undefined;
+}
+
+export function telemetryDisabledInAnyEnvironment(...environments: NodeJS.ProcessEnv[]): boolean {
+  return environments.some((environment) => telemetryDisabled(environment));
 }
 
 export function isTelemetryEnabled(dataDir: string, env?: NodeJS.ProcessEnv): boolean {

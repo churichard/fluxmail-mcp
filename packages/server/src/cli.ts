@@ -10,7 +10,14 @@ import { serve } from '@hono/node-server';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { EmailError, isEmailError } from '@fluxmail/core';
 import { createContext } from './context.js';
-import { configTomlPath, deploymentToml, resolveDataDir, writeDeploymentConfig } from './config.js';
+import {
+  configTomlPath,
+  createConfigurationService,
+  deploymentToml,
+  resolveDataDir,
+  resolveStoreLocation,
+  writeDeploymentConfig,
+} from './config.js';
 import { migrateConfigurationFile, parseEnvContent, recognizedMigrationSettings } from './configMigration.js';
 import { createApp } from './http/app.js';
 import { buildMcpServer } from './mcp/buildServer.js';
@@ -27,7 +34,13 @@ import { findMember } from './storage/members.js';
 import { LICENSE_KEY_PATTERN } from './licensing/client.js';
 import { checkLicenseState, getEntitlements, type Entitlements } from './licensing/entitlements.js';
 import { VERSION } from './version.js';
-import type { FluxmailDb } from './storage/db.js';
+import {
+  inspectStoreCompatibility,
+  MIN_SUPPORTED_STORE_FORMAT,
+  openDb,
+  openReadonlyDb,
+  type FluxmailDb,
+} from './storage/db.js';
 import type { ImapSecurity } from '@fluxmail/provider-imap';
 import {
   customPermissionPolicy,
@@ -46,7 +59,7 @@ import {
   isTelemetryEnabled,
   setTelemetryEnabled,
   shutdownTelemetry,
-  telemetryDisabled,
+  telemetryDisabledInAnyEnvironment,
   type Telemetry,
 } from './telemetry.js';
 import {
@@ -380,12 +393,18 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     // Respect the opt-out before creating a telemetry client or recording this command.
     if (command === 'telemetry disable') return;
     let telemetryEnvironment: NodeJS.ProcessEnv | undefined;
+    let telemetryDataDir: string | undefined;
     if (command === 'config migrate') {
-      const migration = actionCommand.opts<{ from?: string; dryRun?: boolean }>();
-      if (migration.from && !migration.dryRun) {
+      const migration = actionCommand.opts<{ from?: string }>();
+      if (migration.from) {
         try {
           const values = parseEnvContent(readFileSync(path.resolve(migration.from), 'utf8'));
-          if (telemetryDisabled({ ...process.env, ...values })) {
+          if (values.FLUXMAIL_DATA_DIR !== undefined) {
+            telemetryDataDir = resolveDataDir({
+              env: { ...process.env, FLUXMAIL_DATA_DIR: values.FLUXMAIL_DATA_DIR },
+            });
+          }
+          if (telemetryDisabledInAnyEnvironment(process.env, values)) {
             telemetryEnvironment = { ...process.env, FLUXMAIL_TELEMETRY: '0' };
           }
         } catch {
@@ -394,7 +413,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       }
     }
     activeCliOperations.set(program, {
-      telemetry: options.telemetry ?? getTelemetry(resolveDataDir(), telemetryEnvironment),
+      telemetry: options.telemetry ?? getTelemetry(telemetryDataDir ?? resolveDataDir(), telemetryEnvironment),
       operation: command,
       startedAt: performance.now(),
       initialExitCode: process.exitCode,
@@ -978,7 +997,14 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
                   'Try again and choose the matching Google account.',
               );
             }
-            return ctx.registry.addGmailAccount(result.email, result.tokens, result.displayName, owner.id, access);
+            return ctx.registry.addGmailAccount(
+              result.email,
+              result.tokens,
+              result.displayName,
+              owner.id,
+              access,
+              result.oauthClient,
+            );
           },
         );
         auditConnection('account.connection.complete', account.id);
@@ -1649,32 +1675,45 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .command('show')
     .description('Show effective configuration, sources, paths, and restart requirements')
     .action(() => {
-      const context = createContext();
-      const deployment = context.configuration.deployment;
-      console.log(`Data directory: ${deployment.dataDir} [${deployment.sources.dataDir}]`);
-      console.log(
-        `Configuration file: ${deployment.configFile}${existsSync(deployment.configFile) ? '' : ' (not created)'}`,
-      );
-      console.log(`Database: ${deployment.dbPath} [${deployment.sources.dbPath}] restart required`);
-      console.log(`Server port: ${deployment.port} [${deployment.sources.port}] restart required`);
-      console.log(`Public URL: ${deployment.publicUrl} [${deployment.sources.publicUrl}] restart required`);
-      console.log(`Trust proxy: ${deployment.trustProxy} [${deployment.sources.trustProxy}] restart required`);
-      console.log(`Local OAuth host: ${deployment.oauthHost} [${deployment.sources.oauthHost}] restart required`);
-      console.log(`Local OAuth port: ${deployment.oauthPort} [${deployment.sources.oauthPort}] restart required`);
-      console.log(
-        `Maximum attachment: ${deployment.maxAttachmentBytes / (1024 * 1024)} MB [${deployment.sources.maxAttachmentBytes}] restart required`,
-      );
-      console.log(
-        `Encryption key: ${deployment.encryptionKey.length === 32 ? 'configured' : 'not configured'} [${deployment.sources.encryptionKey}]`,
-      );
-      const oauth = context.configuration.oauthStatus();
-      console.log(`Google OAuth: configured [${oauth.google.source}]`);
-      console.log(
-        `Outlook OAuth: ${oauth.outlook.clientId ? 'configured' : 'not configured'} [${oauth.outlook.source ?? 'none'}]`,
-      );
-      console.log(
-        `License: ${context.config.licenseKey ? 'configured' : 'not configured'} [${context.configuration.licenseSource() ?? 'none'}]`,
-      );
+      const deployment = resolveStoreLocation().deployment!;
+      const compatibility = inspectStoreCompatibility(deployment.dbPath, deployment.dataDir);
+      const canReadInstanceSettings =
+        compatibility.storeFormat >= MIN_SUPPORTED_STORE_FORMAT &&
+        compatibility.storeFormat <= compatibility.maximumSupportedFormat;
+      const db =
+        canReadInstanceSettings && deployment.dbPath !== ':memory:'
+          ? openReadonlyDb(deployment.dbPath)
+          : openDb(':memory:', { backupBeforeMigration: false });
+      try {
+        const configuration = createConfigurationService(deployment, db);
+        const config = configuration.config;
+        console.log(`Data directory: ${deployment.dataDir} [${deployment.sources.dataDir}]`);
+        console.log(
+          `Configuration file: ${deployment.configFile}${existsSync(deployment.configFile) ? '' : ' (not created)'}`,
+        );
+        console.log(`Database: ${deployment.dbPath} [${deployment.sources.dbPath}] restart required`);
+        console.log(`Server port: ${deployment.port} [${deployment.sources.port}] restart required`);
+        console.log(`Public URL: ${deployment.publicUrl} [${deployment.sources.publicUrl}] restart required`);
+        console.log(`Trust proxy: ${deployment.trustProxy} [${deployment.sources.trustProxy}] restart required`);
+        console.log(`Local OAuth host: ${deployment.oauthHost} [${deployment.sources.oauthHost}] restart required`);
+        console.log(`Local OAuth port: ${deployment.oauthPort} [${deployment.sources.oauthPort}] restart required`);
+        console.log(
+          `Maximum attachment: ${deployment.maxAttachmentBytes / (1024 * 1024)} MB [${deployment.sources.maxAttachmentBytes}] restart required`,
+        );
+        console.log(
+          `Encryption key: ${deployment.encryptionKey.length === 32 ? 'configured' : 'not configured'} [${deployment.sources.encryptionKey}]`,
+        );
+        const oauth = configuration.oauthStatus();
+        console.log(`Google OAuth: configured [${oauth.google.source}]`);
+        console.log(
+          `Outlook OAuth: ${oauth.outlook.clientId ? 'configured' : 'not configured'} [${oauth.outlook.source ?? 'none'}]`,
+        );
+        console.log(
+          `License: ${config.licenseKey ? 'configured' : 'not configured'} [${configuration.licenseSource() ?? 'none'}]`,
+        );
+      } finally {
+        (db as unknown as { $client: { close(): void } }).$client.close();
+      }
     });
 
   configCmd
@@ -1686,7 +1725,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       const source = path.resolve(options.from);
       if (options.dryRun) {
         const recognized = recognizedMigrationSettings(parseEnvContent(readFileSync(source, 'utf8')));
-        console.log(recognized.length ? recognized.sort().join('\n') : 'No recognized settings found.');
+        console.log(recognized.length ? recognized.join('\n') : 'No recognized settings found.');
         return;
       }
       const result = migrateConfigurationFile(source);

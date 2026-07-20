@@ -75,7 +75,7 @@ Confirm that port 8977 is reachable and that your reverse proxy forwards request
 
 ## A configuration import fails
 
-`fluxmail config migrate` preserves the source file whether the command succeeds or fails. Read the error before changing any files. A key mismatch means the imported key differs from `<data dir>/encryption.key`. Restore the encryption key that was used with the database, then retry the command.
+`fluxmail config migrate` preserves the source file whether the command succeeds or fails. Read the error before changing any files. A key mismatch means the configured key differs from `<data dir>/encryption.key` or cannot decrypt the existing database. Restore the key that was used with the database, then retry the command.
 
 Do not replace the key just to clear the error. Provider credentials and encrypted instance settings cannot be decrypted with a different key.
 

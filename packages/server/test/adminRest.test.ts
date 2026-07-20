@@ -214,6 +214,24 @@ describe('administrative REST API', () => {
     expect(JSON.stringify(capture.mock.calls)).not.toContain(privateSecret);
   });
 
+  it('rejects whitespace-only OAuth client secrets', async () => {
+    const { app, auth, config } = fixture();
+
+    const google = await app.request(
+      '/api/v1/admin/oauth-apps/google',
+      jsonRequest('PUT', { clientId: 'replacement-google-id', clientSecret: ' ' }, auth),
+    );
+    const outlook = await app.request(
+      '/api/v1/admin/oauth-apps/outlook',
+      jsonRequest('PUT', { clientId: 'replacement-outlook-id', clientSecret: ' ' }, auth),
+    );
+
+    expect(google.status).toBe(400);
+    expect(outlook.status).toBe(400);
+    expect(config.google?.clientId).toBe('google-client');
+    expect(config.microsoft?.clientId).toBe('microsoft-client');
+  });
+
   it('does not attribute unmatched admin paths to an OpenAPI operation', async () => {
     const capture = vi.fn();
     const telemetry = { capture, shutdown: vi.fn().mockResolvedValue(undefined) };

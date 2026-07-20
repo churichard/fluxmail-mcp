@@ -274,6 +274,42 @@ describe('Microsoft OAuth', () => {
     expect(body).toContain('client_secret=hosted-secret');
   });
 
+  it('refreshes with the OAuth application that issued the token after instance configuration changes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ access_token: 'fresh-access', expires_in: 1200 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const replacement = config(8976, 'replacement-secret');
+    replacement.microsoft = {
+      clientId: 'replacement-client',
+      clientSecret: 'replacement-secret',
+      tenantId: 'replacement-tenant',
+    };
+    const original = {
+      clientId: 'original-client',
+      clientSecret: 'original-secret',
+      tenantId: 'original-tenant',
+    };
+
+    const refreshed = await refreshMicrosoftCredentials(replacement, {
+      accessToken: 'expired-access',
+      refreshToken: 'original-refresh',
+      expiresAt: 0,
+      clientAuth: 'confidential',
+      fluxmailOAuthClient: original,
+    });
+
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('/original-tenant/oauth2/v2.0/token');
+    const body = String(fetchMock.mock.calls[0]![1]?.body);
+    expect(body).toContain('client_id=original-client');
+    expect(body).toContain('client_secret=original-secret');
+    expect(body).not.toContain('replacement');
+    expect(refreshed.fluxmailOAuthClient).toEqual(original);
+  });
+
   it('maps a rejected refresh token to an expired authorization', async () => {
     vi.stubGlobal(
       'fetch',
@@ -315,5 +351,61 @@ describe('Microsoft OAuth', () => {
         existingServer.close((error) => (error ? reject(error) : resolve())),
       );
     }
+  });
+
+  it('uses one Microsoft OAuth app throughout a loopback flow', async () => {
+    const localFetch = globalThis.fetch.bind(globalThis);
+    const portProbe = createServer();
+    await new Promise<void>((resolve) => portProbe.listen(0, '127.0.0.1', resolve));
+    const address = portProbe.address();
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind to a TCP port');
+    await new Promise<void>((resolve, reject) => portProbe.close((error) => (error ? reject(error) : resolve())));
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ access_token: 'access-token', refresh_token: 'refresh-token', expires_in: 3600 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ mail: 'me@example.com' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'inbox-id' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const liveConfig = config(address.port);
+    const oauthClient = { ...liveConfig.microsoft! };
+    let provideAuthUrl!: (url: string) => void;
+    const authUrl = new Promise<string>((resolve) => {
+      provideAuthUrl = resolve;
+    });
+
+    const flow = runMicrosoftLoopbackFlow(liveConfig, provideAuthUrl);
+    const authorizationUrl = new URL(await authUrl);
+    const state = authorizationUrl.searchParams.get('state');
+    liveConfig.microsoft = { clientId: 'replacement-client-id', tenantId: 'replacement-tenant' };
+    const response = await localFetch(
+      `http://localhost:${address.port}/oauth/microsoft/callback?state=${state}&code=authorization-code`,
+    );
+    await response.text();
+
+    await expect(flow).resolves.toMatchObject({
+      email: 'me@example.com',
+      credentials: { fluxmailOAuthClient: oauthClient },
+    });
+    expect(authorizationUrl.searchParams.get('client_id')).toBe(oauthClient.clientId);
+    expect(authorizationUrl.pathname).toBe('/common/oauth2/v2.0/authorize');
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('/common/oauth2/v2.0/token');
+    expect(String(fetchMock.mock.calls[0]![1]?.body)).toContain(`client_id=${oauthClient.clientId}`);
+    expect(String(fetchMock.mock.calls[0]![1]?.body)).not.toContain('replacement-client-id');
   });
 });

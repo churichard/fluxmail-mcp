@@ -147,6 +147,9 @@ describe('REST API discovery and authentication', () => {
       document.paths['/api/v1/admin/api-keys/{keyId}'].patch.requestBody.content['application/json'].schema.example,
     ).toEqual({ permissionProfile: 'read-only' });
     expect(
+      document.paths['/api/v1/admin/oauth-apps/{provider}'].put.requestBody.content['application/json'].schema.example,
+    ).toEqual({ clientId: 'client-id.apps.example.com', clientSecret: 'client-secret' });
+    expect(
       document.paths['/api/v1/admin/accounts/{accountId}/imap/folders'].patch.requestBody.content['application/json']
         .schema.example,
     ).toEqual({ sent: 'Sent' });

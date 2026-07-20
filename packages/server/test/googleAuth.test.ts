@@ -167,16 +167,20 @@ describe('Google OAuth callback listener', () => {
     };
 
     try {
-      const flow = runLoopbackFlow(config, provideAuthUrl, () => {
+      const oauthClient = { ...config.google! };
+      const flow = runLoopbackFlow(config, provideAuthUrl, (result) => {
+        expect(result.oauthClient).toEqual(oauthClient);
         throw new EmailError(
           'invalid_request',
           'Google authorized other@example.com, but the stored account belongs to expected@example.com.',
         );
       });
       const flowError = expect(flow).rejects.toThrow(/Google authorized other@example.com/);
-      const state = new URL(await authUrl).searchParams.get('state');
       const authorizationUrl = new URL(await authUrl);
+      const state = authorizationUrl.searchParams.get('state');
+      config.google = { clientId: 'replacement-client-id', clientSecret: 'replacement-secret' };
       expect(authorizationUrl.searchParams.get('redirect_uri')).toBe(`http://127.0.0.1:${address.port}/oauth/callback`);
+      expect(authorizationUrl.searchParams.get('client_id')).toBe(oauthClient.clientId);
       expect(authorizationUrl.searchParams.get('code_challenge')).toBe('local-code-challenge');
       expect(authorizationUrl.searchParams.get('code_challenge_method')).toBe('S256');
       const response = await fetch(

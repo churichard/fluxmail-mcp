@@ -71,7 +71,9 @@ fluxmail config migrate --from /absolute/path/to/old.env --dry-run
 fluxmail config migrate --from /absolute/path/to/old.env
 ```
 
-The command validates imported deployment values and checks the database format before writing anything. It writes deployment settings to `config.toml`, stores OAuth applications and the license in encrypted SQLite records, and preserves the source file. If the encrypted settings step fails, Fluxmail removes only the new `config.toml` and `encryption.key` files created by that import. Run `fluxmail config show` and `fluxmail oauth status` after the import. Remove the old `config.env` after you verify the result.
+If the source file sets `FLUXMAIL_DATA_DIR`, that directory is the migration target. Otherwise, the command uses `FLUXMAIL_DATA_DIR` from the process environment or the default data directory.
+
+The command validates imported deployment values and checks the database format before writing anything. If the target database already contains encrypted values, you must provide its existing encryption key. Fluxmail will not generate a replacement key for that database. The command writes deployment settings to `config.toml`, stores OAuth applications and the license in encrypted SQLite records, and preserves the source file. If the encrypted settings step fails, Fluxmail removes only the new `config.toml` and `encryption.key` files created by that import. Run `fluxmail config show` and `fluxmail oauth status` after the import. Remove the old `config.env` after you verify the result.
 
 Docker Compose and process-manager env files still work because those tools populate the process environment before Fluxmail starts.
 

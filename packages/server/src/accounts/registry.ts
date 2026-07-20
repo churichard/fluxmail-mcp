@@ -10,6 +10,7 @@ import { accountCredentials, accountMemberGrants, accounts, oauthTokens, type Fl
 import { decryptString, encryptString } from '../storage/crypto.js';
 import { assertAccountLimit, getEntitlements } from '../licensing/entitlements.js';
 import { getMember } from '../storage/members.js';
+import type { StoredGoogleOAuthApp } from '../instanceConfig.js';
 import { DEFAULT_GOOGLE_CLIENT_ID } from './defaultGoogleOAuth.js';
 import { requireGoogleConfig } from './googleAuth.js';
 import { SqliteImapStateStore } from '../storage/imapState.js';
@@ -21,10 +22,7 @@ export interface AccountAccessInput {
 }
 
 interface StoredGmailCredentials extends Credentials {
-  fluxmailOAuthClient?: {
-    clientId: string;
-    clientSecret: string;
-  };
+  fluxmailOAuthClient?: StoredGoogleOAuthApp;
 }
 
 interface CredentialState {
@@ -225,8 +223,8 @@ export class AccountRegistry {
     return row;
   }
 
-  private gmailCredentials(tokens: Credentials): StoredGmailCredentials {
-    const { clientId, clientSecret } = requireGoogleConfig(this.config);
+  private gmailCredentials(tokens: Credentials, oauthClient?: StoredGoogleOAuthApp): StoredGmailCredentials {
+    const { clientId, clientSecret } = oauthClient ?? requireGoogleConfig(this.config);
     return { ...tokens, fluxmailOAuthClient: { clientId, clientSecret } };
   }
 
@@ -339,9 +337,9 @@ export class AccountRegistry {
   }
 
   private buildOutlookProvider(accountId: string, initialState: CredentialState): EmailProvider {
-    requireMicrosoftConfig(this.config);
     let credentialState = initialState;
     let credentials = this.decryptCredentials(credentialState) as MicrosoftCredentials;
+    if (!credentials.fluxmailOAuthClient) requireMicrosoftConfig(this.config);
     let refresh: Promise<string> | undefined;
     const provider = new OutlookProvider({
       accountId,
@@ -374,6 +372,7 @@ export class AccountRegistry {
     displayName?: string,
     memberId?: string,
     access?: AccountAccessInput,
+    oauthClient?: StoredGoogleOAuthApp,
   ): Account {
     // Validate up front for a clean not_found instead of a FK constraint error.
     if (memberId) getMember(this.db, memberId);
@@ -389,7 +388,7 @@ export class AccountRegistry {
       // Re-authenticating an existing account: refresh tokens, clear error
       // state. Ownership is untouched; reassign with assignAccountOwner.
       this.db.transaction((tx) => {
-        this.writeTokenRows(tx, duplicate.id, this.gmailCredentials(tokens));
+        this.writeTokenRows(tx, duplicate.id, this.gmailCredentials(tokens, oauthClient));
         tx.update(accounts)
           .set({ status: 'active', ...(displayName ? { displayName } : {}) })
           .where(eq(accounts.id, duplicate.id))
@@ -418,7 +417,7 @@ export class AccountRegistry {
           sharedWithAll: this.normalizeAccess(access).sharedWithAll,
         })
         .run();
-      this.writeTokenRows(tx, id, this.gmailCredentials(tokens));
+      this.writeTokenRows(tx, id, this.gmailCredentials(tokens, oauthClient));
       this.writeAccess(tx, id, access);
     });
     return this.getAccount(id);

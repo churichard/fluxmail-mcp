@@ -4,6 +4,7 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -82,7 +83,7 @@ export const DEPLOYMENT_REFERENCE = {
     env: 'FLUXMAIL_DB_PATH',
     toml: 'storage.database_path',
     type: 'path',
-    validation: 'Filesystem path',
+    validation: 'Non-empty filesystem path',
     defaultValue: '<data dir>/fluxmail.db',
     description: 'Override the SQLite database path.',
     restartRequired: true,
@@ -160,6 +161,7 @@ export const DEPLOYMENT_REFERENCE = {
   licenseServerUrl: {
     canonicalName: 'licensing.server_url',
     env: 'FLUXMAIL_LICENSE_SERVER_URL',
+    toml: 'licensing.server_url',
     type: 'url',
     validation: 'HTTP or HTTPS URL',
     defaultValue: 'https://fluxmail.ai',
@@ -210,15 +212,23 @@ const ALLOWED_TOML_KEYS = new Set([
   'oauth.local',
   'oauth.local.host',
   'oauth.local.port',
+  'licensing',
+  'licensing.server_url',
 ]);
+
+const TOML_TABLE_KEYS = new Set(['storage', 'server', 'oauth', 'oauth.local', 'licensing']);
+
+function isTomlTable(value: unknown): value is TomlTable {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date);
+}
 
 function validateTomlKeys(table: TomlTable, file: string, prefix = ''): void {
   for (const [key, value] of Object.entries(table)) {
     const dotted = prefix ? `${prefix}.${key}` : key;
     if (!ALLOWED_TOML_KEYS.has(dotted)) throw new Error(`Unknown setting "${dotted}" in ${file}`);
-    if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-      validateTomlKeys(value as TomlTable, file, dotted);
-    }
+    const nested = isTomlTable(value);
+    if (TOML_TABLE_KEYS.has(dotted) && !nested) throw new Error(`"${dotted}" must be a TOML table in ${file}`);
+    if (nested) validateTomlKeys(value, file, dotted);
   }
 }
 
@@ -234,10 +244,11 @@ function tomlValue(table: TomlTable, dotted: string): unknown {
 function sourceValue(
   env: NodeJS.ProcessEnv,
   table: TomlTable,
-  envName: string,
-  tomlName: string | undefined,
+  setting: DeploymentSettingName,
 ): { value: unknown; source: ConfigSource } {
-  if (env[envName] !== undefined) return { value: env[envName], source: 'environment' };
+  const reference: DeploymentReferenceEntry = DEPLOYMENT_REFERENCE[setting];
+  if (env[reference.env] !== undefined) return { value: env[reference.env], source: 'environment' };
+  const tomlName = reference.toml;
   const fromToml = tomlName ? tomlValue(table, tomlName) : undefined;
   if (fromToml !== undefined) return { value: fromToml, source: 'toml' };
   return { value: undefined, source: 'default' };
@@ -247,6 +258,16 @@ function stringValue(name: string, input: unknown, fallback: string): string {
   if (input === undefined) return fallback;
   if (typeof input !== 'string') throw new Error(`${name} must be a string`);
   return input;
+}
+
+function pathValue(name: string, input: unknown, fallback: string): string {
+  return nonEmptyStringValue(name, input, fallback);
+}
+
+function nonEmptyStringValue(name: string, input: unknown, fallback: string): string {
+  const value = stringValue(name, input, fallback);
+  if (!value.trim()) throw new Error(`${name} cannot be empty.`);
+  return value;
 }
 
 function portValue(name: string, input: unknown, fallback: number): number {
@@ -303,6 +324,7 @@ export interface DeploymentTomlValues {
   oauthPort?: number;
   oauthHost?: string;
   maxAttachmentMb?: number;
+  licenseServerUrl?: string;
 }
 
 export function deploymentTomlValuesFromEnvironment(env: NodeJS.ProcessEnv): DeploymentTomlValues {
@@ -327,6 +349,9 @@ export function deploymentTomlValuesFromEnvironment(env: NodeJS.ProcessEnv): Dep
   }
   if (env.FLUXMAIL_MAX_ATTACHMENT_MB !== undefined) {
     values.maxAttachmentMb = maxAttachmentValue(env.FLUXMAIL_MAX_ATTACHMENT_MB) / BYTES_PER_MEGABYTE;
+  }
+  if (env.FLUXMAIL_LICENSE_SERVER_URL !== undefined) {
+    values.licenseServerUrl = stringValue('FLUXMAIL_LICENSE_SERVER_URL', env.FLUXMAIL_LICENSE_SERVER_URL, '');
   }
   return values;
 }
@@ -467,31 +492,20 @@ export function resolveDeploymentConfig(options: {
   const sources = {} as Record<DeploymentSettingName, ConfigSource>;
   sources.dataDir = dataDirRaw !== undefined ? 'environment' : 'default';
 
-  const db = sourceValue(environment, table, 'FLUXMAIL_DB_PATH', 'storage.database_path');
-  const dbRaw = stringValue('FLUXMAIL_DB_PATH', db.value, path.join(dataDir, 'fluxmail.db'));
-  sources.dbPath = db.source;
+  const deploymentValue = (setting: DeploymentSettingName): unknown => {
+    const resolved = sourceValue(environment, table, setting);
+    sources[setting] = resolved.source;
+    return resolved.value;
+  };
 
-  const port = sourceValue(environment, table, 'FLUXMAIL_PORT', 'server.port');
-  const portNumber = portValue('FLUXMAIL_PORT', port.value, 8977);
-  sources.port = port.source;
-
-  const publicUrl = sourceValue(environment, table, 'FLUXMAIL_PUBLIC_URL', 'server.public_url');
-  sources.publicUrl = publicUrl.source;
-
-  const trustProxy = sourceValue(environment, table, 'FLUXMAIL_TRUST_PROXY', 'server.trust_proxy');
-  sources.trustProxy = trustProxy.source;
-
-  const oauthPort = sourceValue(environment, table, 'FLUXMAIL_OAUTH_PORT', 'oauth.local.port');
-  sources.oauthPort = oauthPort.source;
-
-  const oauthHost = sourceValue(environment, table, 'FLUXMAIL_OAUTH_HOST', 'oauth.local.host');
-  sources.oauthHost = oauthHost.source;
-
-  const maxAttachment = sourceValue(environment, table, 'FLUXMAIL_MAX_ATTACHMENT_MB', 'server.max_attachment_mb');
-  sources.maxAttachmentBytes = maxAttachment.source;
-
-  const licenseServer = sourceValue(environment, table, 'FLUXMAIL_LICENSE_SERVER_URL', undefined);
-  sources.licenseServerUrl = licenseServer.source;
+  const dbRaw = pathValue('FLUXMAIL_DB_PATH', deploymentValue('dbPath'), path.join(dataDir, 'fluxmail.db'));
+  const portNumber = portValue('FLUXMAIL_PORT', deploymentValue('port'), 8977);
+  const publicUrl = deploymentValue('publicUrl');
+  const trustProxy = deploymentValue('trustProxy');
+  const oauthPort = deploymentValue('oauthPort');
+  const oauthHost = deploymentValue('oauthHost');
+  const maxAttachment = deploymentValue('maxAttachmentBytes');
+  const licenseServer = deploymentValue('licenseServerUrl');
 
   const encryption = resolveEncryptionKey(dataDir, environment, options.generateEncryptionKey !== false);
   sources.encryptionKey = encryption.source;
@@ -501,15 +515,15 @@ export function resolveDeploymentConfig(options: {
     dbPath: expandHome(dbRaw),
     encryptionKey: encryption.value,
     port: portNumber,
-    publicUrl: publicUrlValue(publicUrl.value, portNumber),
-    publicUrlConfigured: publicUrl.value !== undefined,
-    trustProxy: booleanValue('FLUXMAIL_TRUST_PROXY', trustProxy.value, false),
-    oauthPort: portValue('FLUXMAIL_OAUTH_PORT', oauthPort.value, 8976),
-    oauthHost: stringValue('FLUXMAIL_OAUTH_HOST', oauthHost.value, '127.0.0.1'),
-    maxAttachmentBytes: maxAttachmentValue(maxAttachment.value),
+    publicUrl: publicUrlValue(publicUrl, portNumber),
+    publicUrlConfigured: publicUrl !== undefined,
+    trustProxy: booleanValue('FLUXMAIL_TRUST_PROXY', trustProxy, false),
+    oauthPort: portValue('FLUXMAIL_OAUTH_PORT', oauthPort, 8976),
+    oauthHost: nonEmptyStringValue('FLUXMAIL_OAUTH_HOST', oauthHost, '127.0.0.1'),
+    maxAttachmentBytes: maxAttachmentValue(maxAttachment),
     licenseServerUrl: stringValue(
       'FLUXMAIL_LICENSE_SERVER_URL',
-      licenseServer.value,
+      licenseServer,
       options.defaultLicenseServerUrl,
     ).replace(/\/+$/, ''),
     configFile,
@@ -538,6 +552,7 @@ export function deploymentToml(values: DeploymentTomlValues = {}): string {
       max_attachment_mb: values.maxAttachmentMb ?? 10,
     },
     oauth: { local: { host: values.oauthHost ?? '127.0.0.1', port: values.oauthPort ?? 8976 } },
+    ...(values.licenseServerUrl ? { licensing: { server_url: values.licenseServerUrl } } : {}),
   });
 }
 
@@ -547,14 +562,21 @@ export function writeDeploymentConfig(file: string, content: string, options: { 
   const temporary = path.join(directory, `.config.toml.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
   let descriptor: number | undefined;
   try {
-    if (options.exclusive && existsSync(file)) throw new Error(`${file} already exists`);
     descriptor = openSync(temporary, 'wx', 0o600);
     writeFileSync(descriptor, content.endsWith('\n') ? content : `${content}\n`, 'utf8');
     fsyncSync(descriptor);
     closeSync(descriptor);
     descriptor = undefined;
-    if (options.exclusive && existsSync(file)) throw new Error(`${file} already exists`);
-    renameSync(temporary, file);
+    if (options.exclusive) {
+      try {
+        linkSync(temporary, file);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`${file} already exists`);
+        throw error;
+      }
+    } else {
+      renameSync(temporary, file);
+    }
     tryRestrictPermissions(file);
     trySyncDirectory(directory);
   } finally {

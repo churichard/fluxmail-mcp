@@ -377,6 +377,10 @@ export class ConfigurationService {
   private readonly googleEnvironment: ReturnType<typeof environmentGoogle>;
   private readonly microsoftEnvironment: ReturnType<typeof environmentMicrosoft>;
   private readonly licenseEnvironment: ReturnType<typeof environmentLicense>;
+  private currentGoogle!: NonNullable<FluxmailConfig['google']>;
+  private currentMicrosoft: FluxmailConfig['microsoft'];
+  private currentLicenseKey: string | undefined;
+  private observedDataVersion = -1;
   private googleSource: Exclude<OAuthAppSource, null> = 'built-in';
   private microsoftSource: OAuthAppSource = null;
   private currentLicenseSource: EnvironmentSource | 'stored' | null = null;
@@ -389,43 +393,75 @@ export class ConfigurationService {
     this.googleEnvironment = environmentGoogle(deployment.environment);
     this.microsoftEnvironment = environmentMicrosoft(deployment.environment);
     this.licenseEnvironment = environmentLicense(deployment.environment);
-    this.config = baseConfigFromDeployment(deployment);
+    const config = baseConfigFromDeployment(deployment);
+    Object.defineProperties(config, {
+      google: {
+        enumerable: true,
+        get: () => {
+          this.refreshIfChanged();
+          return this.currentGoogle;
+        },
+      },
+      microsoft: {
+        enumerable: true,
+        get: () => {
+          this.refreshIfChanged();
+          return this.currentMicrosoft;
+        },
+      },
+      licenseKey: {
+        enumerable: true,
+        get: () => {
+          this.refreshIfChanged();
+          return this.currentLicenseKey;
+        },
+      },
+      licenseKeyFromEnvironment: {
+        enumerable: true,
+        value: this.licenseEnvironment.controlled,
+      },
+    });
+    this.config = config;
     this.reload();
   }
 
+  private refreshIfChanged(): void {
+    if (this.store.dataVersion() !== this.observedDataVersion) this.reload();
+  }
+
   reload(): FluxmailConfig {
-    const storedGoogle = this.googleEnvironment.controlled ? undefined : this.store.google();
-    this.config.google = this.googleEnvironment.value ??
-      storedGoogle ?? { clientId: DEFAULT_GOOGLE_CLIENT_ID, clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET };
-    this.googleSource = this.googleEnvironment.source ?? (storedGoogle ? 'stored' : 'built-in');
+    while (true) {
+      const dataVersion = this.store.dataVersion();
+      const storedGoogle = this.googleEnvironment.controlled ? undefined : this.store.google();
+      const storedMicrosoft = this.microsoftEnvironment.controlled ? undefined : this.store.microsoft();
+      const storedLicense = this.licenseEnvironment.controlled ? undefined : this.store.licenseKey();
+      if (this.store.dataVersion() !== dataVersion) continue;
 
-    const storedMicrosoft = this.microsoftEnvironment.controlled ? undefined : this.store.microsoft();
-    const microsoft = this.microsoftEnvironment.value ?? storedMicrosoft;
-    if (microsoft) this.config.microsoft = microsoft;
-    else delete this.config.microsoft;
-    this.microsoftSource = this.microsoftEnvironment.source ?? (storedMicrosoft ? 'stored' : null);
-
-    const storedLicense = this.licenseEnvironment.controlled ? undefined : this.store.licenseKey();
-    const licenseKey = this.licenseEnvironment.value ?? storedLicense;
-    if (licenseKey) this.config.licenseKey = licenseKey;
-    else delete this.config.licenseKey;
-    this.config.licenseKeyFromEnvironment = this.licenseEnvironment.controlled;
-    this.currentLicenseSource = this.licenseEnvironment.source ?? (storedLicense ? 'stored' : null);
-    return this.config;
+      this.currentGoogle = this.googleEnvironment.value ??
+        storedGoogle ?? { clientId: DEFAULT_GOOGLE_CLIENT_ID, clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET };
+      this.googleSource = this.googleEnvironment.source ?? (storedGoogle ? 'stored' : 'built-in');
+      this.currentMicrosoft = this.microsoftEnvironment.value ?? storedMicrosoft;
+      this.microsoftSource = this.microsoftEnvironment.source ?? (storedMicrosoft ? 'stored' : null);
+      this.currentLicenseKey = this.licenseEnvironment.value ?? storedLicense;
+      this.currentLicenseSource = this.licenseEnvironment.source ?? (storedLicense ? 'stored' : null);
+      this.observedDataVersion = dataVersion;
+      return this.config;
+    }
   }
 
   oauthStatus(): OAuthAppStatus {
+    this.refreshIfChanged();
     return {
       google: {
-        clientId: this.config.google!.clientId,
+        clientId: this.currentGoogle.clientId,
         clientSecretConfigured: true,
         source: this.googleSource,
         mutable: !this.googleEnvironment.controlled,
       },
       outlook: {
-        clientId: this.config.microsoft?.clientId ?? null,
-        tenantId: this.config.microsoft?.tenantId ?? null,
-        clientSecretConfigured: Boolean(this.config.microsoft?.clientSecret),
+        clientId: this.currentMicrosoft?.clientId ?? null,
+        tenantId: this.currentMicrosoft?.tenantId ?? null,
+        clientSecretConfigured: Boolean(this.currentMicrosoft?.clientSecret),
         source: this.microsoftSource,
         mutable: !this.microsoftEnvironment.controlled,
       },
@@ -433,6 +469,7 @@ export class ConfigurationService {
   }
 
   licenseSource(): 'environment' | 'environment-file' | 'stored' | null {
+    this.refreshIfChanged();
     return this.currentLicenseSource;
   }
 
@@ -463,6 +500,8 @@ export class ConfigurationService {
         'Microsoft OAuth is controlled by environment variables and cannot be changed through the API.',
       );
     }
+    this.refreshIfChanged();
+    if (this.currentMicrosoft) this.store.pinMicrosoftOAuthAppForAccounts(this.currentMicrosoft);
     this.store.setMicrosoft(value);
     this.reload();
   }
@@ -473,6 +512,8 @@ export class ConfigurationService {
         'Microsoft OAuth is controlled by environment variables and cannot be changed through the API.',
       );
     }
+    this.refreshIfChanged();
+    if (this.currentMicrosoft) this.store.pinMicrosoftOAuthAppForAccounts(this.currentMicrosoft);
     const removed = this.store.removeMicrosoft();
     this.reload();
     return removed;

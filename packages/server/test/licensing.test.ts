@@ -13,7 +13,12 @@ import {
   readLeaseRow,
   saveLeaseToken,
 } from '../src/licensing/entitlements.js';
-import { LicenseController, loadInstanceId, refreshLicense } from '../src/licensing/refresher.js';
+import {
+  LICENSE_CONFIG_RECHECK_MS,
+  LicenseController,
+  loadInstanceId,
+  refreshLicense,
+} from '../src/licensing/refresher.js';
 import { activateLicense } from '../src/licensing/activation.js';
 import { ConfigurationService, type DeploymentConfig } from '../src/config.js';
 import { openDb } from '../src/storage/db.js';
@@ -466,6 +471,40 @@ describe('activateLicense', () => {
 
 describe('LicenseController', () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it('notices a license stored through another local database connection', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('FLUXMAIL_LICENSE_PUBLIC_KEYS', keys.publicKeyB64);
+    const dir = mkdtempSync(path.join(tmpdir(), 'fluxmail-controller-local-cli-'));
+    const dbPath = path.join(dir, 'fluxmail.db');
+    const runningDb = openDb(dbPath, { dataDir: dir });
+    const localCliDb = openDb(dbPath, { dataDir: dir });
+    const running = configurationFor(runningDb, dir);
+    const localCli = configurationFor(localCliDb, dir);
+    const token = signLease(keys.privateKey, leasePayload());
+    const { fetchImpl, calls } = fakeFetch(() => Response.json({ lease: token }));
+    const controller = new LicenseController({
+      db: runningDb,
+      config: running.config,
+      configuration: running,
+      fetchImpl,
+    });
+    try {
+      controller.start();
+      expect(calls).toHaveLength(0);
+
+      localCli.setLicenseKey(`fluxmail_lic_${'ef'.repeat(20)}`);
+      await vi.advanceTimersByTimeAsync(LICENSE_CONFIG_RECHECK_MS);
+
+      expect(calls).toHaveLength(1);
+      expect(readLeaseRow(runningDb)?.token).toBe(token);
+    } finally {
+      controller.stop();
+      (runningDb as unknown as { $client: { close(): void } }).$client.close();
+      (localCliDb as unknown as { $client: { close(): void } }).$client.close();
+      vi.useRealTimers();
+    }
+  });
 
   it('reloads a newly stored key when the running controller is woken', async () => {
     vi.stubEnv('FLUXMAIL_LICENSE_PUBLIC_KEYS', keys.publicKeyB64);

@@ -19,12 +19,13 @@ Remote administrative requests require HTTPS. Requests from the local computer c
 ## Request
 
 ```bash
-curl 'http://localhost:8977/api/v1/admin/oauth-apps/provider_123' \
+curl 'http://localhost:8977/api/v1/admin/oauth-apps/google' \
   -X PUT \
   -H "Authorization: Bearer $FLUXMAIL_API_KEY" \
   -H "Content-Type: application/json" \
   --data '{
-  "clientId": "client-id.apps.example.com"
+  "clientId": "client-id.apps.example.com",
+  "clientSecret": "client-secret"
 }'
 ```
 
@@ -70,7 +71,11 @@ Content type: `application/json`
   "required": [
     "clientId"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "example": {
+    "clientId": "client-id.apps.example.com",
+    "clientSecret": "client-secret"
+  }
 }
 ```
 

@@ -1,7 +1,9 @@
+import { execFile } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createCliProgram,
@@ -9,9 +11,22 @@ import {
   permissionPolicyFromOptions,
   waitForServerListening,
 } from '../src/cli.js';
+import { resolveDeploymentConfig } from '../src/config.js';
 import { createContext } from '../src/context.js';
+import { InstanceConfigStore } from '../src/instanceConfig.js';
 import { customPermissionPolicy, permissionPolicyForProfile } from '../src/permissions.js';
-import { instanceSettings } from '../src/storage/db.js';
+import { encryptString } from '../src/storage/crypto.js';
+import {
+  accountCredentials,
+  accounts,
+  inspectStoreCompatibility,
+  instanceSettings,
+  openDb,
+} from '../src/storage/db.js';
+
+const runFile = promisify(execFile);
+const configMigrationModuleUrl = new URL('../src/configMigration.ts', import.meta.url).href;
+const fileLockModuleUrl = new URL('../src/storage/fileLock.ts', import.meta.url).href;
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -221,6 +236,29 @@ describe('CLI telemetry', () => {
     expect(JSON.stringify(capture.mock.calls)).not.toContain(dataDir);
   });
 
+  it('shows configuration without migrating the database or generating an encryption key', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-config-show-'));
+    const dbPath = path.join(dataDir, 'fluxmail.db');
+    const db = openDb(dbPath, { dataDir, backupBeforeMigration: false });
+    (db as unknown as { $client: { pragma(source: string): void; close(): void } }).$client.pragma('user_version = 1');
+    (db as unknown as { $client: { close(): void } }).$client.close();
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { telemetry } = telemetrySpy();
+
+    expect(inspectStoreCompatibility(dbPath, dataDir).storeFormat).toBe(1);
+    await createCliProgram({ telemetry, updateNotifierFactory: () => ({ notify: () => {} }) }).parseAsync([
+      'node',
+      'fluxmail',
+      'config',
+      'show',
+    ]);
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(`Database: ${dbPath}`));
+    expect(inspectStoreCompatibility(dbPath, dataDir).storeFormat).toBe(1);
+    expect(existsSync(path.join(dataDir, 'encryption.key'))).toBe(false);
+  });
+
   it('dry-runs an explicit config migration without deleting the source or recording its secret', async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-config-'));
     const source = path.join(dataDir, 'legacy.env');
@@ -271,6 +309,7 @@ describe('CLI telemetry', () => {
     const legacyDb = path.join(dataDir, 'legacy.db');
     const privateSecret = 'manual-migration-secret';
     const licenseKey = `fluxmail_lic_${'ab'.repeat(20)}`;
+    const licenseServerUrl = 'http://127.0.0.1:9898';
     writeFileSync(
       legacyFile,
       [
@@ -280,6 +319,7 @@ describe('CLI telemetry', () => {
         'GOOGLE_CLIENT_ID=manual-google-id',
         `GOOGLE_CLIENT_SECRET=${privateSecret}`,
         `FLUXMAIL_LICENSE_KEY=${licenseKey}`,
+        `FLUXMAIL_LICENSE_SERVER_URL=${licenseServerUrl}`,
         'FLUXMAIL_TELEMETRY=0',
       ].join('\n') + '\n',
       { mode: 0o600 },
@@ -313,6 +353,7 @@ describe('CLI telemetry', () => {
       expect(context.config.port).toBe(9123);
       expect(context.config.google).toEqual({ clientId: 'manual-google-id', clientSecret: privateSecret });
       expect(context.config.licenseKey).toBe(licenseKey);
+      expect(context.config.licenseServerUrl).toBe(licenseServerUrl);
       expect(context.configuration.store.google()).toEqual({
         clientId: 'manual-google-id',
         clientSecret: privateSecret,
@@ -327,6 +368,222 @@ describe('CLI telemetry', () => {
     expect(JSON.stringify(capture.mock.calls)).not.toContain(privateSecret);
     expect(JSON.stringify(capture.mock.calls)).not.toContain(licenseKey);
     expect(JSON.stringify(capture.mock.calls)).not.toContain(legacyFile);
+  });
+
+  it('waits for another migration in the same data directory', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-config-'));
+    const source = path.join(dataDir, 'legacy.env');
+    const ready = path.join(dataDir, 'lock-ready');
+    const release = path.join(dataDir, 'lock-release');
+    const lock = path.join(dataDir, '.config-migration.lock');
+    writeFileSync(
+      source,
+      [`FLUXMAIL_DATA_DIR=${dataDir}`, `FLUXMAIL_ENCRYPTION_KEY=${'56'.repeat(32)}`, 'FLUXMAIL_PORT=9123'].join('\n') +
+        '\n',
+      { mode: 0o600 },
+    );
+    const holderScript = `
+      import { existsSync, writeFileSync } from 'node:fs';
+      import { withFileLock } from ${JSON.stringify(fileLockModuleUrl)};
+      const waitArray = new Int32Array(new SharedArrayBuffer(4));
+      withFileLock(process.argv[1], {
+        timeoutMs: 5_000,
+        staleMs: 30_000,
+        description: 'test migration lock',
+      }, () => {
+        writeFileSync(process.argv[2], 'ready');
+        while (!existsSync(process.argv[3])) Atomics.wait(waitArray, 0, 0, 5);
+      });
+    `;
+    const migrationScript = `
+      import { migrateConfigurationFile } from ${JSON.stringify(configMigrationModuleUrl)};
+      migrateConfigurationFile(process.argv[1]);
+    `;
+    const holder = runFile(process.execPath, [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '-e',
+      holderScript,
+      lock,
+      ready,
+      release,
+    ]);
+    for (let attempt = 0; attempt < 500 && !existsSync(ready); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(existsSync(ready)).toBe(true);
+
+    const migration = runFile(process.execPath, [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '-e',
+      migrationScript,
+      source,
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(existsSync(path.join(dataDir, 'config.toml'))).toBe(false);
+    expect(existsSync(path.join(dataDir, 'encryption.key'))).toBe(false);
+
+    writeFileSync(release, 'release');
+    await holder;
+    await migration;
+    expect(readFileSync(path.join(dataDir, 'config.toml'), 'utf8')).toContain('9123');
+    expect(readFileSync(path.join(dataDir, 'encryption.key'), 'utf8').trim()).toBe('56'.repeat(32));
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('uses FLUXMAIL_DATA_DIR from the migration file as the target', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-config-'));
+    const processDataDir = path.join(root, 'process-data');
+    const importedDataDir = path.join(root, 'imported-data');
+    const source = path.join(root, 'legacy.env');
+    writeFileSync(source, `FLUXMAIL_DATA_DIR=${importedDataDir}\nFLUXMAIL_PORT=9123\n`, { mode: 0o600 });
+    vi.stubEnv('FLUXMAIL_DATA_DIR', processDataDir);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { telemetry } = telemetrySpy();
+
+    await createCliProgram({ telemetry, updateNotifierFactory: () => ({ notify: () => {} }) }).parseAsync([
+      'node',
+      'fluxmail',
+      'config',
+      'migrate',
+      '--from',
+      source,
+    ]);
+
+    expect(readFileSync(path.join(importedDataDir, 'config.toml'), 'utf8')).toContain('9123');
+    expect(existsSync(path.join(processDataDir, 'config.toml'))).toBe(false);
+  });
+
+  it('requires the existing encryption key before importing instance settings', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-config-'));
+    const source = path.join(dataDir, 'legacy.env');
+    const oldKey = '67'.repeat(32);
+    const deployment = resolveDeploymentConfig({
+      env: { FLUXMAIL_DATA_DIR: dataDir, FLUXMAIL_ENCRYPTION_KEY: oldKey },
+      defaultLicenseServerUrl: 'https://fluxmail.ai',
+      generateEncryptionKey: false,
+    });
+    const db = openDb(deployment.dbPath, { dataDir });
+    new InstanceConfigStore(db, deployment.encryptionKey).setMicrosoft({
+      clientId: 'existing-client',
+      tenantId: 'common',
+    });
+    (db as unknown as { $client: { close(): void } }).$client.close();
+    writeFileSync(source, 'GOOGLE_CLIENT_ID=new-client\nGOOGLE_CLIENT_SECRET=new-secret\n', { mode: 0o600 });
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    const { telemetry } = telemetrySpy();
+
+    await expect(
+      createCliProgram({ telemetry, updateNotifierFactory: () => ({ notify: () => {} }) }).parseAsync([
+        'node',
+        'fluxmail',
+        'config',
+        'migrate',
+        '--from',
+        source,
+      ]),
+    ).rejects.toThrow(/no encryption key was provided/);
+
+    expect(existsSync(path.join(dataDir, 'encryption.key'))).toBe(false);
+    expect(existsSync(path.join(dataDir, 'config.toml'))).toBe(false);
+    const reopened = openDb(deployment.dbPath, { dataDir });
+    try {
+      const store = new InstanceConfigStore(reopened, deployment.encryptionKey);
+      expect(store.microsoft()).toEqual({ clientId: 'existing-client', tenantId: 'common' });
+      expect(store.google()).toBeUndefined();
+    } finally {
+      (reopened as unknown as { $client: { close(): void } }).$client.close();
+    }
+  });
+
+  it('rejects a mismatched encryption key when the database contains encrypted credentials', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-config-'));
+    const source = path.join(dataDir, 'legacy.env');
+    const existingKey = '68'.repeat(32);
+    const deployment = resolveDeploymentConfig({
+      env: { FLUXMAIL_DATA_DIR: dataDir, FLUXMAIL_ENCRYPTION_KEY: existingKey },
+      defaultLicenseServerUrl: 'https://fluxmail.ai',
+      generateEncryptionKey: false,
+    });
+    const db = openDb(deployment.dbPath, { dataDir });
+    const encryptedCredentials = encryptString(
+      deployment.encryptionKey,
+      JSON.stringify({ host: 'imap.example.com', password: 'existing-secret' }),
+    );
+    db.insert(accounts)
+      .values({
+        id: 'acct_existing',
+        provider: 'imap',
+        email: 'existing@example.com',
+        createdAt: Date.now(),
+      })
+      .run();
+    db.insert(accountCredentials)
+      .values({
+        accountId: 'acct_existing',
+        encryptedCredentials,
+        updatedAt: Date.now(),
+      })
+      .run();
+    (db as unknown as { $client: { close(): void } }).$client.close();
+    writeFileSync(
+      source,
+      [
+        `FLUXMAIL_ENCRYPTION_KEY=${'69'.repeat(32)}`,
+        'GOOGLE_CLIENT_ID=new-client',
+        'GOOGLE_CLIENT_SECRET=new-secret',
+      ].join('\n') + '\n',
+      { mode: 0o600 },
+    );
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    const { telemetry } = telemetrySpy();
+
+    await expect(
+      createCliProgram({ telemetry, updateNotifierFactory: () => ({ notify: () => {} }) }).parseAsync([
+        'node',
+        'fluxmail',
+        'config',
+        'migrate',
+        '--from',
+        source,
+      ]),
+    ).rejects.toThrow(/does not match the encrypted data/);
+
+    expect(existsSync(path.join(dataDir, 'encryption.key'))).toBe(false);
+    expect(existsSync(path.join(dataDir, 'config.toml'))).toBe(false);
+    const reopened = openDb(deployment.dbPath, { dataDir });
+    try {
+      const store = new InstanceConfigStore(reopened, deployment.encryptionKey);
+      expect(reopened.select().from(accountCredentials).all()).toEqual([
+        expect.objectContaining({ accountId: 'acct_existing', encryptedCredentials }),
+      ]);
+      expect(store.google()).toBeUndefined();
+    } finally {
+      (reopened as unknown as { $client: { close(): void } }).$client.close();
+    }
+  });
+
+  it.each(['no', 'off'])('does not persist a false DO_NOT_TRACK value during migration: %s', async (value) => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-config-'));
+    const source = path.join(dataDir, 'legacy.env');
+    writeFileSync(source, `DO_NOT_TRACK=${value}\n`, { mode: 0o600 });
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { telemetry } = telemetrySpy();
+
+    await createCliProgram({ telemetry, updateNotifierFactory: () => ({ notify: () => {} }) }).parseAsync([
+      'node',
+      'fluxmail',
+      'config',
+      'migrate',
+      '--from',
+      source,
+    ]);
+
+    expect(existsSync(path.join(dataDir, 'telemetry.disabled'))).toBe(false);
   });
 
   it('validates imported deployment values before writing files, even when the process overrides them', async () => {
@@ -353,6 +610,49 @@ describe('CLI telemetry', () => {
     expect(existsSync(source)).toBe(true);
     expect(existsSync(path.join(dataDir, 'config.toml'))).toBe(false);
     expect(existsSync(path.join(dataDir, 'encryption.key'))).toBe(false);
+  });
+
+  it('imports instance settings into the database selected by the migrated deployment configuration', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-config-'));
+    const source = path.join(dataDir, 'legacy.env');
+    const targetDb = path.join(dataDir, 'target.db');
+    const processOverrideDb = path.join(dataDir, 'process-override.db');
+    writeFileSync(
+      source,
+      [
+        `FLUXMAIL_DB_PATH=${targetDb}`,
+        `FLUXMAIL_ENCRYPTION_KEY=${'45'.repeat(32)}`,
+        'GOOGLE_CLIENT_ID=migrated-google-id',
+        'GOOGLE_CLIENT_SECRET=migrated-google-secret',
+      ].join('\n') + '\n',
+      { mode: 0o600 },
+    );
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    vi.stubEnv('FLUXMAIL_DB_PATH', processOverrideDb);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { telemetry } = telemetrySpy();
+
+    await createCliProgram({ telemetry, updateNotifierFactory: () => ({ notify: () => {} }) }).parseAsync([
+      'node',
+      'fluxmail',
+      'config',
+      'migrate',
+      '--from',
+      source,
+    ]);
+
+    delete process.env.FLUXMAIL_DB_PATH;
+    const context = createContext();
+    try {
+      expect(context.config.dbPath).toBe(targetDb);
+      expect(context.configuration.store.google()).toEqual({
+        clientId: 'migrated-google-id',
+        clientSecret: 'migrated-google-secret',
+      });
+    } finally {
+      context.licenseController.stop();
+      (context.db as unknown as { $client: { close(): void } }).$client.close();
+    }
   });
 
   it('removes newly created configuration files when encrypted instance import cannot open the database', async () => {
