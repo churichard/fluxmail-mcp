@@ -357,11 +357,20 @@ describe('REST email operations', () => {
   it('records operation telemetry without request data', async () => {
     const { auth, config, db, service } = fixture();
     const capture = vi.fn();
+    const warn = vi.fn();
+    const logError = vi.fn();
     const app = createRestApi({
       config,
       db,
       service: service as never,
       telemetry: { capture, shutdown: async () => undefined },
+      logger: {
+        info: vi.fn(),
+        warn,
+        error: logError,
+        flush: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+      },
     });
     expect((await app.request('/api/v1')).status).toBe(200);
     expect((await app.request('/api/v1/status', { headers: auth })).status).toBe(200);
@@ -391,6 +400,13 @@ describe('REST email operations', () => {
     );
     expect(JSON.stringify(capture.mock.calls)).not.toContain('me@example.com');
     expect(JSON.stringify(capture.mock.calls)).not.toContain('private-project');
+    expect(warn).toHaveBeenCalledWith(
+      'rest.operation_failed',
+      'private-project denied',
+      expect.objectContaining({ code: 'permission_denied' }),
+      expect.objectContaining({ productSurface: 'rest', operation: 'listLabels' }),
+    );
+    expect(logError).not.toHaveBeenCalled();
   });
 });
 

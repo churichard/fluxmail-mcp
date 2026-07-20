@@ -18,6 +18,7 @@ import {
   type DeploymentSettingName,
 } from './deploymentConfig.js';
 import { InstanceConfigStore, type StoredMicrosoftOAuthApp } from './instanceConfig.js';
+import type { LogDestination, LogLevel } from './logging.js';
 import type { FluxmailDb } from './storage/db.js';
 
 export {
@@ -214,6 +215,8 @@ export interface FluxmailConfig {
   oauthPort: number;
   oauthHost: string;
   maxAttachmentBytes: number;
+  logLevel: LogLevel;
+  logDestination: LogDestination;
   licenseKey?: string;
   licenseKeyFromEnvironment?: boolean;
   licenseServerUrl: string;
@@ -324,6 +327,8 @@ function baseConfigFromDeployment(deployment: DeploymentConfig): FluxmailConfig 
     oauthPort: deployment.oauthPort,
     oauthHost: deployment.oauthHost,
     maxAttachmentBytes: deployment.maxAttachmentBytes,
+    logLevel: deployment.logLevel,
+    logDestination: deployment.logDestination,
     licenseServerUrl: deployment.licenseServerUrl,
   };
 }
@@ -344,6 +349,15 @@ export function resolveDataDir(options: { env?: NodeJS.ProcessEnv } = {}): strin
   const dataDir = resolveDataDirectory(options.env);
   mkdirSync(dataDir, { recursive: true });
   return dataDir;
+}
+
+export function readLoggingSettings(dataDir = resolveDataDir()): { level: LogLevel; destination: LogDestination } {
+  const deployment = resolveDeploymentConfig({
+    env: { ...process.env, FLUXMAIL_DATA_DIR: dataDir },
+    defaultLicenseServerUrl: DEFAULT_LICENSE_SERVER_URL,
+    generateEncryptionKey: false,
+  });
+  return { level: deployment.logLevel, destination: deployment.logDestination };
 }
 
 export function resolveStoreLocation(options: { env?: NodeJS.ProcessEnv } = {}): FluxmailStoreLocation {

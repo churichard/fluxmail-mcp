@@ -15,6 +15,7 @@ import {
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { parse, stringify, type TomlTable } from 'smol-toml';
+import type { LogDestination, LogLevel } from './logging.js';
 import { withFileLock } from './storage/fileLock.js';
 
 export type ConfigSource =
@@ -37,6 +38,8 @@ export interface DeploymentConfig {
   oauthPort: number;
   oauthHost: string;
   maxAttachmentBytes: number;
+  logLevel: LogLevel;
+  logDestination: LogDestination;
   licenseServerUrl: string;
   configFile: string;
   environment: NodeJS.ProcessEnv;
@@ -53,6 +56,8 @@ export type DeploymentSettingName =
   | 'oauthPort'
   | 'oauthHost'
   | 'maxAttachmentBytes'
+  | 'logLevel'
+  | 'logDestination'
   | 'licenseServerUrl';
 
 export interface DeploymentReferenceEntry {
@@ -158,6 +163,26 @@ export const DEPLOYMENT_REFERENCE = {
     description: 'Largest decoded attachment returned through MCP or REST, from 1 through 25 MB.',
     restartRequired: true,
   },
+  logLevel: {
+    canonicalName: 'logging.level',
+    env: 'FLUXMAIL_LOG_LEVEL',
+    toml: 'logging.level',
+    type: 'string',
+    validation: 'info, warn, error, or off',
+    defaultValue: 'info',
+    description: 'Minimum severity retained by the bounded local logger.',
+    restartRequired: true,
+  },
+  logDestination: {
+    canonicalName: 'logging.destination',
+    env: 'FLUXMAIL_LOG_DESTINATION',
+    toml: 'logging.destination',
+    type: 'string',
+    validation: 'both, file, or console',
+    defaultValue: 'both',
+    description: 'Write local logs to both the rotating file and console, or choose file or console.',
+    restartRequired: true,
+  },
   licenseServerUrl: {
     canonicalName: 'licensing.server_url',
     env: 'FLUXMAIL_LICENSE_SERVER_URL',
@@ -212,11 +237,14 @@ const ALLOWED_TOML_KEYS = new Set([
   'oauth.local',
   'oauth.local.host',
   'oauth.local.port',
+  'logging',
+  'logging.level',
+  'logging.destination',
   'licensing',
   'licensing.server_url',
 ]);
 
-const TOML_TABLE_KEYS = new Set(['storage', 'server', 'oauth', 'oauth.local', 'licensing']);
+const TOML_TABLE_KEYS = new Set(['storage', 'server', 'oauth', 'oauth.local', 'logging', 'licensing']);
 
 function isTomlTable(value: unknown): value is TomlTable {
   return value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date);
@@ -300,6 +328,22 @@ function maxAttachmentValue(input: unknown): number {
   return value * BYTES_PER_MEGABYTE;
 }
 
+function logLevelValue(input: unknown): LogLevel {
+  const value = nonEmptyStringValue('FLUXMAIL_LOG_LEVEL', input, 'info').trim().toLowerCase();
+  if (value !== 'info' && value !== 'warn' && value !== 'error' && value !== 'off') {
+    throw new Error(`FLUXMAIL_LOG_LEVEL must be info, warn, error, or off, got "${value}"`);
+  }
+  return value;
+}
+
+function logDestinationValue(input: unknown): LogDestination {
+  const value = nonEmptyStringValue('FLUXMAIL_LOG_DESTINATION', input, 'both').trim().toLowerCase();
+  if (value !== 'both' && value !== 'file' && value !== 'console') {
+    throw new Error(`FLUXMAIL_LOG_DESTINATION must be both, file, or console, got "${value}"`);
+  }
+  return value;
+}
+
 function publicUrlValue(input: unknown, port: number): string {
   const value = stringValue('FLUXMAIL_PUBLIC_URL', input, `http://localhost:${port}`).replace(/\/+$/, '');
   let parsed: URL;
@@ -324,6 +368,8 @@ export interface DeploymentTomlValues {
   oauthPort?: number;
   oauthHost?: string;
   maxAttachmentMb?: number;
+  logLevel?: LogLevel;
+  logDestination?: LogDestination;
   licenseServerUrl?: string;
 }
 
@@ -349,6 +395,12 @@ export function deploymentTomlValuesFromEnvironment(env: NodeJS.ProcessEnv): Dep
   }
   if (env.FLUXMAIL_MAX_ATTACHMENT_MB !== undefined) {
     values.maxAttachmentMb = maxAttachmentValue(env.FLUXMAIL_MAX_ATTACHMENT_MB) / BYTES_PER_MEGABYTE;
+  }
+  if (env.FLUXMAIL_LOG_LEVEL !== undefined) {
+    values.logLevel = logLevelValue(env.FLUXMAIL_LOG_LEVEL);
+  }
+  if (env.FLUXMAIL_LOG_DESTINATION !== undefined) {
+    values.logDestination = logDestinationValue(env.FLUXMAIL_LOG_DESTINATION);
   }
   if (env.FLUXMAIL_LICENSE_SERVER_URL !== undefined) {
     values.licenseServerUrl = stringValue('FLUXMAIL_LICENSE_SERVER_URL', env.FLUXMAIL_LICENSE_SERVER_URL, '');
@@ -505,6 +557,8 @@ export function resolveDeploymentConfig(options: {
   const oauthPort = deploymentValue('oauthPort');
   const oauthHost = deploymentValue('oauthHost');
   const maxAttachment = deploymentValue('maxAttachmentBytes');
+  const logLevel = deploymentValue('logLevel');
+  const logDestination = deploymentValue('logDestination');
   const licenseServer = deploymentValue('licenseServerUrl');
 
   const encryption = resolveEncryptionKey(dataDir, environment, options.generateEncryptionKey !== false);
@@ -521,6 +575,8 @@ export function resolveDeploymentConfig(options: {
     oauthPort: portValue('FLUXMAIL_OAUTH_PORT', oauthPort, 8976),
     oauthHost: nonEmptyStringValue('FLUXMAIL_OAUTH_HOST', oauthHost, '127.0.0.1'),
     maxAttachmentBytes: maxAttachmentValue(maxAttachment),
+    logLevel: logLevelValue(logLevel),
+    logDestination: logDestinationValue(logDestination),
     licenseServerUrl: stringValue(
       'FLUXMAIL_LICENSE_SERVER_URL',
       licenseServer,
@@ -552,6 +608,7 @@ export function deploymentToml(values: DeploymentTomlValues = {}): string {
       max_attachment_mb: values.maxAttachmentMb ?? 10,
     },
     oauth: { local: { host: values.oauthHost ?? '127.0.0.1', port: values.oauthPort ?? 8976 } },
+    logging: { level: values.logLevel ?? 'info', destination: values.logDestination ?? 'both' },
     ...(values.licenseServerUrl ? { licensing: { server_url: values.licenseServerUrl } } : {}),
   });
 }

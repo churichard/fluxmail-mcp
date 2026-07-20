@@ -11,6 +11,7 @@ import { EmailService } from './service/emailService.js';
 import { SendScheduler } from './scheduler/sendScheduler.js';
 import { getTelemetry, type Telemetry } from './telemetry.js';
 import { LicenseController } from './licensing/refresher.js';
+import { getLogger, type Logger, type ProcessMode } from './logging.js';
 
 export interface AppContext {
   config: FluxmailConfig;
@@ -19,16 +20,23 @@ export interface AppContext {
   registry: AccountRegistry;
   service: EmailService;
   telemetry: Telemetry;
+  logger: Logger;
   /** Inert until start(); only the long-lived serve/stdio commands start it. */
   scheduler: SendScheduler;
   licenseController: LicenseController;
 }
 
-export function createContext(): AppContext {
+export function createContext(options: { logger?: Logger; processMode?: ProcessMode } = {}): AppContext {
   const storeLocation = resolveStoreLocation();
   const compatibility = inspectStoreCompatibility(storeLocation.dbPath, storeLocation.dataDir);
   if (!compatibility.compatible) throw new IncompatibleStoreError(compatibility);
   const deployment = ensureDeploymentEncryptionKey(storeLocation.deployment!);
+  const logger =
+    options.logger ??
+    getLogger(deployment.dataDir, options.processMode ?? 'library', {
+      level: deployment.logLevel,
+      destination: deployment.logDestination,
+    });
   const db = openDb(deployment.dbPath, { dataDir: deployment.dataDir });
   let configuration: ConfigurationService;
   try {
@@ -40,14 +48,15 @@ export function createContext(): AppContext {
   const config = configuration.config;
   const registry = new AccountRegistry(db, config);
   const service = new EmailService(registry, db);
-  const scheduler = new SendScheduler(db, service);
+  const scheduler = new SendScheduler(db, service, logger);
   const telemetry = getTelemetry(config.dataDir, deployment.environment);
   const licenseController = new LicenseController({
     db,
     config,
     configuration,
+    logger,
     onRefreshed: () => scheduler.wake(),
   });
   service.onScheduleChanged = () => scheduler.wake();
-  return { config, configuration, db, registry, service, scheduler, telemetry, licenseController };
+  return { config, configuration, db, registry, service, scheduler, telemetry, logger, licenseController };
 }

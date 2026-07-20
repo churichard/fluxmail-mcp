@@ -1,6 +1,6 @@
 ---
 title: 'Configuration'
-description: 'Deployment configuration, encrypted instance settings, secret files, and telemetry controls.'
+description: 'Deployment configuration, encrypted instance settings, local logging, secret files, and telemetry controls.'
 updated: '2026-07-19'
 ---
 
@@ -77,6 +77,10 @@ The command validates imported deployment values and checks the database format 
 
 Docker Compose and process-manager env files still work because those tools populate the process environment before Fluxmail starts.
 
+## Local logs
+
+Fluxmail writes bounded local logs for failures and low-volume service events. Successful MCP, REST, and CLI operations are not logged. See [Local logs](/docs/logging) for the file location, the 20 MiB disk limit, viewing commands, and privacy notes.
+
 ## Setting reference
 
 <!-- BEGIN GENERATED:configuration -->
@@ -91,6 +95,8 @@ Docker Compose and process-manager env files still work because those tools popu
 | `oauth.local.port` | `oauth.local.port` | `FLUXMAIL_OAUTH_PORT` | `8976` | Restart | Port for the local OAuth callback listener. |
 | `oauth.local.host` | `oauth.local.host` | `FLUXMAIL_OAUTH_HOST` | `127.0.0.1` | Restart | Bind address for the local OAuth callback listener. |
 | `server.max_attachment_mb` | `server.max_attachment_mb` | `FLUXMAIL_MAX_ATTACHMENT_MB` | `10` | Restart | Largest decoded attachment returned through MCP or REST, from 1 through 25 MB. |
+| `logging.level` | `logging.level` | `FLUXMAIL_LOG_LEVEL` | `info` | Restart | Minimum severity retained by the bounded local logger. |
+| `logging.destination` | `logging.destination` | `FLUXMAIL_LOG_DESTINATION` | `both` | Restart | Write local logs to both the rotating file and console, or choose file or console. |
 | `oauth.google.client_id` | Encrypted SQLite | `GOOGLE_CLIENT_ID` | `Fluxmail Desktop OAuth app` | Immediate; env: restart | Override the built-in Google OAuth client ID. |
 | `oauth.google.client_secret` | Encrypted SQLite | `GOOGLE_CLIENT_SECRET`<br>`GOOGLE_CLIENT_SECRET_FILE` | `Fluxmail Desktop OAuth app` | Immediate; env: restart | Override the built-in Google OAuth client secret. Required with GOOGLE_CLIENT_ID. |
 | `oauth.microsoft.client_id` | Encrypted SQLite | `MICROSOFT_CLIENT_ID` | `required for Outlook` | Immediate; env: restart | Microsoft Entra application client ID. |

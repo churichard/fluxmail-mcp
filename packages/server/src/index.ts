@@ -99,3 +99,22 @@ export {
   type Telemetry,
   type TelemetryProperties,
 } from './telemetry.js';
+export {
+  createLogger,
+  getLogger,
+  logCodedFailure,
+  logFailure,
+  readLocalLogs,
+  shutdownLogging,
+  type CreateLoggerOptions,
+  type LogContext,
+  type LogDestination,
+  type LogError,
+  type LogLevel,
+  type Logger,
+  type LogRecord,
+  type ProcessMode,
+  type ReadLogEntry,
+  type ReadLogsOptions,
+  type ReadLogsResult,
+} from './logging.js';

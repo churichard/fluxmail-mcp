@@ -1,19 +1,23 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createCliProgram,
+  installStdioShutdownHandler,
   permissionPolicyForUpdate,
   permissionPolicyFromOptions,
+  shutdownTelemetryAndLogging,
   waitForServerListening,
 } from '../src/cli.js';
 import { resolveDeploymentConfig } from '../src/config.js';
 import { createContext } from '../src/context.js';
 import { InstanceConfigStore } from '../src/instanceConfig.js';
+import { getLogger } from '../src/logging.js';
 import { customPermissionPolicy, permissionPolicyForProfile } from '../src/permissions.js';
 import { encryptString } from '../src/storage/crypto.js';
 import {
@@ -23,6 +27,7 @@ import {
   instanceSettings,
   openDb,
 } from '../src/storage/db.js';
+import { getTelemetry } from '../src/telemetry.js';
 
 const runFile = promisify(execFile);
 const configMigrationModuleUrl = new URL('../src/configMigration.ts', import.meta.url).href;
@@ -39,6 +44,140 @@ function telemetrySpy() {
 }
 
 describe('CLI telemetry', () => {
+  it('flushes local logs when a stdio stream ends', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-stdio-logging-'));
+    const input = new PassThrough();
+    const logger = getLogger(dataDir, 'stdio', { level: 'info', destination: 'file' });
+    installStdioShutdownHandler(input);
+    logger.error('mcp.operation_failed', 'Final request failed', new Error('provider unavailable'));
+
+    input.resume();
+    input.end();
+
+    const logFile = path.join(dataDir, 'logs', 'fluxmail.jsonl');
+    await vi.waitFor(() => expect(readFileSync(logFile, 'utf8')).toContain('mcp.operation_failed'));
+  });
+
+  it('flushes local logs while telemetry waits for an active operation', async () => {
+    await shutdownTelemetryAndLogging();
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-signal-logging-'));
+    const finishActivity = getTelemetry(dataDir).beginActivity?.();
+    const logger = getLogger(dataDir, 'serve', { level: 'info', destination: 'file' });
+    logger.error('server.operation_failed', 'Request was interrupted', new Error('provider unavailable'));
+
+    let shutdownFinished = false;
+    const shutdown = shutdownTelemetryAndLogging().then(() => {
+      shutdownFinished = true;
+    });
+
+    const logFile = path.join(dataDir, 'logs', 'fluxmail.jsonl');
+    await vi.waitFor(() => expect(readFileSync(logFile, 'utf8')).toContain('server.operation_failed'));
+    expect(shutdownFinished).toBe(false);
+    logger.error('server.final_failure', 'Active request failed during shutdown', new Error('request interrupted'));
+
+    finishActivity?.();
+    await shutdown;
+    expect(shutdownFinished).toBe(true);
+    expect(readFileSync(logFile, 'utf8')).toContain('server.final_failure');
+  });
+
+  it('shows filtered local logs and records only the command telemetry', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-logs-'));
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    const logDir = path.join(dataDir, 'logs');
+    mkdirSync(logDir);
+    const record = (level: 'info' | 'warn' | 'error', event: string) =>
+      JSON.stringify({
+        timestamp: '2026-07-19T12:00:00.000Z',
+        level,
+        event,
+        message: `${event} message`,
+        version: 'test',
+        pid: 1,
+        run_id: 'run',
+        process_mode: 'serve',
+      });
+    writeFileSync(
+      path.join(logDir, 'fluxmail.jsonl'),
+      `${record('info', 'server.started')}\n${record('error', 'server.failed')}\n`,
+    );
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { capture, telemetry } = telemetrySpy();
+
+    await createCliProgram({ telemetry }).parseAsync(['node', 'fluxmail', 'logs', '--level', 'error', '--json']);
+
+    expect(output).toHaveBeenCalledTimes(1);
+    expect(output).toHaveBeenCalledWith(expect.stringContaining('server.failed'));
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({ product_surface: 'cli', operation: 'logs', outcome: 'success' }),
+    );
+    expect(JSON.stringify(capture.mock.calls)).not.toContain('server.failed');
+  });
+
+  it('keeps plain local log output on one physical line', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-plain-logs-'));
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    const logDir = path.join(dataDir, 'logs');
+    mkdirSync(logDir);
+    writeFileSync(
+      path.join(logDir, 'fluxmail.jsonl'),
+      `${JSON.stringify({
+        timestamp: '2026-07-19T12:00:00.000Z',
+        level: 'error',
+        event: 'provider.failed\nforged.event\u001b[2J',
+        message: 'First line\r\n2026-01-01 ERROR forged: second line\u0007',
+        version: 'test',
+        pid: 1,
+        run_id: 'run',
+        process_mode: 'serve',
+      })}\n`,
+    );
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { telemetry } = telemetrySpy();
+
+    await createCliProgram({ telemetry }).parseAsync(['node', 'fluxmail', 'logs']);
+
+    expect(output).toHaveBeenCalledTimes(1);
+    const line = String(output.mock.calls[0]?.[0]);
+    expect(
+      [...line].some((character) => {
+        const code = character.codePointAt(0)!;
+        return code <= 0x1f || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
+      }),
+    ).toBe(false);
+    expect(line).toContain('provider.failed\\nforged.event');
+    expect(line).toContain('First line\\r\\n2026-01-01 ERROR forged: second line');
+    expect(line).toContain('\\x1b[2J');
+    expect(line).toContain('\\x07');
+  });
+
+  it('records a safe logs command error without the invalid option value', async () => {
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    vi.stubEnv('FLUXMAIL_DATA_DIR', mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-logs-error-')));
+    const output = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { capture, telemetry } = telemetrySpy();
+
+    try {
+      await createCliProgram({ telemetry }).parseAsync(['node', 'fluxmail', 'logs', '--tail', 'private-invalid-value']);
+
+      expect(capture).toHaveBeenCalledWith(
+        'operation completed',
+        expect.objectContaining({
+          product_surface: 'cli',
+          operation: 'logs',
+          outcome: 'error',
+          error_code: 'invalid_request',
+        }),
+      );
+      expect(JSON.stringify(capture.mock.calls)).not.toContain('private-invalid-value');
+      expect(output).toHaveBeenCalled();
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
+
   it('rejects server startup errors before the command can be recorded as successful', async () => {
     const startupError = new Error('address already in use');
     const server = createServer();

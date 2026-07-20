@@ -1,7 +1,7 @@
 ---
 title: 'Troubleshooting'
 description: 'Fix common Fluxmail installation, mailbox connection, and authentication problems.'
-updated: '2026-07-17'
+updated: '2026-07-19'
 ---
 
 Start by checking the service and connected mailboxes:
@@ -9,6 +9,12 @@ Start by checking the service and connected mailboxes:
 ```bash
 fluxmail status
 fluxmail accounts list
+```
+
+Show recent warnings and errors with:
+
+```bash
+fluxmail logs --level warn
 ```
 
 For Docker, prefix each command with `docker compose exec fluxmail`.
@@ -69,6 +75,7 @@ Check the container status and recent logs:
 ```bash
 docker compose ps
 docker compose logs --tail=100 fluxmail
+docker compose exec fluxmail fluxmail logs --level warn
 ```
 
 Confirm that port 8977 is reachable and that your reverse proxy forwards requests to it. See [Deploy with Docker](/docs/deploy-with-docker) for the expected public URL and authentication settings.

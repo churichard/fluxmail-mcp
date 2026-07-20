@@ -18,10 +18,12 @@ import { VERSION } from '../version.js';
 import { administrationUsesHttps, adminOperationId, registerAdminRoutes, requestBodyExceedsLimit } from './admin.js';
 import { recordAdminAuditEvent } from '../storage/adminAudit.js';
 import { identityOperationId, registerIdentityRoutes } from './identity.js';
+import { logCodedFailure, logFailure, type Logger } from '../logging.js';
 
 interface RestVariables {
   restAuth: Principal;
   restService: EmailService;
+  restLogger?: Logger;
 }
 
 type RestEnv = { Bindings: HttpBindings; Variables: RestVariables };
@@ -33,6 +35,7 @@ export interface RestApiDeps {
   db: FluxmailDb;
   service: EmailService;
   telemetry?: Telemetry;
+  logger?: Logger;
   registry?: AccountRegistry;
   licenseController?: LicenseController;
 }
@@ -380,6 +383,19 @@ class RestFailure extends Error {
   }
 }
 
+function logRestFailure(deps: RestApiDeps, operation: string, error: unknown, startedAt: number): void {
+  const context = {
+    productSurface: 'rest' as const,
+    operation,
+    durationMs: performance.now() - startedAt,
+  };
+  if (error instanceof RestFailure) {
+    logCodedFailure(deps.logger, 'rest.operation_failed', error.code, error.message, context);
+  } else {
+    logFailure(deps.logger, 'rest.operation_failed', error, context);
+  }
+}
+
 function apiFailure(err: unknown): ApiFailure {
   if (err instanceof RestFailure) {
     return {
@@ -564,6 +580,7 @@ async function runJson(
         headers: { 'content-type': 'application/json; charset=UTF-8', 'cache-control': 'no-store' },
       }) as never;
     } catch (err) {
+      logRestFailure(deps, options.operation, err, startedAt);
       const failure = apiFailure(err);
       const body = JSON.stringify(failure.payload);
       if (reservation) {
@@ -584,6 +601,7 @@ async function runJson(
       }) as never;
     }
   } catch (err) {
+    logRestFailure(deps, options.operation, err, startedAt);
     const failure = apiFailure(err);
     errorCode = failure.payload.error.code;
     return jsonResponse(
@@ -654,6 +672,7 @@ async function runAttachment(
       },
     }) as never;
   } catch (err) {
+    logRestFailure(deps, 'downloadAttachment', err, startedAt);
     const failure = apiFailure(err);
     errorCode = failure.payload.error.code;
     return jsonResponse(failure.payload, failure.status) as never;
@@ -735,8 +754,15 @@ function modifyAction(input: z.infer<typeof ModifyRequestSchema>): ModifyAction 
 
 export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
   const app = new OpenAPIHono<RestEnv>({
-    defaultHook(result, _c) {
+    defaultHook(result, c) {
       if (result.success) return;
+      logCodedFailure(deps.logger, 'rest.operation_failed', 'invalid_request', 'Request validation failed', {
+        productSurface: 'rest',
+        operation:
+          identityOperationId(c.req.method, c.req.path) ??
+          adminOperationId(c.req.method, c.req.path) ??
+          'request_validation',
+      });
       return jsonResponse(
         {
           error: {
@@ -831,6 +857,7 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
   });
 
   app.use('/api/v1/*', async (c, next) => {
+    c.set('restLogger', deps.logger);
     if (
       c.req.path.startsWith('/api/v1/auth/') ||
       c.req.path === '/api/v1/me' ||
@@ -854,6 +881,13 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
         c.req.path === '/api/v1/auth/enroll' ||
         c.req.path === '/api/v1/auth/password-reset');
     if (publicAuthRequest && (await requestBodyExceedsLimit(c.req.raw))) {
+      logCodedFailure(
+        deps.logger,
+        'rest.request_rejected',
+        'request_too_large',
+        'Authentication request body exceeded the size limit',
+        { productSurface: 'rest', operation: identityOperationId(c.req.method, c.req.path) ?? 'request' },
+      );
       return jsonResponse(
         { error: { code: 'request_too_large', message: 'Authentication request bodies are limited to 64 KiB.' } },
         413,
@@ -875,6 +909,13 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
           deps.config.trustProxy,
         )
       ) {
+        logCodedFailure(
+          deps.logger,
+          'rest.request_rejected',
+          'https_required',
+          'Administrative request did not use HTTPS',
+          { productSurface: 'rest', operation: adminOperationId(c.req.method, c.req.path) ?? 'admin_request' },
+        );
         return jsonResponse(
           { error: { code: 'https_required', message: 'Administrative routes require HTTPS outside loopback.' } },
           400,
@@ -882,6 +923,11 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
       }
     }
     if (!isBootstrapComplete(deps.db)) {
+      logCodedFailure(deps.logger, 'rest.request_rejected', 'setup_required', 'Fluxmail setup is incomplete', {
+        productSurface: 'rest',
+        operation:
+          identityOperationId(c.req.method, c.req.path) ?? adminOperationId(c.req.method, c.req.path) ?? 'request',
+      });
       return jsonResponse(
         { error: { code: 'setup_required', message: 'Run "fluxmail setup" on the server before using Fluxmail.' } },
         503,
@@ -891,6 +937,11 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     const bearer = authorization?.match(/^Bearer\s+([^\s]+)$/i)?.[1];
     const auth = bearer ? authenticateBearer(deps.db, bearer) : null;
     if (!auth) {
+      logCodedFailure(deps.logger, 'rest.request_rejected', 'unauthorized', 'REST request was not authorized', {
+        productSurface: 'rest',
+        operation:
+          identityOperationId(c.req.method, c.req.path) ?? adminOperationId(c.req.method, c.req.path) ?? 'request',
+      });
       return jsonResponse(
         { error: { code: 'unauthorized', message: 'Pass a member session or API key as a Bearer token.' } },
         401,
@@ -901,12 +952,26 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
     if (administrative && (c.req.method === 'POST' || c.req.method === 'PATCH' || c.req.method === 'PUT')) {
       const mediaType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
       if (mediaType !== 'application/json') {
+        logCodedFailure(
+          deps.logger,
+          'rest.request_rejected',
+          'unsupported_media_type',
+          'Administrative request did not use application/json',
+          { productSurface: 'rest', operation: adminOperationId(c.req.method, c.req.path) ?? 'admin_request' },
+        );
         return jsonResponse(
           { error: { code: 'unsupported_media_type', message: 'Content-Type must be application/json.' } },
           415,
         );
       }
       if (await requestBodyExceedsLimit(c.req.raw)) {
+        logCodedFailure(
+          deps.logger,
+          'rest.request_rejected',
+          'request_too_large',
+          'Administrative request body exceeded the size limit',
+          { productSurface: 'rest', operation: adminOperationId(c.req.method, c.req.path) ?? 'admin_request' },
+        );
         return jsonResponse(
           { error: { code: 'request_too_large', message: 'Administrative request bodies are limited to 64 KiB.' } },
           413,
@@ -1401,6 +1466,7 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
       err instanceof SyntaxError || (err instanceof HTTPException && err.status === 400)
         ? new EmailError('invalid_request', 'Malformed JSON body.')
         : err;
+    logFailure(deps.logger, 'rest.unhandled_error', malformedJson, { productSurface: 'rest' });
     const failure = apiFailure(malformedJson);
     return jsonResponse(failure.payload, failure.status);
   });

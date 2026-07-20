@@ -54,6 +54,7 @@
     "oauth-configure-google",
     "oauth-configure-outlook",
     "oauth-reset",
+    "logs",
     "telemetry",
     "telemetry-disable",
     "telemetry-enable",

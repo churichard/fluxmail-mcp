@@ -284,6 +284,10 @@ describe('releaseLicense', () => {
 describe('getEntitlements', () => {
   afterEach(() => vi.unstubAllEnvs());
 
+  it('uses a seven-day grace period', () => {
+    expect(GRACE_PERIOD_MS).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
   it('returns Personal-plan limits with no cached lease', () => {
     expect(getEntitlements(openDb(':memory:'))).toEqual(PERSONAL_TIER);
   });

@@ -8,6 +8,7 @@ import {
   ConfigurationService,
   deploymentToml,
   expandHome,
+  readLoggingSettings,
   resolveDataDir,
   resolveDeploymentConfig,
   writeDeploymentConfig,
@@ -34,7 +35,10 @@ function resolve(dataDir: string, env: NodeJS.ProcessEnv = {}, options: { genera
   });
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
 
 describe('deployment configuration', () => {
   it('loads typed TOML values and records their source', () => {
@@ -49,6 +53,8 @@ describe('deployment configuration', () => {
         oauthHost: '0.0.0.0',
         oauthPort: 9001,
         maxAttachmentMb: 20,
+        logLevel: 'error',
+        logDestination: 'file',
         licenseServerUrl: 'http://127.0.0.1:9898',
       }),
     );
@@ -62,11 +68,31 @@ describe('deployment configuration', () => {
       oauthHost: '0.0.0.0',
       oauthPort: 9001,
       maxAttachmentBytes: 20 * 1024 * 1024,
+      logLevel: 'error',
+      logDestination: 'file',
       licenseServerUrl: 'http://127.0.0.1:9898',
     });
     expect(config.sources.port).toBe('toml');
     expect(config.sources.publicUrl).toBe('toml');
+    expect(config.sources.logLevel).toBe('toml');
+    expect(config.sources.logDestination).toBe('toml');
     expect(config.sources.licenseServerUrl).toBe('toml');
+  });
+
+  it('uses and validates local logging configuration', () => {
+    const dir = tempDataDir();
+    writeDeploymentConfig(path.join(dir, 'config.toml'), deploymentToml({ logLevel: 'warn', logDestination: 'file' }));
+    expect(readLoggingSettings(dir)).toEqual({ level: 'warn', destination: 'file' });
+
+    vi.stubEnv('FLUXMAIL_LOG_LEVEL', 'error');
+    vi.stubEnv('FLUXMAIL_LOG_DESTINATION', 'console');
+    expect(readLoggingSettings(dir)).toEqual({ level: 'error', destination: 'console' });
+
+    vi.stubEnv('FLUXMAIL_LOG_LEVEL', 'debug');
+    expect(() => readLoggingSettings(dir)).toThrow(/FLUXMAIL_LOG_LEVEL/);
+    vi.stubEnv('FLUXMAIL_LOG_LEVEL', 'info');
+    vi.stubEnv('FLUXMAIL_LOG_DESTINATION', 'network');
+    expect(() => readLoggingSettings(dir)).toThrow(/FLUXMAIL_LOG_DESTINATION/);
   });
 
   it('lets environment values override TOML without mutating process.env', () => {
@@ -133,6 +159,7 @@ describe('deployment configuration', () => {
     ['server', 'server = "invalid"\n'],
     ['storage', 'storage = []\n'],
     ['oauth.local', '[oauth]\nlocal = "invalid"\n'],
+    ['logging', 'logging = "invalid"\n'],
   ])('rejects a non-table %s section', (section, content) => {
     const dir = tempDataDir();
     writeFileSync(path.join(dir, 'config.toml'), content);

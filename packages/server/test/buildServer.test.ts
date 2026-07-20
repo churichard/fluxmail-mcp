@@ -6,6 +6,23 @@ import type { EmailService } from '../src/service/emailService.js';
 import { buildMcpServer, toSendRequest, type McpServerOptions } from '../src/mcp/buildServer.js';
 import { customPermissionPolicy, permissionPolicyForProfile } from '../src/permissions.js';
 import type { Telemetry } from '../src/telemetry.js';
+import type { Logger } from '../src/logging.js';
+
+function loggerSpy(): { logger: Logger; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> } {
+  const warn = vi.fn();
+  const error = vi.fn();
+  return {
+    warn,
+    error,
+    logger: {
+      info: vi.fn(),
+      warn,
+      error,
+      flush: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    },
+  };
+}
 
 async function connectMcp(service: Partial<EmailService>, options?: McpServerOptions) {
   const server = buildMcpServer(service as EmailService, options);
@@ -462,13 +479,14 @@ describe('tool telemetry', () => {
 
   it('captures a safe label error code without the error message', async () => {
     const { telemetry, capture } = telemetrySpy();
+    const { logger, warn, error } = loggerSpy();
     const service = {
       enforceQuota: () => undefined,
       listLabels: vi.fn(() => {
         throw new EmailError('provider_unavailable', 'private provider response');
       }),
     } as Partial<EmailService>;
-    const client = await connectMcp(service, { telemetry, transport: 'stdio' });
+    const client = await connectMcp(service, { telemetry, transport: 'stdio', logger });
 
     await client.callTool({ name: 'list_labels', arguments: {} });
 
@@ -483,6 +501,13 @@ describe('tool telemetry', () => {
       }),
     );
     expect(JSON.stringify(capture.mock.calls)).not.toContain('private provider response');
+    expect(warn).toHaveBeenCalledWith(
+      'mcp.operation_failed',
+      'private provider response',
+      expect.objectContaining({ code: 'provider_unavailable' }),
+      expect.objectContaining({ productSurface: 'mcp', operation: 'list_labels' }),
+    );
+    expect(error).not.toHaveBeenCalled();
   });
 });
 

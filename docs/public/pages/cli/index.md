@@ -80,6 +80,7 @@ docker compose exec fluxmail fluxmail accounts list
 | [`fluxmail oauth configure google`](/docs/cli/oauth-configure-google) | Configure a custom Google OAuth application |
 | [`fluxmail oauth configure outlook`](/docs/cli/oauth-configure-outlook) | Configure a custom Microsoft OAuth application |
 | [`fluxmail oauth reset`](/docs/cli/oauth-reset) | Remove a stored OAuth application |
+| [`fluxmail logs`](/docs/cli/logs) | Show recent local log entries |
 | [`fluxmail telemetry`](/docs/cli/telemetry) | Manage anonymous usage telemetry |
 | [`fluxmail telemetry disable`](/docs/cli/telemetry-disable) | Stop sending anonymous usage telemetry |
 | [`fluxmail telemetry enable`](/docs/cli/telemetry-enable) | Allow anonymous usage telemetry |
