@@ -15,7 +15,7 @@ import {
 } from '../src/licensing/entitlements.js';
 import { LicenseController, loadInstanceId, refreshLicense } from '../src/licensing/refresher.js';
 import { activateLicense } from '../src/licensing/activation.js';
-import { readStoredConfig, setStoredConfig, type FluxmailConfig } from '../src/config.js';
+import { ConfigurationService, type DeploymentConfig } from '../src/config.js';
 import { openDb } from '../src/storage/db.js';
 
 function makeKeypair(): { privateKey: KeyObject; publicKeyB64: string } {
@@ -46,6 +46,37 @@ function signLease(privateKey: KeyObject, payload: Record<string, unknown>): str
 }
 
 const keys = makeKeypair();
+
+function configurationFor(db: ReturnType<typeof openDb>, dir: string): ConfigurationService {
+  const deployment: DeploymentConfig = {
+    dataDir: dir,
+    dbPath: ':memory:',
+    encryptionKey: Buffer.alloc(32, 7),
+    port: 8977,
+    publicUrl: 'http://localhost:8977',
+    publicUrlConfigured: false,
+    trustProxy: false,
+    oauthPort: 8976,
+    oauthHost: '127.0.0.1',
+    maxAttachmentBytes: 10 * 1024 * 1024,
+    licenseServerUrl: 'https://license.invalid',
+    configFile: path.join(dir, 'config.toml'),
+    environment: {},
+    sources: {
+      dataDir: 'environment',
+      dbPath: 'default',
+      encryptionKey: 'environment',
+      port: 'default',
+      publicUrl: 'default',
+      trustProxy: 'default',
+      oauthPort: 'default',
+      oauthHost: 'default',
+      maxAttachmentBytes: 'default',
+      licenseServerUrl: 'default',
+    },
+  };
+  return new ConfigurationService(deployment, db);
+}
 
 describe('verifyLease', () => {
   it('accepts a validly signed lease and returns its payload', () => {
@@ -416,11 +447,12 @@ describe('activateLicense', () => {
 
   it('preserves the stored key when the replacement is rejected', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'fluxmail-activation-'));
-    setStoredConfig(dir, 'FLUXMAIL_LICENSE_KEY', oldKey);
     const db = openDb(':memory:');
+    const configuration = configurationFor(db, dir);
+    configuration.setLicenseKey(oldKey);
     const { fetchImpl } = fakeFetch(() => Response.json({ error: 'license_not_found' }, { status: 404 }));
 
-    const result = await activateLicense(db, {
+    const result = await activateLicense(db, configuration, {
       licenseKey: newKey,
       serverUrl: 'https://license.invalid',
       dataDir: dir,
@@ -428,7 +460,7 @@ describe('activateLicense', () => {
     });
 
     expect(result.outcome).toBe('not_found');
-    expect(readStoredConfig(dir).FLUXMAIL_LICENSE_KEY).toBe(oldKey);
+    expect(configuration.store.licenseKey()).toBe(oldKey);
   });
 });
 
@@ -441,14 +473,12 @@ describe('LicenseController', () => {
     const db = openDb(':memory:');
     const token = signLease(keys.privateKey, leasePayload());
     const { fetchImpl } = fakeFetch(() => Response.json({ lease: token }));
-    const config = {
-      dataDir: dir,
-      licenseServerUrl: 'https://license.invalid',
-    } as FluxmailConfig;
-    const controller = new LicenseController({ db, config, fetchImpl });
+    const configuration = configurationFor(db, dir);
+    const config = configuration.config;
+    const controller = new LicenseController({ db, config, configuration, fetchImpl });
     controller.start();
 
-    setStoredConfig(dir, 'FLUXMAIL_LICENSE_KEY', `fluxmail_lic_${'ef'.repeat(20)}`);
+    configuration.setLicenseKey(`fluxmail_lic_${'ef'.repeat(20)}`);
     controller.wake();
     await vi.waitFor(() => expect(readLeaseRow(db)?.token).toBe(token));
     controller.stop();
@@ -472,16 +502,14 @@ describe('LicenseController', () => {
     const { fetchImpl, calls } = fakeFetch(() =>
       calls.length === 1 ? oldRefresh : Response.json({ lease: replacementToken }),
     );
-    const config = {
-      dataDir: dir,
-      licenseKey: oldKey,
-      licenseServerUrl: 'https://license.invalid',
-    } as FluxmailConfig;
-    const controller = new LicenseController({ db, config, fetchImpl });
+    const configuration = configurationFor(db, dir);
+    configuration.setLicenseKey(oldKey);
+    const config = configuration.config;
+    const controller = new LicenseController({ db, config, configuration, fetchImpl });
     controller.start();
     await vi.waitFor(() => expect(calls).toHaveLength(1));
 
-    setStoredConfig(dir, 'FLUXMAIL_LICENSE_KEY', replacementKey);
+    configuration.setLicenseKey(replacementKey);
     controller.wake();
     finishOldRefresh();
 

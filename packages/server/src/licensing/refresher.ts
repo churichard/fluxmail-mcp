@@ -1,8 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { FluxmailConfig } from '../config.js';
-import { readStoredConfig } from '../config.js';
+import type { ConfigurationService, FluxmailConfig } from '../config.js';
 import type { FluxmailDb } from '../storage/db.js';
 import { validateLicense } from './client.js';
 import { licensePublicKeys, verifyLease, type LeasePayload } from './lease.js';
@@ -47,6 +46,7 @@ export interface RefreshOptions {
 export interface LicenseControllerOptions {
   db: FluxmailDb;
   config: FluxmailConfig;
+  configuration?: ConfigurationService;
   log?: (line: string) => void;
   onRefreshed?: () => void;
   fetchImpl?: typeof fetch;
@@ -135,8 +135,7 @@ export class LicenseController {
   constructor(private readonly deps: LicenseControllerOptions) {}
 
   configuredKey(): string | undefined {
-    if (this.deps.config.licenseKeyFromEnvironment) return this.deps.config.licenseKey;
-    return readStoredConfig(this.deps.config.dataDir).FLUXMAIL_LICENSE_KEY?.trim() || this.deps.config.licenseKey;
+    return this.deps.configuration?.config.licenseKey ?? this.deps.config.licenseKey;
   }
 
   private schedule(delayMs: number): void {

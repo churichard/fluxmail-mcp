@@ -75,10 +75,12 @@ Local connections use Fluxmail's built-in Google Desktop OAuth client. A remote 
 
 Microsoft mail requires an Entra app registration. Complete the local or hosted app setup in [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp).
 
-For a local installation, store the client ID and connect the mailbox:
+For a local installation, configure a public client and connect the mailbox:
 
 ```bash
-fluxmail config set MICROSOFT_CLIENT_ID <application-client-id>
+fluxmail oauth configure outlook \
+  --client-id <application-client-id> \
+  --public-client
 fluxmail accounts add outlook
 ```
 

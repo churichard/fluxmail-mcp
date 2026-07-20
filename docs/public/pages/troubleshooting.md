@@ -72,3 +72,15 @@ docker compose logs --tail=100 fluxmail
 ```
 
 Confirm that port 8977 is reachable and that your reverse proxy forwards requests to it. See [Deploy with Docker](/docs/deploy-with-docker) for the expected public URL and authentication settings.
+
+## A configuration import fails
+
+`fluxmail config migrate` preserves the source file whether the command succeeds or fails. Read the error before changing any files. A key mismatch means the imported key differs from `<data dir>/encryption.key`. Restore the encryption key that was used with the database, then retry the command.
+
+Do not replace the key just to clear the error. Provider credentials and encrypted instance settings cannot be decrypted with a different key.
+
+If `config.toml` already exists, move it aside only when the env file should replace its deployment settings. After a successful import, run `fluxmail config show` and `fluxmail oauth status` before removing the old file.
+
+## An OAuth application cannot be changed
+
+Run `fluxmail oauth status` and check the source. An application with an `environment` or `environment-file` source is controlled by deployment overrides. Remove the complete provider override group, restart Fluxmail, then run `fluxmail oauth configure` or `fluxmail oauth reset` again.

@@ -70,10 +70,16 @@ docker compose exec fluxmail fluxmail accounts list
 | [`fluxmail license activate`](/docs/cli/license-activate) | Store a license key and validate it with the license server |
 | [`fluxmail license status`](/docs/cli/license-status) | Show the configured license and cached lease |
 | [`fluxmail license deactivate`](/docs/cli/license-deactivate) | Release the license from this instance and remove the stored key and cached lease |
-| [`fluxmail config`](/docs/cli/config) | Persistent settings stored in the data dir, usable from any directory |
-| [`fluxmail config set`](/docs/cli/config-set) | Store a setting (shell env vars and local .env files still take precedence) |
-| [`fluxmail config unset`](/docs/cli/config-unset) | Remove a stored setting |
-| [`fluxmail config list`](/docs/cli/config-list) | Show stored settings (secret values are masked) |
+| [`fluxmail config`](/docs/cli/config) | Inspect and initialize deployment configuration |
+| [`fluxmail config init`](/docs/cli/config-init) | Create config.toml in the Fluxmail data directory |
+| [`fluxmail config show`](/docs/cli/config-show) | Show effective configuration, sources, paths, and restart requirements |
+| [`fluxmail config migrate`](/docs/cli/config-migrate) | Import settings from an env file without deleting it |
+| [`fluxmail oauth`](/docs/cli/oauth) | Manage OAuth applications |
+| [`fluxmail oauth status`](/docs/cli/oauth-status) | Show OAuth application status without secrets |
+| [`fluxmail oauth configure`](/docs/cli/oauth-configure) | Configure an OAuth application |
+| [`fluxmail oauth configure google`](/docs/cli/oauth-configure-google) | Configure a custom Google OAuth application |
+| [`fluxmail oauth configure outlook`](/docs/cli/oauth-configure-outlook) | Configure a custom Microsoft OAuth application |
+| [`fluxmail oauth reset`](/docs/cli/oauth-reset) | Remove a stored OAuth application |
 | [`fluxmail telemetry`](/docs/cli/telemetry) | Manage anonymous usage telemetry |
 | [`fluxmail telemetry disable`](/docs/cli/telemetry-disable) | Stop sending anonymous usage telemetry |
 | [`fluxmail telemetry enable`](/docs/cli/telemetry-enable) | Allow anonymous usage telemetry |

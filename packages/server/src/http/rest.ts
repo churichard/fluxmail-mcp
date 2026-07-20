@@ -4,7 +4,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HttpBindings } from '@hono/node-server';
 import { EmailError, isEmailError, type EmailQuery, type ModifyAction, type PageOpts } from '@fluxmail/core';
-import type { FluxmailConfig } from '../config.js';
+import type { ConfigurationService, FluxmailConfig } from '../config.js';
 import type { AccountRegistry } from '../accounts/registry.js';
 import type { LicenseController } from '../licensing/refresher.js';
 import type { EmailService, SendInput } from '../service/emailService.js';
@@ -29,6 +29,7 @@ type RestContext = Context<RestEnv>;
 
 export interface RestApiDeps {
   config: FluxmailConfig;
+  configuration: ConfigurationService;
   db: FluxmailDb;
   service: EmailService;
   telemetry?: Telemetry;
@@ -710,6 +711,9 @@ function adminAuditPath(path: string): string {
   if (/^\/api\/v1\/admin\/api-keys\/[^/]+$/.test(path)) return '/api/v1/admin/api-keys/:id';
   if (/^\/api\/v1\/admin\/accounts\/[^/]+\/imap\/folders$/.test(path)) {
     return '/api/v1/admin/accounts/:id/imap/folders';
+  }
+  if (/^\/api\/v1\/admin\/oauth-apps\/(google|outlook)$/.test(path)) {
+    return '/api/v1/admin/oauth-apps/:provider';
   }
   return '/api/v1/admin/*';
 }

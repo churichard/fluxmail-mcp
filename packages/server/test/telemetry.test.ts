@@ -319,4 +319,11 @@ describe('telemetry', () => {
     setTelemetryEnabled(dataDir, true);
     expect(isTelemetryEnabled(dataDir, {})).toBe(true);
   });
+
+  it('does not read telemetry settings from legacy config.env files', () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
+    writeFileSync(path.join(dataDir, 'config.env'), 'FLUXMAIL_TELEMETRY=0\n', { mode: 0o600 });
+
+    expect(isTelemetryEnabled(dataDir, { FLUXMAIL_TELEMETRY: '1' })).toBe(true);
+  });
 });

@@ -52,21 +52,24 @@ The command prints a Google consent URL. On a remote server, it prints a one-tim
 
 ### Microsoft 365 or Outlook.com
 
-Complete the hosted setup in [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp). Add the Entra application settings to `.env`:
+Complete the hosted setup in [Connect Outlook / Exchange](/docs/connect-outlook-to-mcp). Keep the public URL in `.env` because it is deployment configuration:
 
 ```dotenv
-MICROSOFT_CLIENT_ID=<application-client-id>
-MICROSOFT_CLIENT_SECRET=<client-secret-value>
 FLUXMAIL_PUBLIC_URL=https://mail.example.com
 ```
 
-Restart Fluxmail after changing `.env`, then connect the mailbox:
+Restart Fluxmail after changing `.env`, configure the OAuth application, then connect the mailbox:
 
 ```bash
 docker compose up -d
 docker compose exec fluxmail \
+  fluxmail oauth configure outlook \
+  --client-id <application-client-id>
+docker compose exec fluxmail \
   fluxmail accounts add outlook
 ```
+
+The configure command prompts for the client secret and stores it encrypted in SQLite. In orchestrated deployments, mount the secret and set `MICROSOFT_CLIENT_SECRET_FILE` to its absolute path instead.
 
 Open the one-time link printed by the command. The link expires after 10 minutes.
 

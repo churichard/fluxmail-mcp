@@ -1,68 +1,116 @@
 ---
 title: 'Configuration'
-description: 'Environment variables and telemetry controls for the self-hosted Fluxmail server.'
-updated: '2026-07-17'
+description: 'Deployment configuration, encrypted instance settings, secret files, and telemetry controls.'
+updated: '2026-07-19'
 ---
 
-## Environment variables
+Fluxmail has two configuration domains. Deployment configuration controls how the process starts. Instance settings control OAuth applications and the license used by a running instance.
 
-Every setting is an environment variable, and there are three places to put one. In precedence order:
+## Deployment configuration
 
-1. The shell environment (always wins)
-2. `.env.local`, then `.env`, read from the working directory
-3. `fluxmail config set <KEY> <value>`, stored in `<data dir>/config.env` and available no matter where you run the CLI from
+Deployment settings are resolved in this order:
 
-Fluxmail includes a Google Desktop OAuth client for local Gmail connections. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to use another Google OAuth client. Hosted Gmail connections need a custom Web client. A local Outlook connection needs `MICROSOFT_CLIENT_ID`; hosted Outlook connections also need `MICROSOFT_CLIENT_SECRET`. IMAP mailboxes do not use these settings. Use `fluxmail config list` to review stored settings (secret values are masked) and `fluxmail config unset <KEY>` to remove one.
+1. Built-in defaults
+2. `<data dir>/config.toml`
+3. Process environment variables
 
-By default, Fluxmail processes that use the same data directory also open the same SQLite database. They share encrypted credentials, saved configuration, members, API keys, license state, and the telemetry setting. The processes can run different Fluxmail releases as long as each release supports the store format in that directory. Fluxmail exits without changing the database when the store format is not supported.
+Changes to deployment settings require a restart. Run `fluxmail config init` to create a starter file with owner-only permissions. Run `fluxmail config show` to see effective values, their sources, and the paths Fluxmail is using.
 
-Store format 1 is the compatibility baseline. Before a format migration, Fluxmail writes one database backup to the `backups` directory next to the database. Releases from before the format check can open format 1, but update those installations before a later Fluxmail release moves the store to a newer format.
+`FLUXMAIL_DATA_DIR` stays outside `config.toml` because it tells Fluxmail where to find the file. It defaults to `~/.fluxmail`, or `/data` in the Docker image.
 
-Set `FLUXMAIL_DATA_DIR` to create a separate installation. `FLUXMAIL_DB_PATH` changes only the database location. Fluxmail still reads the encryption key and saved configuration from the data directory. Shell variables and working-directory `.env` files can also give one process different settings from other processes that share the store.
+A typical file looks like this:
+
+```toml
+[storage]
+database_path = "/var/lib/fluxmail/fluxmail.db"
+
+[server]
+port = 8977
+public_url = "https://mail.example.com"
+trust_proxy = false
+max_attachment_mb = 10
+
+[oauth.local]
+host = "127.0.0.1"
+port = 8976
+```
+
+Fluxmail rejects unknown TOML keys, invalid types, and values outside their allowed ranges. It does not change `process.env` while resolving settings.
+
+## Instance settings
+
+Custom Google and Microsoft OAuth applications and the license key are stored as encrypted records in SQLite. Changes made with `fluxmail oauth configure`, `fluxmail oauth reset`, or `fluxmail license activate` take effect immediately. You do not need to restart the server.
+
+Use `fluxmail oauth status` to see client IDs, tenant IDs, configuration state, and source categories. Status output never includes client secrets, ciphertext, secret-file paths, or environment values.
+
+Environment variables can override a complete provider group. When a provider comes from the environment, authenticated commands and APIs cannot replace or reset it until you remove the overrides and restart Fluxmail.
+
+- Google requires both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+- Microsoft requires `MICROSOFT_CLIENT_ID` when any Microsoft override is present. `MICROSOFT_TENANT_ID` defaults to `common`. Public clients can omit `MICROSOFT_CLIENT_SECRET`.
+
+## Secret storage
+
+Fluxmail encrypts instance settings and provider credentials with AES-256-GCM before writing them to SQLite. Encrypted values use a versioned storage envelope so future releases can migrate the format safely.
+
+The encryption key is resolved from one source:
+
+1. `FLUXMAIL_ENCRYPTION_KEY`
+2. `FLUXMAIL_ENCRYPTION_KEY_FILE`
+3. `<data dir>/encryption.key`
+
+Fluxmail generates `<data dir>/encryption.key` with owner-only permissions when no external key is configured. Back up this file with the database. A database backup is not usable without the matching key.
+
+For managed deployments, use `*_FILE` variables instead of putting secrets directly in the process environment. Fluxmail supports files for `FLUXMAIL_ENCRYPTION_KEY`, `GOOGLE_CLIENT_SECRET`, `MICROSOFT_CLIENT_SECRET`, and `FLUXMAIL_LICENSE_KEY`. Paths must be absolute. Fluxmail reads UTF-8, removes one final newline, rejects empty files, and leaves externally managed file permissions unchanged.
+
+## Import an env file
+
+Fluxmail does not read `config.env`, `.env.local`, or `.env` files. Import settings from an existing file before starting Fluxmail:
+
+```bash
+fluxmail config migrate --from /absolute/path/to/old.env --dry-run
+fluxmail config migrate --from /absolute/path/to/old.env
+```
+
+The command validates imported deployment values and checks the database format before writing anything. It writes deployment settings to `config.toml`, stores OAuth applications and the license in encrypted SQLite records, and preserves the source file. If the encrypted settings step fails, Fluxmail removes only the new `config.toml` and `encryption.key` files created by that import. Run `fluxmail config show` and `fluxmail oauth status` after the import. Remove the old `config.env` after you verify the result.
+
+Docker Compose and process-manager env files still work because those tools populate the process environment before Fluxmail starts.
+
+## Setting reference
 
 <!-- BEGIN GENERATED:configuration -->
-| Environment variable | Default | Purpose |
-| --- | --- | --- |
-| `GOOGLE_CLIENT_ID` | `Fluxmail Desktop OAuth app` | Override the built-in Google OAuth client ID. |
-| `GOOGLE_CLIENT_SECRET` | `Fluxmail Desktop OAuth app` | Override the built-in Google OAuth client secret. Required with GOOGLE_CLIENT_ID. |
-| `MICROSOFT_CLIENT_ID` | `required for Outlook` | Microsoft Entra application client ID. |
-| `MICROSOFT_CLIENT_SECRET` | `required for hosted Outlook connections` | Microsoft Entra application client secret. |
-| `MICROSOFT_TENANT_ID` | `common` | Microsoft Entra tenant ID or verified domain. |
-| `FLUXMAIL_DATA_DIR` | `~/.fluxmail (/data in Docker)` | Directory for the SQLite database, stored config, and generated encryption key. |
-| `FLUXMAIL_DB_PATH` | `<data dir>/fluxmail.db` | Override the SQLite database path. |
-| `FLUXMAIL_ENCRYPTION_KEY` | `generated automatically` | A 64-character hexadecimal key used to encrypt provider credentials. |
-| `FLUXMAIL_PORT` | `8977` | HTTP server port. |
-| `FLUXMAIL_PUBLIC_URL` | `http://localhost:<FLUXMAIL_PORT>` | Public base URL used for HTTP APIs and hosted OAuth callbacks. |
-| `FLUXMAIL_TRUST_PROXY` | `0` | Trust Forwarded, X-Forwarded-Proto, and X-Forwarded-For headers from a reverse proxy. |
-| `FLUXMAIL_OAUTH_PORT` | `8976` | Port for the local OAuth callback listener. |
-| `FLUXMAIL_OAUTH_HOST` | `127.0.0.1` | Bind address for the local OAuth callback listener. |
-| `FLUXMAIL_MAX_ATTACHMENT_MB` | `10` | Largest decoded attachment returned through MCP or REST, from 1 through 25 MB. |
-| `FLUXMAIL_LICENSE_KEY` | `none` | Paid-plan license key, normally stored with fluxmail license activate. |
-| `FLUXMAIL_TELEMETRY` | `1` | Set to 0 to turn off anonymous CLI, MCP, and REST usage telemetry. |
-| `DO_NOT_TRACK` | `unset` | Set to 1 to turn off anonymous usage telemetry. |
+| Setting | Primary storage | Environment override | Default | Applies | Purpose |
+| --- | --- | --- | --- | --- | --- |
+| `deployment.data_dir` | External | `FLUXMAIL_DATA_DIR` | `~/.fluxmail (/data in Docker)` | Restart | Directory for the SQLite database, deployment configuration, and generated encryption key. |
+| `storage.database_path` | `storage.database_path` | `FLUXMAIL_DB_PATH` | `<data dir>/fluxmail.db` | Restart | Override the SQLite database path. |
+| `deployment.encryption_key` | External | `FLUXMAIL_ENCRYPTION_KEY`<br>`FLUXMAIL_ENCRYPTION_KEY_FILE` | `generated automatically` | Restart | A 64-character hexadecimal key used to encrypt credentials and instance secrets. |
+| `server.port` | `server.port` | `FLUXMAIL_PORT` | `8977` | Restart | HTTP server port. |
+| `server.public_url` | `server.public_url` | `FLUXMAIL_PUBLIC_URL` | `http://localhost:<FLUXMAIL_PORT>` | Restart | Public base URL used for HTTP APIs and hosted OAuth callbacks. |
+| `server.trust_proxy` | `server.trust_proxy` | `FLUXMAIL_TRUST_PROXY` | `false` | Restart | Trust forwarded protocol and client address headers from a reverse proxy. |
+| `oauth.local.port` | `oauth.local.port` | `FLUXMAIL_OAUTH_PORT` | `8976` | Restart | Port for the local OAuth callback listener. |
+| `oauth.local.host` | `oauth.local.host` | `FLUXMAIL_OAUTH_HOST` | `127.0.0.1` | Restart | Bind address for the local OAuth callback listener. |
+| `server.max_attachment_mb` | `server.max_attachment_mb` | `FLUXMAIL_MAX_ATTACHMENT_MB` | `10` | Restart | Largest decoded attachment returned through MCP or REST, from 1 through 25 MB. |
+| `oauth.google.client_id` | Encrypted SQLite | `GOOGLE_CLIENT_ID` | `Fluxmail Desktop OAuth app` | Immediate; env: restart | Override the built-in Google OAuth client ID. |
+| `oauth.google.client_secret` | Encrypted SQLite | `GOOGLE_CLIENT_SECRET`<br>`GOOGLE_CLIENT_SECRET_FILE` | `Fluxmail Desktop OAuth app` | Immediate; env: restart | Override the built-in Google OAuth client secret. Required with GOOGLE_CLIENT_ID. |
+| `oauth.microsoft.client_id` | Encrypted SQLite | `MICROSOFT_CLIENT_ID` | `required for Outlook` | Immediate; env: restart | Microsoft Entra application client ID. |
+| `oauth.microsoft.client_secret` | Encrypted SQLite | `MICROSOFT_CLIENT_SECRET`<br>`MICROSOFT_CLIENT_SECRET_FILE` | `required for hosted Outlook connections` | Immediate; env: restart | Microsoft Entra application client secret. |
+| `oauth.microsoft.tenant_id` | Encrypted SQLite | `MICROSOFT_TENANT_ID` | `common` | Immediate; env: restart | Microsoft Entra tenant ID or verified domain. |
+| `license.key` | Encrypted SQLite | `FLUXMAIL_LICENSE_KEY`<br>`FLUXMAIL_LICENSE_KEY_FILE` | `none` | Immediate; env: restart | Paid-plan license key, normally stored with fluxmail license activate. |
+| `telemetry.enabled` | Data directory marker | `FLUXMAIL_TELEMETRY` | `1` | Before startup | Set to 0 to turn off anonymous CLI, MCP, and REST usage telemetry. |
+| `telemetry.do_not_track` | Data directory marker | `DO_NOT_TRACK` | `unset` | Before startup | Set to 1 to turn off anonymous usage telemetry. |
 <!-- END GENERATED:configuration -->
 
-HTTP MCP requests require an API key. REST requests accept an active member session or API key. Each API key has its own permission profile and optional mailbox allowlist. See [Permissions](/docs/permissions) for profiles and custom policies, and [Authentication and instances](/docs/authentication-and-instances) for login and session storage.
-
-For the full command set, see the [CLI reference](/docs/cli).
+HTTP MCP requests require an API key. REST requests accept an active member session or API key. See [Permissions](/docs/permissions) and [Authentication and instances](/docs/authentication-and-instances).
 
 ## Telemetry
 
-Fluxmail sends anonymous usage events to its PostHog project by default. Events record the CLI command, MCP tool, or REST operation used, along with transport, outcome, duration, selected feature modes, a random installation ID, and basic runtime information such as the Fluxmail version, Node.js version, operating system, and CPU architecture. PostHog person profiles and GeoIP lookup are disabled.
+Fluxmail sends anonymous operation events to its PostHog project by default. Events record the CLI command, MCP tool, or REST operation, plus the outcome, duration, selected feature modes, a random installation ID, and basic runtime information.
 
-Fluxmail never sends command arguments, email or mailbox data, message identifiers, search queries, labels, attachment details, file paths, credentials, configuration values, or error text. Telemetry runs in the background and cannot interrupt commands or email operations.
+Fluxmail never sends command arguments, email or mailbox data, identifiers, search text, file paths, credentials, configuration values, request payloads, provider responses, stack traces, or error text. PostHog person profiles and GeoIP lookup are disabled.
 
-Turn it off for the installation:
+Turn telemetry off for the installation:
 
 ```bash
 fluxmail telemetry disable
 ```
 
-Check the setting or turn it back on:
-
-```bash
-fluxmail telemetry status
-fluxmail telemetry enable
-```
-
-You can also set `FLUXMAIL_TELEMETRY=0` or `DO_NOT_TRACK=1`. A saved disabled setting takes priority over `FLUXMAIL_TELEMETRY=1`.
+You can also set `FLUXMAIL_TELEMETRY=0` or `DO_NOT_TRACK=1`. Any disabling source takes priority over an enabling source. Use `fluxmail telemetry status` to check the effective state.

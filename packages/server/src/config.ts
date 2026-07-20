@@ -1,160 +1,229 @@
-import { randomBytes } from 'node:crypto';
-import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { homedir } from 'node:os';
-import path from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { DEFAULT_GOOGLE_CLIENT_ID, DEFAULT_GOOGLE_CLIENT_SECRET } from './accounts/defaultGoogleOAuth.js';
 import { DEFAULT_LICENSE_SERVER_URL } from './licensing/client.js';
-import { withFileLock } from './storage/fileLock.js';
+import {
+  DEFAULT_MAX_ATTACHMENT_BYTES,
+  DEPLOYMENT_REFERENCE,
+  HARD_MAX_ATTACHMENT_BYTES,
+  configTomlPath,
+  deploymentToml,
+  ensureDeploymentEncryptionKey,
+  expandHome,
+  readSecretEnvironment,
+  resolveDataDirectory,
+  resolveDeploymentConfig,
+  writeDeploymentConfig,
+  type ConfigSource,
+  type DeploymentConfig,
+  type DeploymentSettingName,
+} from './deploymentConfig.js';
+import { InstanceConfigStore, type StoredMicrosoftOAuthApp } from './instanceConfig.js';
+import type { FluxmailDb } from './storage/db.js';
 
-export const DEFAULT_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-export const HARD_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-const BYTES_PER_MEGABYTE = 1024 * 1024;
-const CONFIG_LOCK_TIMEOUT_MS = 5_000;
-const CONFIG_LOCK_STALE_MS = 30_000;
+export {
+  DEFAULT_MAX_ATTACHMENT_BYTES,
+  HARD_MAX_ATTACHMENT_BYTES,
+  configTomlPath,
+  deploymentToml,
+  ensureDeploymentEncryptionKey,
+  expandHome,
+  resolveDeploymentConfig,
+  writeDeploymentConfig,
+  type ConfigSource,
+  type DeploymentConfig,
+  type DeploymentSettingName,
+};
 
 export interface ConfigReferenceEntry {
   defaultValue: string;
   description: string;
   secret?: boolean;
   documented?: boolean;
+  envFile?: boolean;
+  category: 'deployment' | 'instance';
+  toml?: string;
 }
 
-/**
- * User-settable environment variables understood by the server. The public
- * documentation generator reads this registry, and config loading uses its
- * keys so adding a new setting cannot bypass the reference list by accident.
- */
-export const CONFIG_REFERENCE = {
-  GOOGLE_CLIENT_ID: {
+export type SettingMutability = 'immediate' | 'pre-database' | 'restart';
+
+export interface SettingRegistryEntry {
+  canonicalName: string;
+  env: string;
+  toml?: string;
+  type: 'boolean' | 'integer' | 'path' | 'secret' | 'string' | 'url';
+  validation: string;
+  defaultValue: string;
+  sensitive: boolean;
+  mutability: SettingMutability;
+  environmentRequiresRestart?: boolean;
+  description: string;
+  category: 'deployment' | 'instance';
+  primaryStorage?: 'Data directory marker' | 'Encrypted SQLite' | 'External';
+  envFile?: boolean;
+  documented?: boolean;
+}
+
+const INSTANCE_SETTING_REGISTRY = {
+  'oauth.google.client_id': {
+    canonicalName: 'oauth.google.client_id',
+    env: 'GOOGLE_CLIENT_ID',
+    type: 'string',
+    validation: 'Non-empty and paired with a Google client secret',
     defaultValue: 'Fluxmail Desktop OAuth app',
+    sensitive: false,
+    mutability: 'immediate',
+    environmentRequiresRestart: true,
     description: 'Override the built-in Google OAuth client ID.',
+    category: 'instance',
   },
-  GOOGLE_CLIENT_SECRET: {
+  'oauth.google.client_secret': {
+    canonicalName: 'oauth.google.client_secret',
+    env: 'GOOGLE_CLIENT_SECRET',
+    type: 'secret',
+    validation: 'Non-empty and paired with a Google client ID',
     defaultValue: 'Fluxmail Desktop OAuth app',
+    sensitive: true,
+    mutability: 'immediate',
+    environmentRequiresRestart: true,
     description: 'Override the built-in Google OAuth client secret. Required with GOOGLE_CLIENT_ID.',
-    secret: true,
+    category: 'instance',
+    envFile: true,
   },
-  MICROSOFT_CLIENT_ID: {
+  'oauth.microsoft.client_id': {
+    canonicalName: 'oauth.microsoft.client_id',
+    env: 'MICROSOFT_CLIENT_ID',
+    type: 'string',
+    validation: 'Non-empty when any Microsoft override is present',
     defaultValue: 'required for Outlook',
+    sensitive: false,
+    mutability: 'immediate',
+    environmentRequiresRestart: true,
     description: 'Microsoft Entra application client ID.',
+    category: 'instance',
   },
-  MICROSOFT_CLIENT_SECRET: {
+  'oauth.microsoft.client_secret': {
+    canonicalName: 'oauth.microsoft.client_secret',
+    env: 'MICROSOFT_CLIENT_SECRET',
+    type: 'secret',
+    validation: 'Non-empty when configured',
     defaultValue: 'required for hosted Outlook connections',
+    sensitive: true,
+    mutability: 'immediate',
+    environmentRequiresRestart: true,
     description: 'Microsoft Entra application client secret.',
-    secret: true,
+    category: 'instance',
+    envFile: true,
   },
-  MICROSOFT_TENANT_ID: {
+  'oauth.microsoft.tenant_id': {
+    canonicalName: 'oauth.microsoft.tenant_id',
+    env: 'MICROSOFT_TENANT_ID',
+    type: 'string',
+    validation: 'Non-empty tenant ID or verified domain',
     defaultValue: 'common',
+    sensitive: false,
+    mutability: 'immediate',
+    environmentRequiresRestart: true,
     description: 'Microsoft Entra tenant ID or verified domain.',
+    category: 'instance',
   },
-  FLUXMAIL_DATA_DIR: {
-    defaultValue: '~/.fluxmail (/data in Docker)',
-    description: 'Directory for the SQLite database, stored config, and generated encryption key.',
-  },
-  FLUXMAIL_DB_PATH: {
-    defaultValue: '<data dir>/fluxmail.db',
-    description: 'Override the SQLite database path.',
-  },
-  FLUXMAIL_ENCRYPTION_KEY: {
-    defaultValue: 'generated automatically',
-    description: 'A 64-character hexadecimal key used to encrypt provider credentials.',
-    secret: true,
-  },
-  FLUXMAIL_PORT: {
-    defaultValue: '8977',
-    description: 'HTTP server port.',
-  },
-  FLUXMAIL_PUBLIC_URL: {
-    defaultValue: 'http://localhost:<FLUXMAIL_PORT>',
-    description: 'Public base URL used for HTTP APIs and hosted OAuth callbacks.',
-  },
-  FLUXMAIL_TRUST_PROXY: {
-    defaultValue: '0',
-    description: 'Trust Forwarded, X-Forwarded-Proto, and X-Forwarded-For headers from a reverse proxy.',
-  },
-  FLUXMAIL_OAUTH_PORT: {
-    defaultValue: '8976',
-    description: 'Port for the local OAuth callback listener.',
-  },
-  FLUXMAIL_OAUTH_HOST: {
-    defaultValue: '127.0.0.1',
-    description: 'Bind address for the local OAuth callback listener.',
-  },
-  FLUXMAIL_MAX_ATTACHMENT_MB: {
-    defaultValue: '10',
-    description: 'Largest decoded attachment returned through MCP or REST, from 1 through 25 MB.',
-  },
-  FLUXMAIL_LICENSE_KEY: {
+  'license.key': {
+    canonicalName: 'license.key',
+    env: 'FLUXMAIL_LICENSE_KEY',
+    type: 'secret',
+    validation: 'Fluxmail license key',
     defaultValue: 'none',
+    sensitive: true,
+    mutability: 'immediate',
+    environmentRequiresRestart: true,
     description: 'Paid-plan license key, normally stored with fluxmail license activate.',
-    secret: true,
+    category: 'instance',
+    envFile: true,
   },
-  FLUXMAIL_TELEMETRY: {
+  'telemetry.enabled': {
+    canonicalName: 'telemetry.enabled',
+    env: 'FLUXMAIL_TELEMETRY',
+    type: 'boolean',
+    validation: '0, 1, false, true, no, off, or on',
     defaultValue: '1',
+    sensitive: false,
+    mutability: 'pre-database',
     description: 'Set to 0 to turn off anonymous CLI, MCP, and REST usage telemetry.',
+    category: 'instance',
+    primaryStorage: 'Data directory marker',
   },
-  DO_NOT_TRACK: {
+  'telemetry.do_not_track': {
+    canonicalName: 'telemetry.do_not_track',
+    env: 'DO_NOT_TRACK',
+    type: 'boolean',
+    validation: 'Truthy value disables telemetry',
     defaultValue: 'unset',
+    sensitive: false,
+    mutability: 'pre-database',
     description: 'Set to 1 to turn off anonymous usage telemetry.',
+    category: 'instance',
+    primaryStorage: 'Data directory marker',
   },
-  FLUXMAIL_LICENSE_SERVER_URL: {
-    defaultValue: DEFAULT_LICENSE_SERVER_URL,
-    description: 'License validation service override used for development and testing.',
-    documented: false,
-  },
-} as const satisfies Record<string, ConfigReferenceEntry>;
+} as const satisfies Record<string, SettingRegistryEntry>;
 
-export type ConfigEnvironmentName = keyof typeof CONFIG_REFERENCE;
+export const SETTING_REGISTRY: Record<string, SettingRegistryEntry> = {
+  ...Object.fromEntries(
+    Object.values(DEPLOYMENT_REFERENCE).map((entry) => [
+      entry.canonicalName,
+      {
+        canonicalName: entry.canonicalName,
+        env: entry.env,
+        ...('toml' in entry && entry.toml ? { toml: entry.toml } : {}),
+        type: entry.type,
+        validation: entry.validation,
+        defaultValue: entry.defaultValue,
+        sensitive: 'secret' in entry && entry.secret === true,
+        mutability: 'restart' as const,
+        description: entry.description,
+        category: 'deployment' as const,
+        ...('secret' in entry && entry.secret ? { envFile: true } : {}),
+        ...('documented' in entry && entry.documented === false ? { documented: false } : {}),
+      },
+    ]),
+  ),
+  ...INSTANCE_SETTING_REGISTRY,
+};
 
-function readEnvironment(name: ConfigEnvironmentName): string | undefined {
-  return process.env[name];
-}
+export const CONFIG_REFERENCE = Object.fromEntries(
+  Object.values(SETTING_REGISTRY).map((entry) => [
+    entry.env,
+    {
+      defaultValue: entry.defaultValue,
+      description: entry.description,
+      category: entry.category,
+      ...(entry.sensitive ? { secret: true } : {}),
+      ...(entry.envFile ? { envFile: true } : {}),
+      ...(entry.toml ? { toml: entry.toml } : {}),
+      ...(entry.documented === false ? { documented: false } : {}),
+    },
+  ]),
+) as Record<string, ConfigReferenceEntry>;
 
 export interface FluxmailConfig {
   dataDir: string;
   dbPath: string;
-  /** 32-byte key for AES-256-GCM token encryption. */
   encryptionKey: Buffer;
   port: number;
-  /** Public base URL of the HTTP server, used to build OAuth redirect URIs. */
   publicUrl: string;
-  /** Whether FLUXMAIL_PUBLIC_URL was explicitly set instead of using the localhost default. */
   publicUrlConfigured?: boolean;
-  /** Trust proxy-supplied protocol and client address headers. */
   trustProxy?: boolean;
-  /** Port for the ephemeral loopback OAuth listener used by `fluxmail accounts add`. */
   oauthPort: number;
-  /** Bind address for the OAuth listener. Docker uses 0.0.0.0 so its published port can reach it. */
   oauthHost: string;
-  /** Largest attachment Fluxmail will return through MCP or REST. */
   maxAttachmentBytes: number;
-  /** Paid-tier license key (fluxmail_lic_…); absent means free tier. */
   licenseKey?: string;
-  /** True when the license key came from the environment or a cwd dotenv file. */
   licenseKeyFromEnvironment?: boolean;
-  /** Base URL of the hosted license server. */
   licenseServerUrl: string;
   google?: {
     clientId: string;
-    /** Google requires this generated credential for both Desktop and Web token exchanges. */
     clientSecret: string;
   };
   microsoft?: {
     clientId: string;
-    /** Optional for public-client app registrations that use PKCE. */
     clientSecret?: string;
-    /** common supports both personal Microsoft accounts and Entra work accounts. */
     tenantId: string;
   };
 }
@@ -162,343 +231,275 @@ export interface FluxmailConfig {
 export interface FluxmailStoreLocation {
   dataDir: string;
   dbPath: string;
+  deployment?: DeploymentConfig;
 }
 
-function unquoteEnvValue(value: string): string {
-  if (value.startsWith('"') && value.endsWith('"')) {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      return typeof parsed === 'string' ? parsed : value.slice(1, -1);
-    } catch {
-      return value.slice(1, -1);
-    }
+export type OAuthAppSource = 'built-in' | 'stored' | 'environment' | 'environment-file' | null;
+
+export interface OAuthAppStatus {
+  google: {
+    clientId: string;
+    clientSecretConfigured: true;
+    source: Exclude<OAuthAppSource, null>;
+    mutable: boolean;
+  };
+  outlook: {
+    clientId: string | null;
+    tenantId: string | null;
+    clientSecretConfigured: boolean;
+    source: OAuthAppSource;
+    mutable: boolean;
+  };
+}
+
+export class EnvironmentControlledSettingError extends Error {
+  readonly code = 'environment_controlled';
+}
+
+function readOptionalSecretEnvironment(env: NodeJS.ProcessEnv, name: string): ReturnType<typeof readSecretEnvironment> {
+  return readSecretEnvironment(env, name, { blank: 'unset' });
+}
+
+type EnvironmentSource = 'environment' | 'environment-file';
+
+interface EnvironmentOverride<T> {
+  value?: T;
+  source?: EnvironmentSource;
+  controlled: boolean;
+}
+
+function environmentGoogle(env: NodeJS.ProcessEnv): EnvironmentOverride<{
+  clientId: string;
+  clientSecret: string;
+}> {
+  const clientId = env.GOOGLE_CLIENT_ID?.trim();
+  const secret = readOptionalSecretEnvironment(env, 'GOOGLE_CLIENT_SECRET');
+  const controlled = Boolean(clientId) || secret.value !== undefined;
+  if (!controlled) return { controlled: false };
+  if (!clientId) throw new Error('GOOGLE_CLIENT_ID is required when Google OAuth environment overrides are used.');
+  if (!secret.value) {
+    throw new Error('GOOGLE_CLIENT_SECRET or GOOGLE_CLIENT_SECRET_FILE is required with GOOGLE_CLIENT_ID.');
   }
-  if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
-  return value;
+  return {
+    value: { clientId, clientSecret: secret.value },
+    source: secret.source === 'environment-file' ? 'environment-file' : 'environment',
+    controlled: true,
+  };
 }
 
-function parseEnvValue(raw: string): string {
-  // A fully quoted value may contain "#" verbatim.
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    return unquoteEnvValue(raw);
+function environmentMicrosoft(env: NodeJS.ProcessEnv): EnvironmentOverride<StoredMicrosoftOAuthApp> {
+  const clientId = env.MICROSOFT_CLIENT_ID?.trim();
+  const clientSecret = readOptionalSecretEnvironment(env, 'MICROSOFT_CLIENT_SECRET');
+  const tenantId = env.MICROSOFT_TENANT_ID?.trim();
+  const controlled = Boolean(clientId) || Boolean(tenantId) || clientSecret.value !== undefined;
+  if (!controlled) return { controlled: false };
+  if (!clientId) {
+    throw new Error('MICROSOFT_CLIENT_ID is required when Microsoft OAuth environment overrides are used.');
   }
-  // Otherwise strip an inline comment (whitespace + #), like dotenv and docker compose do.
-  const quoted = raw.match(/^("(?:[^"\\]|\\.)*"|'[^']*')\s+#/);
-  if (quoted?.[1]) return unquoteEnvValue(quoted[1]);
-  const comment = raw.search(/\s#/);
-  return comment === -1 ? raw : raw.slice(0, comment).trimEnd();
+  return {
+    value: {
+      clientId,
+      tenantId: tenantId || 'common',
+      ...(clientSecret.value ? { clientSecret: clientSecret.value } : {}),
+    },
+    source: clientSecret.source === 'environment-file' ? 'environment-file' : 'environment',
+    controlled: true,
+  };
 }
 
-function parseEnvContent(content: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq === -1) continue;
-    const key = trimmed
-      .slice(0, eq)
-      .trim()
-      .replace(/^export\s+/, '');
-    if (key) out[key] = parseEnvValue(trimmed.slice(eq + 1).trim());
-  }
-  return out;
+function environmentLicense(env: NodeJS.ProcessEnv): EnvironmentOverride<string> {
+  const configured = readOptionalSecretEnvironment(env, 'FLUXMAIL_LICENSE_KEY');
+  return { value: configured.value?.trim(), source: configured.source, controlled: configured.value !== undefined };
 }
 
-function applyDotEnvFile(file: string): void {
-  if (!existsSync(file)) return;
-  for (const [key, value] of Object.entries(parseEnvContent(readFileSync(file, 'utf8')))) {
-    if (process.env[key] === undefined) process.env[key] = value;
-  }
+function baseConfigFromDeployment(deployment: DeploymentConfig): FluxmailConfig {
+  return {
+    dataDir: deployment.dataDir,
+    dbPath: deployment.dbPath,
+    encryptionKey: deployment.encryptionKey,
+    port: deployment.port,
+    publicUrl: deployment.publicUrl,
+    publicUrlConfigured: deployment.publicUrlConfigured,
+    trustProxy: deployment.trustProxy,
+    oauthPort: deployment.oauthPort,
+    oauthHost: deployment.oauthHost,
+    maxAttachmentBytes: deployment.maxAttachmentBytes,
+    licenseServerUrl: deployment.licenseServerUrl,
+  };
 }
 
-/**
- * Load .env.local and .env from the working directory. Real environment
- * variables always win; .env.local wins over .env.
- */
-export function loadDotEnv(cwd = process.cwd()): void {
-  applyDotEnvFile(path.join(cwd, '.env.local'));
-  applyDotEnvFile(path.join(cwd, '.env'));
+function configFromDeployment(deployment: DeploymentConfig): FluxmailConfig {
+  const google = environmentGoogle(deployment.environment);
+  const microsoft = environmentMicrosoft(deployment.environment);
+  const license = environmentLicense(deployment.environment);
+  return {
+    ...baseConfigFromDeployment(deployment),
+    google: google.value ?? { clientId: DEFAULT_GOOGLE_CLIENT_ID, clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET },
+    ...(microsoft.value ? { microsoft: microsoft.value } : {}),
+    ...(license.value ? { licenseKey: license.value, licenseKeyFromEnvironment: true } : {}),
+  };
 }
 
-/** Expand a leading "~" (e.g. FLUXMAIL_DATA_DIR=~/.fluxmail), which Node does not do. */
-export function expandHome(p: string): string {
-  if (p === '~') return homedir();
-  if (p.startsWith('~/')) return path.join(homedir(), p.slice(2));
-  return p;
-}
-
-/** Resolve (and create) the data dir, honoring cwd .env files and FLUXMAIL_DATA_DIR. */
-export function resolveDataDir(): string {
-  loadDotEnv();
-  const fromEnv = readEnvironment('FLUXMAIL_DATA_DIR');
-  const dataDir = fromEnv ? expandHome(fromEnv) : path.join(homedir(), '.fluxmail');
+export function resolveDataDir(options: { env?: NodeJS.ProcessEnv } = {}): string {
+  const dataDir = resolveDataDirectory(options.env);
   mkdirSync(dataDir, { recursive: true });
   return dataDir;
 }
 
-export function configFilePath(dataDir: string): string {
-  return path.join(dataDir, 'config.env');
-}
-
-/** Apply settings persisted by `fluxmail config set` without overriding the current environment. */
-export function applyStoredConfig(dataDir: string): void {
-  applyDotEnvFile(configFilePath(dataDir));
-}
-
-/** Best-effort permission tightening: chmod fails on files owned by another user, but the read may still work. */
-function tryRestrictPermissions(file: string): void {
-  try {
-    chmodSync(file, 0o600);
-  } catch {
-    // Reading (or a later write) will surface a real permission problem.
-  }
-}
-
-/** Settings persisted by `fluxmail config set`, e.g. GOOGLE_CLIENT_ID. */
-export function readStoredConfig(dataDir: string): Record<string, string> {
-  const file = configFilePath(dataDir);
-  if (!existsSync(file)) return {};
-  tryRestrictPermissions(file);
-  return parseEnvContent(readFileSync(file, 'utf8'));
-}
-
-const CONFIG_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
-
-export function setStoredConfig(dataDir: string, key: string, value: string): void {
-  if (!CONFIG_KEY_PATTERN.test(key)) {
-    throw new Error(`Invalid key "${key}": use UPPER_SNAKE_CASE, e.g. GOOGLE_CLIENT_ID`);
-  }
-  if (key === 'FLUXMAIL_DATA_DIR') {
-    throw new Error('FLUXMAIL_DATA_DIR cannot be stored in the data dir itself; set it in your shell or a .env file');
-  }
-  withConfigLock(dataDir, () => {
-    const stored = readStoredConfig(dataDir);
-    stored[key] = value;
-    writeStoredConfig(dataDir, stored);
+export function resolveStoreLocation(options: { env?: NodeJS.ProcessEnv } = {}): FluxmailStoreLocation {
+  const deployment = resolveDeploymentConfig({
+    ...options,
+    defaultLicenseServerUrl: DEFAULT_LICENSE_SERVER_URL,
+    generateEncryptionKey: false,
   });
+  return { dataDir: deployment.dataDir, dbPath: deployment.dbPath, deployment };
 }
 
-export function unsetStoredConfig(dataDir: string, key: string): boolean {
-  return withConfigLock(dataDir, () => {
-    const stored = readStoredConfig(dataDir);
-    if (!(key in stored)) return false;
-    delete stored[key];
-    writeStoredConfig(dataDir, stored);
-    return true;
-  });
+export function loadConfig(storeLocation?: FluxmailStoreLocation): FluxmailConfig {
+  const initial = storeLocation?.deployment;
+  const deployment = initial
+    ? ensureDeploymentEncryptionKey(initial)
+    : resolveDeploymentConfig({
+        env: {
+          ...process.env,
+          ...(storeLocation?.dataDir ? { FLUXMAIL_DATA_DIR: storeLocation.dataDir } : {}),
+          ...(storeLocation?.dbPath ? { FLUXMAIL_DB_PATH: storeLocation.dbPath } : {}),
+        },
+        defaultLicenseServerUrl: DEFAULT_LICENSE_SERVER_URL,
+        generateEncryptionKey: true,
+      });
+  return configFromDeployment(deployment);
 }
 
-export function maskStoredConfigValue(key: string, value: string): string {
-  if (!/SECRET|KEY|TOKEN|PASSWORD/i.test(key)) return value;
-  return value.length > 8 ? `${value.slice(0, 4)}…${value.slice(-4)}` : '********';
-}
+export class ConfigurationService {
+  readonly store: InstanceConfigStore;
+  readonly config: FluxmailConfig;
+  private readonly googleEnvironment: ReturnType<typeof environmentGoogle>;
+  private readonly microsoftEnvironment: ReturnType<typeof environmentMicrosoft>;
+  private readonly licenseEnvironment: ReturnType<typeof environmentLicense>;
+  private googleSource: Exclude<OAuthAppSource, null> = 'built-in';
+  private microsoftSource: OAuthAppSource = null;
+  private currentLicenseSource: EnvironmentSource | 'stored' | null = null;
 
-function writeStoredConfig(dataDir: string, values: Record<string, string>): void {
-  const file = configFilePath(dataDir);
-  const temporary = path.join(dataDir, `.config.env.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
-  const lines = Object.entries(values).map(([k, v]) => `${k}=${JSON.stringify(v)}`);
-  let descriptor: number | undefined;
-  try {
-    descriptor = openSync(temporary, 'wx', 0o600);
-    writeFileSync(descriptor, lines.join('\n') + (lines.length ? '\n' : ''), 'utf8');
-    fsyncSync(descriptor);
-    closeSync(descriptor);
-    descriptor = undefined;
-    renameSync(temporary, file);
-    tryRestrictPermissions(file);
-    trySyncDirectory(dataDir);
-  } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
-    rmSync(temporary, { force: true });
-  }
-}
-
-function trySyncDirectory(directory: string): void {
-  let descriptor: number | undefined;
-  try {
-    descriptor = openSync(directory, 'r');
-    fsyncSync(descriptor);
-  } catch {
-    // Some filesystems do not support fsync on directories.
-  } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
-  }
-}
-
-function withConfigLock<T>(dataDir: string, callback: () => T): T {
-  return withFileLock(
-    path.join(dataDir, '.config.lock'),
-    {
-      timeoutMs: CONFIG_LOCK_TIMEOUT_MS,
-      staleMs: CONFIG_LOCK_STALE_MS,
-      description: `the stored configuration at ${configFilePath(dataDir)}`,
-    },
-    callback,
-  );
-}
-
-function decodeEncryptionKey(value: string, errorMessage: string): Buffer {
-  if (!/^[0-9a-fA-F]{64}$/.test(value)) throw new Error(errorMessage);
-  return Buffer.from(value, 'hex');
-}
-
-function readPort(name: 'FLUXMAIL_PORT' | 'FLUXMAIL_OAUTH_PORT', fallback: number): number {
-  const raw = readEnvironment(name);
-  if (raw === undefined) return fallback;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value < 1 || value > 65_535) {
-    throw new Error(`${name} must be an integer between 1 and 65535, got "${raw}"`);
-  }
-  return value;
-}
-
-function readMaxAttachmentBytes(): number {
-  const raw = readEnvironment('FLUXMAIL_MAX_ATTACHMENT_MB');
-  if (raw === undefined) return DEFAULT_MAX_ATTACHMENT_BYTES;
-  const value = Number(raw);
-  const hardMaxMegabytes = HARD_MAX_ATTACHMENT_BYTES / BYTES_PER_MEGABYTE;
-  if (!Number.isInteger(value) || value < 1 || value > hardMaxMegabytes) {
-    throw new Error(`FLUXMAIL_MAX_ATTACHMENT_MB must be an integer between 1 and ${hardMaxMegabytes}, got "${raw}"`);
-  }
-  return value * BYTES_PER_MEGABYTE;
-}
-
-function readTrustProxy(): boolean {
-  const raw = readEnvironment('FLUXMAIL_TRUST_PROXY');
-  if (raw === undefined) return false;
-  const normalized = raw.trim().toLowerCase();
-  if (normalized === '1' || normalized === 'true') return true;
-  if (normalized === '0' || normalized === 'false') return false;
-  throw new Error(`FLUXMAIL_TRUST_PROXY must be 0, 1, false, or true, got "${raw}"`);
-}
-
-function readPublicUrl(port: number): string {
-  const value = (readEnvironment('FLUXMAIL_PUBLIC_URL') ?? `http://localhost:${port}`).replace(/\/+$/, '');
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error(`FLUXMAIL_PUBLIC_URL must be a valid HTTP or HTTPS URL, got "${value}"`);
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`FLUXMAIL_PUBLIC_URL must use HTTP or HTTPS, got "${parsed.protocol}"`);
-  }
-  if (parsed.username || parsed.password) {
-    throw new Error('FLUXMAIL_PUBLIC_URL cannot contain embedded credentials');
-  }
-  if (parsed.search || parsed.hash) {
-    throw new Error('FLUXMAIL_PUBLIC_URL cannot contain a query string or fragment');
-  }
-  return value;
-}
-
-function loadEncryptionKey(dataDir: string): Buffer {
-  const fromEnv = readEnvironment('FLUXMAIL_ENCRYPTION_KEY');
-  if (fromEnv) {
-    return decodeEncryptionKey(fromEnv, 'FLUXMAIL_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)');
-  }
-  // Auto-generate on first run so getting started requires zero key management.
-  const keyPath = path.join(dataDir, 'encryption.key');
-  if (existsSync(keyPath)) {
-    tryRestrictPermissions(keyPath);
-    const key = decodeEncryptionKey(readFileSync(keyPath, 'utf8').trim(), `Corrupt encryption key at ${keyPath}`);
-    return key;
-  }
-  return withFileLock(
-    path.join(dataDir, '.encryption-key.lock'),
-    {
-      timeoutMs: CONFIG_LOCK_TIMEOUT_MS,
-      staleMs: CONFIG_LOCK_STALE_MS,
-      description: `the encryption key at ${keyPath}`,
-    },
-    () => {
-      if (existsSync(keyPath)) {
-        tryRestrictPermissions(keyPath);
-        return decodeEncryptionKey(readFileSync(keyPath, 'utf8').trim(), `Corrupt encryption key at ${keyPath}`);
-      }
-      const key = randomBytes(32);
-      const temporary = path.join(dataDir, `.encryption.key.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
-      let descriptor: number | undefined;
-      try {
-        descriptor = openSync(temporary, 'wx', 0o600);
-        writeFileSync(descriptor, key.toString('hex') + '\n', 'utf8');
-        fsyncSync(descriptor);
-        closeSync(descriptor);
-        descriptor = undefined;
-        renameSync(temporary, keyPath);
-        trySyncDirectory(dataDir);
-        return key;
-      } finally {
-        if (descriptor !== undefined) closeSync(descriptor);
-        rmSync(temporary, { force: true });
-      }
-    },
-  );
-}
-
-export function resolveStoreLocation(): FluxmailStoreLocation {
-  const dataDir = resolveDataDir();
-  const databasePath = readEnvironment('FLUXMAIL_DB_PATH') ?? readStoredConfig(dataDir).FLUXMAIL_DB_PATH;
-  return {
-    dataDir,
-    dbPath: databasePath ? expandHome(databasePath) : path.join(dataDir, 'fluxmail.db'),
-  };
-}
-
-export function loadConfig(storeLocation: FluxmailStoreLocation = resolveStoreLocation()): FluxmailConfig {
-  // Precedence: shell env > cwd .env.local > cwd .env > data-dir config.env.
-  const { dataDir, dbPath } = storeLocation;
-  const licenseKeyFromEnvironment = readEnvironment('FLUXMAIL_LICENSE_KEY') !== undefined;
-  applyStoredConfig(dataDir);
-
-  const port = readPort('FLUXMAIL_PORT', 8977);
-  const oauthPort = readPort('FLUXMAIL_OAUTH_PORT', 8976);
-  const publicUrlConfigured = readEnvironment('FLUXMAIL_PUBLIC_URL') !== undefined;
-  const publicUrl = readPublicUrl(port);
-  const config: FluxmailConfig = {
-    dataDir,
-    dbPath,
-    encryptionKey: loadEncryptionKey(dataDir),
-    port,
-    publicUrl,
-    publicUrlConfigured,
-    trustProxy: readTrustProxy(),
-    oauthPort,
-    oauthHost: readEnvironment('FLUXMAIL_OAUTH_HOST') ?? '127.0.0.1',
-    maxAttachmentBytes: readMaxAttachmentBytes(),
-    licenseServerUrl: (readEnvironment('FLUXMAIL_LICENSE_SERVER_URL') ?? DEFAULT_LICENSE_SERVER_URL).replace(
-      /\/+$/,
-      '',
-    ),
-  };
-
-  const licenseKey = readEnvironment('FLUXMAIL_LICENSE_KEY')?.trim();
-  if (licenseKey) {
-    config.licenseKey = licenseKey;
-    config.licenseKeyFromEnvironment = licenseKeyFromEnvironment;
+  constructor(
+    readonly deployment: DeploymentConfig,
+    db: FluxmailDb,
+  ) {
+    this.store = new InstanceConfigStore(db, deployment.encryptionKey);
+    this.googleEnvironment = environmentGoogle(deployment.environment);
+    this.microsoftEnvironment = environmentMicrosoft(deployment.environment);
+    this.licenseEnvironment = environmentLicense(deployment.environment);
+    this.config = baseConfigFromDeployment(deployment);
+    this.reload();
   }
 
-  const clientId = readEnvironment('GOOGLE_CLIENT_ID')?.trim();
-  const clientSecret = readEnvironment('GOOGLE_CLIENT_SECRET')?.trim();
-  if (!clientId && clientSecret) {
-    throw new Error('GOOGLE_CLIENT_SECRET requires GOOGLE_CLIENT_ID.');
+  reload(): FluxmailConfig {
+    const storedGoogle = this.googleEnvironment.controlled ? undefined : this.store.google();
+    this.config.google = this.googleEnvironment.value ??
+      storedGoogle ?? { clientId: DEFAULT_GOOGLE_CLIENT_ID, clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET };
+    this.googleSource = this.googleEnvironment.source ?? (storedGoogle ? 'stored' : 'built-in');
+
+    const storedMicrosoft = this.microsoftEnvironment.controlled ? undefined : this.store.microsoft();
+    const microsoft = this.microsoftEnvironment.value ?? storedMicrosoft;
+    if (microsoft) this.config.microsoft = microsoft;
+    else delete this.config.microsoft;
+    this.microsoftSource = this.microsoftEnvironment.source ?? (storedMicrosoft ? 'stored' : null);
+
+    const storedLicense = this.licenseEnvironment.controlled ? undefined : this.store.licenseKey();
+    const licenseKey = this.licenseEnvironment.value ?? storedLicense;
+    if (licenseKey) this.config.licenseKey = licenseKey;
+    else delete this.config.licenseKey;
+    this.config.licenseKeyFromEnvironment = this.licenseEnvironment.controlled;
+    this.currentLicenseSource = this.licenseEnvironment.source ?? (storedLicense ? 'stored' : null);
+    return this.config;
   }
-  if (clientId && !clientSecret) {
-    throw new Error('GOOGLE_CLIENT_ID requires GOOGLE_CLIENT_SECRET.');
-  }
-  config.google =
-    clientId && clientSecret
-      ? { clientId, clientSecret }
-      : { clientId: DEFAULT_GOOGLE_CLIENT_ID, clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET };
-  const microsoftClientId = readEnvironment('MICROSOFT_CLIENT_ID')?.trim();
-  if (microsoftClientId) {
-    const microsoftClientSecret = readEnvironment('MICROSOFT_CLIENT_SECRET')?.trim();
-    config.microsoft = {
-      clientId: microsoftClientId,
-      tenantId: readEnvironment('MICROSOFT_TENANT_ID')?.trim() || 'common',
-      ...(microsoftClientSecret ? { clientSecret: microsoftClientSecret } : {}),
+
+  oauthStatus(): OAuthAppStatus {
+    return {
+      google: {
+        clientId: this.config.google!.clientId,
+        clientSecretConfigured: true,
+        source: this.googleSource,
+        mutable: !this.googleEnvironment.controlled,
+      },
+      outlook: {
+        clientId: this.config.microsoft?.clientId ?? null,
+        tenantId: this.config.microsoft?.tenantId ?? null,
+        clientSecretConfigured: Boolean(this.config.microsoft?.clientSecret),
+        source: this.microsoftSource,
+        mutable: !this.microsoftEnvironment.controlled,
+      },
     };
   }
-  return config;
+
+  licenseSource(): 'environment' | 'environment-file' | 'stored' | null {
+    return this.currentLicenseSource;
+  }
+
+  setGoogle(value: { clientId: string; clientSecret: string }): void {
+    if (this.googleEnvironment.controlled) {
+      throw new EnvironmentControlledSettingError(
+        'Google OAuth is controlled by environment variables and cannot be changed through the API.',
+      );
+    }
+    this.store.setGoogle(value);
+    this.reload();
+  }
+
+  resetGoogle(): boolean {
+    if (this.googleEnvironment.controlled) {
+      throw new EnvironmentControlledSettingError(
+        'Google OAuth is controlled by environment variables and cannot be changed through the API.',
+      );
+    }
+    const removed = this.store.removeGoogle();
+    this.reload();
+    return removed;
+  }
+
+  setMicrosoft(value: StoredMicrosoftOAuthApp): void {
+    if (this.microsoftEnvironment.controlled) {
+      throw new EnvironmentControlledSettingError(
+        'Microsoft OAuth is controlled by environment variables and cannot be changed through the API.',
+      );
+    }
+    this.store.setMicrosoft(value);
+    this.reload();
+  }
+
+  resetMicrosoft(): boolean {
+    if (this.microsoftEnvironment.controlled) {
+      throw new EnvironmentControlledSettingError(
+        'Microsoft OAuth is controlled by environment variables and cannot be changed through the API.',
+      );
+    }
+    const removed = this.store.removeMicrosoft();
+    this.reload();
+    return removed;
+  }
+
+  setLicenseKey(value: string): void {
+    if (this.licenseEnvironment.controlled) {
+      throw new EnvironmentControlledSettingError(
+        'The license is controlled by the environment and cannot be changed through the API.',
+      );
+    }
+    this.store.setLicenseKey(value);
+    this.reload();
+  }
+
+  removeLicenseKey(): boolean {
+    if (this.licenseEnvironment.controlled) {
+      throw new EnvironmentControlledSettingError(
+        'The license is controlled by the environment and cannot be changed through the API.',
+      );
+    }
+    const removed = this.store.removeLicenseKey();
+    this.reload();
+    return removed;
+  }
+}
+
+export function createConfigurationService(deployment: DeploymentConfig, db: FluxmailDb): ConfigurationService {
+  return new ConfigurationService(deployment, db);
 }

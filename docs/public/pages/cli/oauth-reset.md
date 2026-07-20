@@ -1,26 +1,26 @@
 ---
-title: 'fluxmail config unset'
-description: 'Remove a stored setting'
+title: 'fluxmail oauth reset'
+description: 'Remove a stored OAuth application'
 updated: '2026-07-15'
 ---
 
 <!-- This page is generated from the CLI command definitions. Run pnpm docs:generate to update it. -->
 
-`fluxmail config unset`
+`fluxmail oauth reset`
 
-Remove a stored setting
+Remove a stored OAuth application
 
 ## Usage
 
 ```bash
-fluxmail config unset <key>
+fluxmail oauth reset <provider>
 ```
 
 ## Arguments
 
 | Name | Required | Details | Default |
 | --- | --- | --- | --- |
-| `key` | Yes | None | None |
+| `provider` | Yes | google or outlook | None |
 
 ## Options
 

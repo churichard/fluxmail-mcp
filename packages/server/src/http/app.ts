@@ -4,7 +4,7 @@ import { EmailError, isEmailError } from '@fluxmail/core';
 import type { HttpBindings } from '@hono/node-server';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { FluxmailConfig } from '../config.js';
+import type { ConfigurationService, FluxmailConfig } from '../config.js';
 import type { FluxmailDb } from '../storage/db.js';
 import type { AccountRegistry } from '../accounts/registry.js';
 import type { EmailService } from '../service/emailService.js';
@@ -40,6 +40,7 @@ const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 export interface AppDeps {
   config: FluxmailConfig;
+  configuration: ConfigurationService;
   db: FluxmailDb;
   registry: AccountRegistry;
   service: EmailService;
@@ -48,7 +49,7 @@ export interface AppDeps {
 }
 
 export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
-  const { config, db, registry, service, telemetry, licenseController } = deps;
+  const { config, configuration, db, registry, service, telemetry, licenseController } = deps;
   const app = new Hono<{ Bindings: HttpBindings }>();
   const googleOauthStates = new Map<string, { expiresAt: number; intent?: GmailConnectionIntent }>();
   const microsoftOauthStates = new Map<
@@ -607,7 +608,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     }
   });
 
-  app.route('/', createRestApi({ config, db, service, telemetry, registry, licenseController }));
+  app.route('/', createRestApi({ config, configuration, db, service, telemetry, registry, licenseController }));
 
   return app;
 }

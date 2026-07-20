@@ -13,15 +13,17 @@ Store a license key and validate it with the license server
 ## Usage
 
 ```bash
-fluxmail license activate <key>
+fluxmail license activate [key] [options]
 ```
 
 ## Arguments
 
 | Name | Required | Details | Default |
 | --- | --- | --- | --- |
-| `key` | Yes | License key (fluxmail_lic_…), shown once at purchase | None |
+| `key` | No | Deprecated: license key shown once at purchase | None |
 
 ## Options
 
-This command has no command-specific options.
+| Option | Required | Details | Default |
+| --- | --- | --- | --- |
+| `--key-file <path>` | No | Read the license key from a file, or use - for stdin | None |

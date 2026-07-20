@@ -65,9 +65,11 @@ Use **Manage subscription** on the pricing page or license screen to update your
 Unlock a paid plan with your license key:
 
 ```bash
-fluxmail license activate <key>
+fluxmail license activate
 fluxmail license status
 ```
+
+Fluxmail prompts for the key without displaying it. For automation, use `fluxmail license activate --key-file /absolute/path/to/license`, or pass `-` to read from stdin.
 
 An administrative REST client can read the same status from `GET /api/v1/admin/license`, activate a key with `POST /api/v1/admin/license/activate`, and deactivate it with `DELETE /api/v1/admin/license`. An API key needs `admin.license`; an administrator's member session can call the routes directly. The status response never includes the configured license key. REST cannot replace or remove a key supplied through `FLUXMAIL_LICENSE_KEY`.
 

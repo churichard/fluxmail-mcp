@@ -98,6 +98,9 @@ If a reverse proxy terminates TLS and connects to Fluxmail from a non-loopback a
 | [Create an API key](/docs/rest-api/create-administrative-api-key) | Create an API key and return its plaintext secret once. Requires admin.api_keys. |
 | [Update an API key](/docs/rest-api/update-administrative-api-key) | Update the permissions or mailbox scope of an API key. Requires admin.api_keys. |
 | [Revoke an API key](/docs/rest-api/revoke-administrative-api-key) | Revoke an API key. Requires admin.api_keys. |
+| [Get OAuth application status](/docs/rest-api/get-administrative-oauth-apps) | Get safe OAuth application metadata without returning client secrets. Requires admin.accounts. |
+| [Configure an OAuth application](/docs/rest-api/put-administrative-oauth-app) | Save an OAuth application in encrypted instance settings. Requires admin.accounts. |
+| [Reset an OAuth application](/docs/rest-api/delete-administrative-oauth-app) | Remove a stored OAuth application. Requires admin.accounts. |
 | [Get license status](/docs/rest-api/get-administrative-license) | Get license status and usage without returning the configured license key. Requires admin.license. |
 | [Deactivate a license](/docs/rest-api/deactivate-administrative-license) | Release the stored license and return this instance to Personal limits. Requires admin.license. |
 | [Activate a license](/docs/rest-api/activate-administrative-license) | Validate and activate a Fluxmail license key. Requires admin.license. |

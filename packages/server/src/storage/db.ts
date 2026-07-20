@@ -7,7 +7,7 @@ import path from 'node:path';
 import { VERSION } from '../version.js';
 import { withFileLock } from './fileLock.js';
 
-export const CURRENT_STORE_FORMAT = 1;
+export const CURRENT_STORE_FORMAT = 2;
 export const MIN_SUPPORTED_STORE_FORMAT = 1;
 export const MAX_SUPPORTED_STORE_FORMAT = CURRENT_STORE_FORMAT;
 export const LEGACY_STORE_FORMAT = 0;
@@ -741,7 +741,15 @@ function migrateToFormatOne(sqlite: Database.Database): void {
   `);
 }
 
-const MIGRATIONS = [{ format: 1, run: migrateToFormatOne }] as const;
+function migrateToFormatTwo(_sqlite: Database.Database): void {
+  // Format 2 reserves encrypted instance settings for OAuth applications and
+  // license state. The instance_settings table was created by format 1.
+}
+
+const MIGRATIONS = [
+  { format: 1, run: migrateToFormatOne },
+  { format: 2, run: migrateToFormatTwo },
+] as const;
 
 function openCompatibleDb(dbPath: string, dataDir: string, options: { backupBeforeMigration?: boolean }): FluxmailDb {
   const sqlite = new Database(dbPath);

@@ -58,17 +58,22 @@ fluxmail setup --name "Your name" --email you@example.com
 
 ### Local stdio
 
-Store the application client ID, then start the browser consent flow:
+Configure a public OAuth client, then start the browser consent flow:
 
 ```bash
-fluxmail config set MICROSOFT_CLIENT_ID <application-client-id>
+fluxmail oauth configure outlook \
+  --client-id <application-client-id> \
+  --public-client
 fluxmail accounts add outlook
 ```
 
-If the app is restricted to one tenant, store that tenant too:
+If the app is restricted to one tenant, include it when configuring the client:
 
 ```bash
-fluxmail config set MICROSOFT_TENANT_ID <tenant-id-or-domain>
+fluxmail oauth configure outlook \
+  --client-id <application-client-id> \
+  --tenant-id <tenant-id-or-domain> \
+  --public-client
 ```
 
 Fluxmail listens on `http://localhost:8976`, prints a Microsoft authorization URL, and waits for the redirect. Choose the mailbox you want to connect and approve access.
@@ -96,19 +101,25 @@ Docker Compose publishes the callback listener to `localhost:8976` on the host, 
 
 ### Remote server
 
-Add the application client ID, client secret, and public server URL to `.env`:
+Set the public server URL in the Docker environment, then configure the OAuth application through the running instance:
 
 ```dotenv
-MICROSOFT_CLIENT_ID=<application-client-id>
-MICROSOFT_CLIENT_SECRET=<client-secret-value>
-# MICROSOFT_TENANT_ID=common
 FLUXMAIL_PUBLIC_URL=https://mail.example.com
 ```
 
-Recreate the container and start the mailbox command:
-
 ```bash
 docker compose up -d
+docker compose exec fluxmail \
+  fluxmail oauth configure outlook \
+  --client-id <application-client-id> \
+  --tenant-id common
+```
+
+Fluxmail prompts for the client secret and stores the complete application encrypted in SQLite. The change takes effect immediately. Managed deployments can use `MICROSOFT_CLIENT_ID`, `MICROSOFT_TENANT_ID`, and `MICROSOFT_CLIENT_SECRET_FILE` instead.
+
+Start the mailbox command:
+
+```bash
 docker compose exec fluxmail \
   fluxmail accounts add outlook
 ```
