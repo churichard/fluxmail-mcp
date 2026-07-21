@@ -4,6 +4,31 @@ Fluxmail records user-facing changes in this file. The format follows [Common Ch
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-21
+
+### Changed
+
+- **Breaking:** replace `config.env` and automatic working-directory dotenv loading with typed `config.toml` deployment settings and encrypted OAuth and license records in SQLite; [back up the data directory and migrate existing configuration](https://fluxmail.ai/docs/upgrades/0.6.0/) before starting Fluxmail 0.6.0 ([#69](https://github.com/churichard/fluxmail/pull/69))
+- **Breaking:** replace `fluxmail config set`, `unset`, and `list` with `config init`, `config show`, `config migrate`, and focused `oauth` commands; update scripts and integrations before upgrading ([#69](https://github.com/churichard/fluxmail/pull/69))
+- **Breaking:** advance shared stores to format 2 and remove the public `config.env` and dotenv mutation helpers; do not open an upgraded store with an older release, and migrate package consumers to the typed configuration APIs ([#69](https://github.com/churichard/fluxmail/pull/69))
+- **Breaking:** require `EmailProvider` implementations to provide `listLabels`; implement the new method before upgrading provider packages ([#66](https://github.com/churichard/fluxmail/pull/66))
+- Reduce the paid license grace period after lease expiration from 21 days to 7 days ([#67](https://github.com/churichard/fluxmail/pull/67))
+
+### Added
+
+- Add CLI workflows for listing, searching, drafting, sending, forwarding, organizing, and scheduling email, plus attachment downloads ([#66](https://github.com/churichard/fluxmail/pull/66))
+- Add Gmail user labels and Outlook categories across providers, MCP, REST, and the CLI ([#66](https://github.com/churichard/fluxmail/pull/66))
+- Add authenticated REST operations for viewing, configuring, and resetting Google and Microsoft OAuth applications ([#69](https://github.com/churichard/fluxmail/pull/69))
+- Add bounded, redacted local error logs with configurable destinations, rotation, and the `fluxmail logs` command ([#68](https://github.com/churichard/fluxmail/pull/68))
+- Add daily update notices to interactive CLI commands with command-line and environment opt-outs ([#65](https://github.com/churichard/fluxmail/pull/65))
+- Add `_FILE` environment variables for the encryption key, OAuth client secrets, and license key ([#69](https://github.com/churichard/fluxmail/pull/69))
+
+### Fixed
+
+- Preserve existing Microsoft OAuth scopes during refresh and retry invalid passwords in interactive CLI login ([#66](https://github.com/churichard/fluxmail/pull/66))
+- Keep configuration updates in sync across running processes and preserve the OAuth application used by existing and in-flight account connections ([#69](https://github.com/churichard/fluxmail/pull/69))
+- Ignore missing Gmail labels during removal instead of failing the whole modification ([#66](https://github.com/churichard/fluxmail/pull/66))
+
 ## [0.5.0] - 2026-07-18
 
 ### Changed
@@ -57,7 +82,8 @@ Fluxmail records user-facing changes in this file. The format follows [Common Ch
 - Prevent hosted Microsoft OAuth responses from forwarding connection credentials through the HTTP referrer ([#43](https://github.com/churichard/fluxmail/pull/43))
 - Stop a pending IMAP connection immediately when its provider closes during setup ([#49](https://github.com/churichard/fluxmail/pull/49))
 
-[Unreleased]: https://github.com/churichard/fluxmail/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/churichard/fluxmail/compare/v0.6.0...HEAD
 [0.4.0]: https://github.com/churichard/fluxmail/compare/v0.3.0...v0.4.0
 [0.4.1]: https://github.com/churichard/fluxmail/compare/v0.4.0...v0.4.1
 [0.5.0]: https://github.com/churichard/fluxmail/compare/v0.4.1...v0.5.0
+[0.6.0]: https://github.com/churichard/fluxmail/compare/v0.5.0...v0.6.0
