@@ -22,6 +22,7 @@ import {
   type PermissionPolicy,
 } from '../permissions.js';
 import { captureOperation, type Telemetry, type TelemetryProperties } from '../telemetry.js';
+import { logFailure, type Logger } from '../logging.js';
 
 const MAX_BODY_CHARS = 50_000;
 
@@ -185,6 +186,7 @@ export interface BuildMcpServerOptions {
   maxAttachmentBytes?: number;
   telemetry?: Telemetry;
   transport?: McpTransport;
+  logger?: Logger;
 }
 
 export type McpServerOptions = BuildMcpServerOptions;
@@ -238,6 +240,11 @@ function handleResult<A extends unknown[]>(
       });
       return result;
     } catch (err) {
+      logFailure(options.logger, 'mcp.operation_failed', err, {
+        productSurface: 'mcp',
+        operation: tool,
+        durationMs: performance.now() - startedAt,
+      });
       captureOperation(options.telemetry, {
         productSurface: 'mcp',
         operation: tool,

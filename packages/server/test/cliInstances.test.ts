@@ -2,7 +2,8 @@ import { mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AccountRegistry } from '../src/accounts/registry.js';
+import { ImapProvider } from '@fluxmail/provider-imap';
+import { setupInitialAdmin } from '../src/auth.js';
 import {
   InstanceClient,
   credentialPath,
@@ -14,6 +15,7 @@ import {
   saveSessionToken,
   validateRemoteServerUrl,
 } from '../src/cliInstances.js';
+import { createContext } from '../src/context.js';
 
 function privateMode(filePath: string): number {
   return statSync(filePath).mode & 0o777;
@@ -21,7 +23,6 @@ function privateMode(filePath: string): number {
 
 describe('CLI instance profiles', () => {
   afterEach(() => {
-    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
   });
@@ -89,20 +90,6 @@ describe('CLI instance profiles', () => {
     await expect(client.request('/https://other.example.com/steal')).rejects.toMatchObject({ code: 'invalid_request' });
   });
 
-  it('closes the provider registry after an in-process request', async () => {
-    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-local-'));
-    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
-    vi.stubEnv('FLUXMAIL_ENCRYPTION_KEY', '11'.repeat(32));
-    vi.stubEnv('FLUXMAIL_TELEMETRY', '0');
-    const close = vi.spyOn(AccountRegistry.prototype, 'close');
-    const client = new InstanceClient('local', { kind: 'local' });
-
-    const response = await client.request('/healthz', {}, false);
-
-    expect(response.status).toBe(200);
-    expect(close).toHaveBeenCalledOnce();
-  });
-
   it('can retain REST metadata and safe error codes', async () => {
     const fetchMock = vi
       .fn()
@@ -131,5 +118,38 @@ describe('CLI instance profiles', () => {
       status: 409,
       message: 'Use a new key.',
     });
+  });
+
+  it('closes IMAP providers after a local request', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-cli-local-cleanup-'));
+    vi.stubEnv('FLUXMAIL_DATA_DIR', dataDir);
+    vi.stubEnv('FLUXMAIL_ENCRYPTION_KEY', '66'.repeat(32));
+    vi.stubEnv('FLUXMAIL_TELEMETRY', '0');
+    const setupContext = createContext();
+    const setup = await setupInitialAdmin(setupContext.db, {
+      name: 'Local Owner',
+      email: 'local@example.com',
+      password: 'River42!',
+    });
+    const account = setupContext.registry.addImapAccount(
+      'local@example.com',
+      {
+        imap: { host: 'imap.example.com', port: 993, security: 'tls', user: 'local', password: 'private' },
+        smtp: { host: 'smtp.example.com', port: 465, security: 'tls', user: 'local', password: 'private' },
+        saveSent: false,
+      },
+      undefined,
+      setup.member.id,
+    );
+    (setupContext.db as unknown as { $client: { close(): void } }).$client.close();
+    vi.spyOn(ImapProvider.prototype, 'listMessages').mockResolvedValue({ items: [] });
+    const close = vi.spyOn(ImapProvider.prototype, 'close').mockResolvedValue();
+    const client = new InstanceClient('local', { kind: 'local' }, setup.session.token);
+
+    await expect(
+      client.json(`/api/v1/accounts/${encodeURIComponent(account.id)}/messages?folder=inbox&pageSize=100`),
+    ).resolves.toEqual([]);
+
+    expect(close).toHaveBeenCalledOnce();
   });
 });

@@ -1,372 +1,486 @@
 import { execFile } from 'node:child_process';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  statSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  configFilePath,
+  ConfigurationService,
+  deploymentToml,
   expandHome,
-  loadConfig,
-  maskStoredConfigValue,
-  readStoredConfig,
-  setStoredConfig,
-  unsetStoredConfig,
+  readLoggingSettings,
+  resolveDataDir,
+  resolveDeploymentConfig,
+  writeDeploymentConfig,
 } from '../src/config.js';
-import { DEFAULT_GOOGLE_CLIENT_ID, DEFAULT_GOOGLE_CLIENT_SECRET } from '../src/accounts/defaultGoogleOAuth.js';
-import { isTelemetryEnabled, telemetryDisabled, withStoredTelemetrySetting } from '../src/telemetry.js';
-import { createContext } from '../src/context.js';
+import { AccountRegistry } from '../src/accounts/registry.js';
+import { DEFAULT_GOOGLE_CLIENT_ID } from '../src/accounts/defaultGoogleOAuth.js';
+import { accountCredentials, instanceSettings, openDb, oauthTokens } from '../src/storage/db.js';
+import { addMember } from '../src/storage/members.js';
+import { decryptString } from '../src/storage/crypto.js';
 
-const ENV_KEYS = [
-  'FLUXMAIL_DATA_DIR',
-  'FLUXMAIL_DB_PATH',
-  'FLUXMAIL_ENCRYPTION_KEY',
-  'FLUXMAIL_PUBLIC_URL',
-  'FLUXMAIL_PORT',
-  'FLUXMAIL_OAUTH_PORT',
-  'FLUXMAIL_OAUTH_HOST',
-  'FLUXMAIL_TRUST_PROXY',
-  'FLUXMAIL_MAX_ATTACHMENT_MB',
-  'GOOGLE_CLIENT_ID',
-  'GOOGLE_CLIENT_SECRET',
-  'MICROSOFT_CLIENT_ID',
-  'MICROSOFT_CLIENT_SECRET',
-  'MICROSOFT_TENANT_ID',
-  'FLUXMAIL_TELEMETRY',
-  'FM_STORED_TEST',
-];
-const saved: Record<string, string | undefined> = {};
+const DEFAULT_LICENSE_SERVER_URL = 'https://fluxmail.ai';
 const runFile = promisify(execFile);
-const configModuleUrl = new URL('../src/config.ts', import.meta.url).href;
-
-for (const k of ENV_KEYS) saved[k] = process.env[k];
-beforeEach(() => {
-  vi.spyOn(process, 'cwd').mockReturnValue(tempDataDir());
-});
-afterEach(() => {
-  vi.restoreAllMocks();
-  for (const k of ENV_KEYS) {
-    if (saved[k] === undefined) delete process.env[k];
-    else process.env[k] = saved[k];
-  }
-});
+const deploymentConfigModuleUrl = new URL('../src/deploymentConfig.ts', import.meta.url).href;
 
 function tempDataDir(): string {
   return mkdtempSync(path.join(tmpdir(), 'fluxmail-config-'));
 }
 
-describe('stored config', () => {
-  it('uses the built-in Google OAuth app by default', () => {
-    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-    delete process.env.GOOGLE_CLIENT_ID;
-    delete process.env.GOOGLE_CLIENT_SECRET;
-
-    const google = loadConfig().google;
-
-    expect(google).toEqual({
-      clientId: DEFAULT_GOOGLE_CLIENT_ID,
-      clientSecret: DEFAULT_GOOGLE_CLIENT_SECRET,
-    });
+function resolve(dataDir: string, env: NodeJS.ProcessEnv = {}, options: { generateEncryptionKey?: boolean } = {}) {
+  return resolveDeploymentConfig({
+    env: { FLUXMAIL_DATA_DIR: dataDir, ...env },
+    defaultLicenseServerUrl: DEFAULT_LICENSE_SERVER_URL,
+    generateEncryptionKey: options.generateEncryptionKey ?? false,
   });
+}
 
-  it('requires both values for a custom Google OAuth client', () => {
-    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-    process.env.GOOGLE_CLIENT_ID = 'custom-client-id';
-    delete process.env.GOOGLE_CLIENT_SECRET;
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
 
-    expect(() => loadConfig()).toThrow(/GOOGLE_CLIENT_ID requires GOOGLE_CLIENT_SECRET/);
-
-    process.env.GOOGLE_CLIENT_SECRET = 'custom-client-secret';
-    expect(loadConfig().google).toEqual({
-      clientId: 'custom-client-id',
-      clientSecret: 'custom-client-secret',
-    });
-  });
-
-  it('rejects a Google OAuth client secret without a client ID', () => {
-    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-
-    delete process.env.GOOGLE_CLIENT_ID;
-    process.env.GOOGLE_CLIENT_SECRET = 'custom-client-secret';
-    expect(() => loadConfig()).toThrow(/GOOGLE_CLIENT_SECRET requires GOOGLE_CLIENT_ID/);
-  });
-
-  it('set, read, unset round-trip', () => {
+describe('deployment configuration', () => {
+  it('loads typed TOML values and records their source', () => {
     const dir = tempDataDir();
-    setStoredConfig(dir, 'GOOGLE_CLIENT_ID', 'abc.apps.googleusercontent.com');
-    setStoredConfig(dir, 'FM_STORED_TEST', 'value with spaces');
-    expect(readStoredConfig(dir)).toEqual({
-      GOOGLE_CLIENT_ID: 'abc.apps.googleusercontent.com',
-      FM_STORED_TEST: 'value with spaces',
-    });
-    expect(unsetStoredConfig(dir, 'FM_STORED_TEST')).toBe(true);
-    expect(unsetStoredConfig(dir, 'FM_STORED_TEST')).toBe(false);
-    expect(readStoredConfig(dir)).toEqual({ GOOGLE_CLIENT_ID: 'abc.apps.googleusercontent.com' });
-  });
-
-  it('round-trips quotes, backslashes, and newlines', () => {
-    const dir = tempDataDir();
-    const value = 'quote=" backslash=\\\nnext line';
-    setStoredConfig(dir, 'FM_STORED_TEST', value);
-    expect(readStoredConfig(dir).FM_STORED_TEST).toBe(value);
-  });
-
-  it('writes the file with owner-only permissions', () => {
-    const dir = tempDataDir();
-    setStoredConfig(dir, 'GOOGLE_CLIENT_SECRET', 'shh');
-    const mode = statSync(configFilePath(dir)).mode & 0o777;
-    expect(mode).toBe(0o600);
-    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
-    expect(readdirSync(dir)).not.toContain('.config.lock');
-  });
-
-  it('recovers an abandoned config lock from an older Fluxmail process', () => {
-    const dir = tempDataDir();
-    const lock = path.join(dir, '.config.lock');
-    mkdirSync(lock);
-    const old = new Date(Date.now() - 60_000);
-    utimesSync(lock, old, old);
-
-    setStoredConfig(dir, 'FM_STORED_TEST', 'recovered');
-
-    expect(readStoredConfig(dir).FM_STORED_TEST).toBe('recovered');
-    expect(readdirSync(dir)).not.toContain('.config.lock');
-  });
-
-  it('preserves concurrent config updates from separate processes', async () => {
-    const dir = tempDataDir();
-    const updates = Array.from({ length: 6 }, (_, index) => [`FM_CONCURRENT_${index}`, `value-${index}`] as const);
-    const script = `
-      import { setStoredConfig } from ${JSON.stringify(configModuleUrl)};
-      const [dataDir, key, value] = process.argv.slice(1);
-      setStoredConfig(dataDir, key, value);
-    `;
-
-    await Promise.all(
-      updates.map(([key, value]) =>
-        runFile(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, dir, key, value]),
-      ),
+    writeDeploymentConfig(
+      path.join(dir, 'config.toml'),
+      deploymentToml({
+        dbPath: '/tmp/mail.db',
+        port: 9000,
+        publicUrl: 'https://mail.example.com',
+        trustProxy: true,
+        oauthHost: '0.0.0.0',
+        oauthPort: 9001,
+        maxAttachmentMb: 20,
+        logLevel: 'error',
+        logDestination: 'file',
+        licenseServerUrl: 'http://127.0.0.1:9898',
+      }),
     );
 
-    expect(readStoredConfig(dir)).toEqual(Object.fromEntries(updates));
+    const config = resolve(dir);
+    expect(config).toMatchObject({
+      dbPath: '/tmp/mail.db',
+      port: 9000,
+      publicUrl: 'https://mail.example.com',
+      trustProxy: true,
+      oauthHost: '0.0.0.0',
+      oauthPort: 9001,
+      maxAttachmentBytes: 20 * 1024 * 1024,
+      logLevel: 'error',
+      logDestination: 'file',
+      licenseServerUrl: 'http://127.0.0.1:9898',
+    });
+    expect(config.sources.port).toBe('toml');
+    expect(config.sources.publicUrl).toBe('toml');
+    expect(config.sources.logLevel).toBe('toml');
+    expect(config.sources.logDestination).toBe('toml');
+    expect(config.sources.licenseServerUrl).toBe('toml');
   });
 
-  it('repairs permissions when reading an existing stored-config file', () => {
+  it('uses and validates local logging configuration', () => {
     const dir = tempDataDir();
-    const file = configFilePath(dir);
-    writeFileSync(file, 'GOOGLE_CLIENT_SECRET="old"\n', { mode: 0o644 });
-    chmodSync(file, 0o644);
+    writeDeploymentConfig(path.join(dir, 'config.toml'), deploymentToml({ logLevel: 'warn', logDestination: 'file' }));
+    expect(readLoggingSettings(dir)).toEqual({ level: 'warn', destination: 'file' });
 
-    expect(readStoredConfig(dir)).toEqual({ GOOGLE_CLIENT_SECRET: 'old' });
+    vi.stubEnv('FLUXMAIL_LOG_LEVEL', 'error');
+    vi.stubEnv('FLUXMAIL_LOG_DESTINATION', 'console');
+    expect(readLoggingSettings(dir)).toEqual({ level: 'error', destination: 'console' });
 
+    vi.stubEnv('FLUXMAIL_LOG_LEVEL', 'debug');
+    expect(() => readLoggingSettings(dir)).toThrow(/FLUXMAIL_LOG_LEVEL/);
+    vi.stubEnv('FLUXMAIL_LOG_LEVEL', 'info');
+    vi.stubEnv('FLUXMAIL_LOG_DESTINATION', 'network');
+    expect(() => readLoggingSettings(dir)).toThrow(/FLUXMAIL_LOG_DESTINATION/);
+  });
+
+  it('lets environment values override TOML without mutating process.env', () => {
+    const dir = tempDataDir();
+    writeDeploymentConfig(path.join(dir, 'config.toml'), deploymentToml({ port: 9000 }));
+    const before = process.env.FLUXMAIL_PORT;
+
+    const config = resolve(dir, { FLUXMAIL_PORT: '9100' });
+
+    expect(config.port).toBe(9100);
+    expect(config.sources.port).toBe('environment');
+    expect(process.env.FLUXMAIL_PORT).toBe(before);
+  });
+
+  it('does not load environment files from the working directory', () => {
+    const cwd = tempDataDir();
+    writeFileSync(
+      path.join(cwd, '.env'),
+      'FLUXMAIL_PORT=9100\nGOOGLE_CLIENT_ID=dotenv-id\nGOOGLE_CLIENT_SECRET=dotenv-secret\n',
+    );
+    writeFileSync(path.join(cwd, '.env.local'), 'FLUXMAIL_PORT=9200\n');
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+
+    const config = resolve(tempDataDir());
+
+    expect(config.port).toBe(8977);
+    expect(config.environment.GOOGLE_CLIENT_ID).toBeUndefined();
+    expect(config.environment.GOOGLE_CLIENT_SECRET).toBeUndefined();
+  });
+
+  it('does not read legacy config.env during normal resolution', () => {
+    const dataDir = tempDataDir();
+    writeFileSync(
+      path.join(dataDir, 'config.env'),
+      'FLUXMAIL_PORT=9100\nGOOGLE_CLIENT_ID=legacy-id\nGOOGLE_CLIENT_SECRET=legacy-secret\n',
+    );
+
+    const config = resolve(dataDir);
+
+    expect(config.port).toBe(8977);
+    expect(config.environment.GOOGLE_CLIENT_ID).toBeUndefined();
+    expect(config.environment.GOOGLE_CLIENT_SECRET).toBeUndefined();
+  });
+
+  it('resolves the data directory without parsing deployment configuration or encryption secrets', () => {
+    const dataDir = tempDataDir();
+    writeFileSync(path.join(dataDir, 'config.toml'), 'not valid toml');
+    writeFileSync(path.join(dataDir, 'encryption.key'), 'not a valid key');
+
+    expect(resolveDataDir({ env: { FLUXMAIL_DATA_DIR: dataDir } })).toBe(dataDir);
+  });
+
+  it('rejects unknown TOML keys and invalid values', () => {
+    const unknownDir = tempDataDir();
+    writeFileSync(path.join(unknownDir, 'config.toml'), '[server]\nunknown = true\n');
+    expect(() => resolve(unknownDir)).toThrow(/Unknown setting "server.unknown"/);
+
+    const invalidDir = tempDataDir();
+    writeFileSync(path.join(invalidDir, 'config.toml'), '[server]\nport = "many"\n');
+    expect(() => resolve(invalidDir)).toThrow(/integer between 1 and 65535/);
+  });
+
+  it.each([
+    ['server', 'server = "invalid"\n'],
+    ['storage', 'storage = []\n'],
+    ['oauth.local', '[oauth]\nlocal = "invalid"\n'],
+    ['logging', 'logging = "invalid"\n'],
+  ])('rejects a non-table %s section', (section, content) => {
+    const dir = tempDataDir();
+    writeFileSync(path.join(dir, 'config.toml'), content);
+    expect(() => resolve(dir)).toThrow(new RegExp(`"${section}" must be a TOML table`));
+  });
+
+  it('rejects blank database paths before opening SQLite', () => {
+    expect(() => resolve(tempDataDir(), { FLUXMAIL_DB_PATH: '' })).toThrow(/FLUXMAIL_DB_PATH cannot be empty/);
+
+    const tomlDir = tempDataDir();
+    writeFileSync(path.join(tomlDir, 'config.toml'), '[storage]\ndatabase_path = ""\n');
+    expect(() => resolve(tomlDir)).toThrow(/FLUXMAIL_DB_PATH cannot be empty/);
+  });
+
+  it('rejects blank local OAuth hosts', () => {
+    expect(() => resolve(tempDataDir(), { FLUXMAIL_OAUTH_HOST: '' })).toThrow(/FLUXMAIL_OAUTH_HOST cannot be empty/);
+
+    const tomlDir = tempDataDir();
+    writeFileSync(path.join(tomlDir, 'config.toml'), '[oauth.local]\nhost = ""\n');
+    expect(() => resolve(tomlDir)).toThrow(/FLUXMAIL_OAUTH_HOST cannot be empty/);
+  });
+
+  it('supports secret files, removes one terminal newline, and preserves external permissions', () => {
+    const dir = tempDataDir();
+    const secretFile = path.join(tempDataDir(), 'encryption-secret');
+    const hex = 'ab'.repeat(32);
+    writeFileSync(secretFile, `${hex}\n`, { mode: 0o644 });
+    chmodSync(secretFile, 0o644);
+
+    const config = resolve(dir, { FLUXMAIL_ENCRYPTION_KEY_FILE: secretFile });
+
+    expect(config.encryptionKey.toString('hex')).toBe(hex);
+    expect(config.sources.encryptionKey).toBe('environment-file');
+    expect(statSync(secretFile).mode & 0o777).toBe(0o644);
+  });
+
+  it('rejects conflicting, relative, and empty secret-file inputs', () => {
+    const dir = tempDataDir();
+    expect(() =>
+      resolve(dir, {
+        FLUXMAIL_ENCRYPTION_KEY: 'ab'.repeat(32),
+        FLUXMAIL_ENCRYPTION_KEY_FILE: '/tmp/key',
+      }),
+    ).toThrow(/only one/);
+    expect(() => resolve(dir, { FLUXMAIL_ENCRYPTION_KEY_FILE: 'relative/key' })).toThrow(/absolute path/);
+
+    const empty = path.join(tempDataDir(), 'empty');
+    writeFileSync(empty, '');
+    expect(() => resolve(dir, { FLUXMAIL_ENCRYPTION_KEY_FILE: empty })).toThrow(/empty file/);
+  });
+
+  it('writes config.toml with owner-only permissions and refuses overwrite', () => {
+    const dir = tempDataDir();
+    const file = path.join(dir, 'config.toml');
+    writeDeploymentConfig(file, deploymentToml(), { exclusive: true });
     expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(() => writeDeploymentConfig(file, deploymentToml(), { exclusive: true })).toThrow(/already exists/);
   });
 
-  it('rejects invalid keys and FLUXMAIL_DATA_DIR', () => {
+  it('allows only one concurrent exclusive configuration write', async () => {
     const dir = tempDataDir();
-    expect(() => setStoredConfig(dir, 'lower-case', 'x')).toThrow(/UPPER_SNAKE_CASE/);
-    expect(() => setStoredConfig(dir, 'FLUXMAIL_DATA_DIR', '/x')).toThrow(/cannot be stored/);
-  });
-
-  it('loadConfig picks up stored settings, with shell env winning', () => {
-    const dir = tempDataDir();
-    vi.spyOn(process, 'cwd').mockReturnValue(dir);
-    process.env.FLUXMAIL_DATA_DIR = dir;
-    delete process.env.GOOGLE_CLIENT_ID;
-    delete process.env.GOOGLE_CLIENT_SECRET;
-    setStoredConfig(dir, 'GOOGLE_CLIENT_ID', 'stored-id');
-    setStoredConfig(dir, 'GOOGLE_CLIENT_SECRET', 'stored-secret');
-
-    const config = loadConfig();
-    expect(config.google).toEqual({ clientId: 'stored-id', clientSecret: 'stored-secret' });
-    expect(config.oauthHost).toBe('127.0.0.1');
-    expect(config.publicUrlConfigured).toBe(false);
-
-    // Shell environment beats the stored value.
-    delete process.env.GOOGLE_CLIENT_ID;
-    process.env.GOOGLE_CLIENT_ID = 'shell-id';
-    const config2 = loadConfig();
-    expect(config2.google?.clientId).toBe('shell-id');
-  });
-
-  it('loads Microsoft OAuth settings and defaults to the common tenant', () => {
-    const dir = tempDataDir();
-    process.env.FLUXMAIL_DATA_DIR = dir;
-    process.env.MICROSOFT_CLIENT_ID = 'microsoft-client-id';
-
-    expect(loadConfig().microsoft).toEqual({ clientId: 'microsoft-client-id', tenantId: 'common' });
-
-    process.env.MICROSOFT_CLIENT_SECRET = 'microsoft-secret';
-    process.env.MICROSOFT_TENANT_ID = 'tenant-id';
-    expect(loadConfig().microsoft).toEqual({
-      clientId: 'microsoft-client-id',
-      clientSecret: 'microsoft-secret',
-      tenantId: 'tenant-id',
-    });
-  });
-
-  it('reads a stored telemetry opt-out without applying unrelated settings', () => {
-    const dir = tempDataDir();
-    setStoredConfig(dir, 'FLUXMAIL_TELEMETRY', '0');
-    setStoredConfig(dir, 'FLUXMAIL_LICENSE_KEY', 'stored-license');
-    const env: NodeJS.ProcessEnv = {};
-
-    const telemetryEnv = withStoredTelemetrySetting(dir, env);
-
-    expect(telemetryDisabled(telemetryEnv)).toBe(true);
-    expect(isTelemetryEnabled(dir)).toBe(false);
-    expect(telemetryEnv.FLUXMAIL_LICENSE_KEY).toBeUndefined();
-    expect(env.FLUXMAIL_TELEMETRY).toBeUndefined();
-  });
-
-  it('reads the OAuth listener host from the environment', () => {
-    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-    process.env.FLUXMAIL_OAUTH_HOST = '0.0.0.0';
-    expect(loadConfig().oauthHost).toBe('0.0.0.0');
-  });
-
-  it('uses and validates trusted proxy configuration', () => {
-    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-    expect(loadConfig().trustProxy).toBe(false);
-
-    process.env.FLUXMAIL_TRUST_PROXY = 'true';
-    expect(loadConfig().trustProxy).toBe(true);
-    process.env.FLUXMAIL_TRUST_PROXY = '0';
-    expect(loadConfig().trustProxy).toBe(false);
-    process.env.FLUXMAIL_TRUST_PROXY = 'sometimes';
-    expect(() => loadConfig()).toThrow(/FLUXMAIL_TRUST_PROXY/);
-  });
-
-  it('uses and validates the attachment size limit', () => {
-    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-    expect(loadConfig().maxAttachmentBytes).toBe(10 * 1024 * 1024);
-
-    process.env.FLUXMAIL_MAX_ATTACHMENT_MB = '1';
-    expect(loadConfig().maxAttachmentBytes).toBe(1024 * 1024);
-
-    process.env.FLUXMAIL_MAX_ATTACHMENT_MB = '25';
-    expect(loadConfig().maxAttachmentBytes).toBe(25 * 1024 * 1024);
-
-    process.env.FLUXMAIL_MAX_ATTACHMENT_MB = '26';
-    expect(() => loadConfig()).toThrow(/FLUXMAIL_MAX_ATTACHMENT_MB/);
-
-    process.env.FLUXMAIL_MAX_ATTACHMENT_MB = '1.5';
-    expect(() => loadConfig()).toThrow(/FLUXMAIL_MAX_ATTACHMENT_MB/);
-  });
-
-  it('rejects encryption keys with trailing non-hex characters', () => {
-    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-    process.env.FLUXMAIL_ENCRYPTION_KEY = `${'aa'.repeat(32)}zz`;
-
-    expect(() => loadConfig()).toThrow(/exactly 64 hex characters/);
-  });
-
-  it('repairs permissions on an existing encryption-key file', () => {
-    const dir = tempDataDir();
-    const keyPath = path.join(dir, 'encryption.key');
-    writeFileSync(keyPath, `${'aa'.repeat(32)}\n`, { mode: 0o644 });
-    chmodSync(keyPath, 0o644);
-    process.env.FLUXMAIL_DATA_DIR = dir;
-
-    loadConfig();
-
-    expect(statSync(keyPath).mode & 0o777).toBe(0o600);
-  });
-
-  it('generates one encryption key when separate processes start together', async () => {
-    const dir = tempDataDir();
+    const file = path.join(dir, 'config.toml');
+    const start = path.join(dir, 'start');
+    const readyPrefix = path.join(dir, 'ready');
     const script = `
-      import { loadConfig } from ${JSON.stringify(configModuleUrl)};
-      process.env.FLUXMAIL_DATA_DIR = process.argv[1];
-      process.stdout.write(loadConfig().encryptionKey.toString('hex'));
+      import { existsSync, writeFileSync } from 'node:fs';
+      import { writeDeploymentConfig } from ${JSON.stringify(deploymentConfigModuleUrl)};
+      const waitArray = new Int32Array(new SharedArrayBuffer(4));
+      writeFileSync(process.argv[3] + '.' + process.argv[4], 'ready');
+      while (!existsSync(process.argv[2])) Atomics.wait(waitArray, 0, 0, 5);
+      try {
+        writeDeploymentConfig(process.argv[1], process.argv[5], { exclusive: true });
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('already exists')) process.exit(2);
+        throw error;
+      }
     `;
-
-    const results = await Promise.all(
-      Array.from({ length: 4 }, () =>
-        runFile(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, dir]),
-      ),
+    const writers = Array.from({ length: 8 }, (_, index) =>
+      runFile(process.execPath, [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        script,
+        file,
+        start,
+        readyPrefix,
+        String(index),
+        `[server]\nport = ${9_000 + index}\n`,
+      ]),
     );
 
-    expect(new Set(results.map((result) => result.stdout))).toHaveLength(1);
-    expect(results[0]!.stdout).toHaveLength(64);
-    expect(readdirSync(dir)).not.toContain('.encryption-key.lock');
-  });
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+      if (readdirSync(dir).filter((name) => name.startsWith('ready.')).length === writers.length) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const ready = readdirSync(dir).filter((name) => name.startsWith('ready.'));
+    writeFileSync(start, 'start');
+    expect(ready).toHaveLength(writers.length);
 
-  it('rejects an incompatible configured store before generating an encryption key', () => {
-    const dir = tempDataDir();
-    const dbPath = path.join(dir, 'shared.db');
-    const db = new Database(dbPath);
-    db.pragma('user_version = 2');
-    db.close();
-    process.env.FLUXMAIL_DATA_DIR = dir;
-    setStoredConfig(dir, 'FLUXMAIL_DB_PATH', dbPath);
-
-    expect(() => createContext()).toThrow(/store format 2/);
-    expect(existsSync(path.join(dir, 'encryption.key'))).toBe(false);
+    const results = await Promise.allSettled(writers);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(readFileSync(file, 'utf8')).toMatch(/^\[server\]\nport = 900[0-7]\n$/);
+    expect(existsSync(file)).toBe(true);
   });
 
   it.each([
     ['FLUXMAIL_PORT', 'not-a-number'],
     ['FLUXMAIL_PORT', '0'],
     ['FLUXMAIL_OAUTH_PORT', '65536'],
-  ] as const)('rejects invalid %s values', (key, value) => {
-    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-    process.env[key] = value;
-
-    expect(() => loadConfig()).toThrow(/integer between 1 and 65535/);
+    ['FLUXMAIL_MAX_ATTACHMENT_MB', '26'],
+  ])('rejects invalid %s values', (name, value) => {
+    expect(() => resolve(tempDataDir(), { [name]: value })).toThrow();
   });
 
-  it('removes trailing slashes from the public base URL', () => {
-    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-    process.env.FLUXMAIL_PUBLIC_URL = 'https://mail.example.com/';
-
-    const config = loadConfig();
-    expect(config.publicUrl).toBe('https://mail.example.com');
-    expect(config.publicUrlConfigured).toBe(true);
+  it('validates and normalizes the public URL', () => {
+    expect(resolve(tempDataDir(), { FLUXMAIL_PUBLIC_URL: 'https://mail.example.com/' }).publicUrl).toBe(
+      'https://mail.example.com',
+    );
+    for (const value of [
+      'not a url',
+      'ftp://mail.example.com',
+      'https://mail.example.com?tenant=one',
+      'https://user:password@mail.example.com',
+    ]) {
+      expect(() => resolve(tempDataDir(), { FLUXMAIL_PUBLIC_URL: value })).toThrow(/FLUXMAIL_PUBLIC_URL/);
+    }
   });
 
-  it('treats a stored public URL as explicitly configured', () => {
-    const dir = tempDataDir();
-    process.env.FLUXMAIL_DATA_DIR = dir;
-    setStoredConfig(dir, 'FLUXMAIL_PUBLIC_URL', 'https://mail.example.com/');
-
-    const config = loadConfig();
-    expect(config.publicUrl).toBe('https://mail.example.com');
-    expect(config.publicUrlConfigured).toBe(true);
-  });
-
-  it.each([
-    'not a url',
-    'ftp://mail.example.com',
-    'https://mail.example.com?tenant=one',
-    'https://user:password@mail.example.com',
-  ])('rejects an invalid public base URL: %s', (publicUrl) => {
-    process.env.FLUXMAIL_DATA_DIR = tempDataDir();
-    process.env.FLUXMAIL_PUBLIC_URL = publicUrl;
-
-    expect(() => loadConfig()).toThrow(/FLUXMAIL_PUBLIC_URL/);
-  });
-
-  it('masks short and long secret settings', () => {
-    expect(maskStoredConfigValue('GOOGLE_CLIENT_SECRET', 'short')).toBe('********');
-    expect(maskStoredConfigValue('FLUXMAIL_ENCRYPTION_KEY', '1234567890abcdef')).toBe('1234…cdef');
-    expect(maskStoredConfigValue('GOOGLE_CLIENT_ID', 'public-id')).toBe('public-id');
-  });
-
-  it('expands a leading ~ in paths', () => {
+  it('expands a leading home marker in paths', () => {
     expect(expandHome('~')).toBe(homedir());
     expect(expandHome('~/.fluxmail')).toBe(path.join(homedir(), '.fluxmail'));
     expect(expandHome('/abs/path')).toBe('/abs/path');
     expect(expandHome('~user/x')).toBe('~user/x');
+  });
+});
+
+describe('encrypted instance configuration', () => {
+  it('uses the built-in Google app and requires complete environment groups', () => {
+    const db = openDb(':memory:');
+    const service = new ConfigurationService(resolve(tempDataDir(), { FLUXMAIL_ENCRYPTION_KEY: '11'.repeat(32) }), db);
+    expect(service.config.google?.clientId).toBe(DEFAULT_GOOGLE_CLIENT_ID);
+
+    expect(
+      () =>
+        new ConfigurationService(
+          resolve(tempDataDir(), {
+            FLUXMAIL_ENCRYPTION_KEY: '11'.repeat(32),
+            GOOGLE_CLIENT_ID: 'custom-id',
+          }),
+          openDb(':memory:'),
+        ),
+    ).toThrow(/GOOGLE_CLIENT_SECRET/);
+    expect(
+      () =>
+        new ConfigurationService(
+          resolve(tempDataDir(), {
+            FLUXMAIL_ENCRYPTION_KEY: '11'.repeat(32),
+            GOOGLE_CLIENT_SECRET: 'secret',
+          }),
+          openDb(':memory:'),
+        ),
+    ).toThrow(/GOOGLE_CLIENT_ID/);
+  });
+
+  it('treats blank OAuth and license placeholders as unset', () => {
+    const service = new ConfigurationService(
+      resolve(tempDataDir(), {
+        FLUXMAIL_ENCRYPTION_KEY: '10'.repeat(32),
+        GOOGLE_CLIENT_ID: '',
+        GOOGLE_CLIENT_SECRET: '',
+        MICROSOFT_CLIENT_ID: '',
+        MICROSOFT_CLIENT_SECRET: '',
+        FLUXMAIL_LICENSE_KEY: '',
+      }),
+      openDb(':memory:'),
+    );
+
+    expect(service.config.google?.clientId).toBe(DEFAULT_GOOGLE_CLIENT_ID);
+    expect(service.config.microsoft).toBeUndefined();
+    expect(service.config.licenseKey).toBeUndefined();
+  });
+
+  it('encrypts complete provider groups and license state at rest and applies updates immediately', () => {
+    const privateSecret = 'private-google-secret';
+    const license = `fluxmail_lic_${'ab'.repeat(20)}`;
+    const db = openDb(':memory:');
+    const service = new ConfigurationService(resolve(tempDataDir(), { FLUXMAIL_ENCRYPTION_KEY: '22'.repeat(32) }), db);
+
+    service.setGoogle({ clientId: 'google-id', clientSecret: privateSecret });
+    service.setMicrosoft({ clientId: 'microsoft-id', tenantId: 'common' });
+    service.setLicenseKey(license);
+
+    expect(service.config.google).toEqual({ clientId: 'google-id', clientSecret: privateSecret });
+    expect(service.config.microsoft).toEqual({ clientId: 'microsoft-id', tenantId: 'common' });
+    expect(service.config.licenseKey).toBe(license);
+    const raw = db
+      .select()
+      .from(instanceSettings)
+      .all()
+      .map((row) => row.value);
+    expect(raw.filter((value) => value.startsWith('v1:'))).toHaveLength(3);
+    expect(JSON.stringify(raw)).not.toContain(privateSecret);
+    expect(JSON.stringify(raw)).not.toContain(license);
+  });
+
+  it('pins existing Outlook refresh tokens to their current OAuth application before replacing it', () => {
+    const deployment = resolve(tempDataDir(), { FLUXMAIL_ENCRYPTION_KEY: '23'.repeat(32) });
+    const db = openDb(':memory:');
+    const service = new ConfigurationService(deployment, db);
+    const original = { clientId: 'original-client', clientSecret: 'original-secret', tenantId: 'original-tenant' };
+    service.setMicrosoft(original);
+    const owner = addMember(db, { name: 'Owner' });
+    const registry = new AccountRegistry(db, service.config);
+    const account = registry.addOutlookAccount(
+      'owner@example.com',
+      { accessToken: 'access-token', refreshToken: 'refresh-token', expiresAt: 0, clientAuth: 'confidential' },
+      undefined,
+      owner.id,
+    );
+
+    service.setMicrosoft({
+      clientId: 'replacement-client',
+      clientSecret: 'replacement-secret',
+      tenantId: 'replacement-tenant',
+    });
+
+    const credentialRow = db.select().from(accountCredentials).get()!;
+    const stored = JSON.parse(decryptString(deployment.encryptionKey, credentialRow.encryptedCredentials));
+    expect(stored.fluxmailOAuthClient).toEqual(original);
+    expect(credentialRow.revision).toBe(2);
+    expect(db.select().from(oauthTokens).get()).toMatchObject({
+      encryptedTokens: credentialRow.encryptedCredentials,
+      updatedAt: credentialRow.updatedAt,
+    });
+
+    service.resetMicrosoft();
+    expect(service.config.microsoft).toBeUndefined();
+    expect(() => registry.getProvider(account.id)).not.toThrow();
+  });
+
+  it('round-trips encrypted settings and resets complete groups', () => {
+    const deployment = resolve(tempDataDir(), { FLUXMAIL_ENCRYPTION_KEY: '33'.repeat(32) });
+    const db = openDb(':memory:');
+    const first = new ConfigurationService(deployment, db);
+    first.setGoogle({ clientId: 'id', clientSecret: 'secret' });
+
+    const reopened = new ConfigurationService(deployment, db);
+    expect(reopened.config.google).toEqual({ clientId: 'id', clientSecret: 'secret' });
+    expect(reopened.resetGoogle()).toBe(true);
+    expect(reopened.oauthStatus().google.source).toBe('built-in');
+  });
+
+  it('reloads stored instance settings written through another database connection', () => {
+    const deployment = resolve(tempDataDir(), { FLUXMAIL_ENCRYPTION_KEY: '34'.repeat(32) });
+    const firstDb = openDb(deployment.dbPath, { dataDir: deployment.dataDir });
+    const secondDb = openDb(deployment.dbPath, { dataDir: deployment.dataDir });
+    try {
+      const running = new ConfigurationService(deployment, firstDb);
+      const localCli = new ConfigurationService(deployment, secondDb);
+      const license = `fluxmail_lic_${'ab'.repeat(20)}`;
+
+      localCli.setGoogle({ clientId: 'local-cli-id', clientSecret: 'local-cli-secret' });
+      localCli.setLicenseKey(license);
+
+      expect(running.config.google).toEqual({ clientId: 'local-cli-id', clientSecret: 'local-cli-secret' });
+      expect(running.oauthStatus().google.source).toBe('stored');
+      expect(running.config.licenseKey).toBe(license);
+      expect(running.licenseSource()).toBe('stored');
+
+      localCli.resetGoogle();
+      localCli.removeLicenseKey();
+
+      expect(running.oauthStatus().google.source).toBe('built-in');
+      expect(running.config.licenseKey).toBeUndefined();
+    } finally {
+      (firstDb as unknown as { $client: { close(): void } }).$client.close();
+      (secondDb as unknown as { $client: { close(): void } }).$client.close();
+    }
+  });
+
+  it('uses complete environment groups and prevents API changes while controlled', () => {
+    const secretFile = path.join(tempDataDir(), 'google-secret');
+    writeFileSync(secretFile, 'file-secret\n');
+    const deployment = resolve(tempDataDir(), {
+      FLUXMAIL_ENCRYPTION_KEY: '44'.repeat(32),
+      GOOGLE_CLIENT_ID: 'environment-id',
+      GOOGLE_CLIENT_SECRET_FILE: secretFile,
+      MICROSOFT_CLIENT_ID: 'microsoft-id',
+    });
+    const service = new ConfigurationService(deployment, openDb(':memory:'));
+
+    expect(service.config.google).toEqual({ clientId: 'environment-id', clientSecret: 'file-secret' });
+    expect(service.config.microsoft).toEqual({ clientId: 'microsoft-id', tenantId: 'common' });
+    expect(service.oauthStatus().google.source).toBe('environment-file');
+    expect(() => service.setGoogle({ clientId: 'next', clientSecret: 'next-secret' })).toThrow(/environment/);
+    expect(() => service.resetMicrosoft()).toThrow(/environment/);
+  });
+
+  it('supports license secret files and never exposes their path through status', () => {
+    const file = path.join(tempDataDir(), 'license');
+    const license = `fluxmail_lic_${'cd'.repeat(20)}`;
+    writeFileSync(file, `${license}\n`);
+    const service = new ConfigurationService(
+      resolve(tempDataDir(), {
+        FLUXMAIL_ENCRYPTION_KEY: '55'.repeat(32),
+        FLUXMAIL_LICENSE_KEY_FILE: file,
+      }),
+      openDb(':memory:'),
+    );
+    expect(service.config.licenseKey).toBe(license);
+    expect(JSON.stringify(service.oauthStatus())).not.toContain(file);
+    expect(() => service.setLicenseKey(`fluxmail_lic_${'ef'.repeat(20)}`)).toThrow(/environment/);
+  });
+
+  it('fails safely when encrypted settings are opened with a different key', () => {
+    const db = openDb(':memory:');
+    const first = new ConfigurationService(resolve(tempDataDir(), { FLUXMAIL_ENCRYPTION_KEY: '66'.repeat(32) }), db);
+    first.setGoogle({ clientId: 'id', clientSecret: 'secret' });
+    expect(
+      () => new ConfigurationService(resolve(tempDataDir(), { FLUXMAIL_ENCRYPTION_KEY: '77'.repeat(32) }), db),
+    ).toThrow(/decrypt/);
   });
 });

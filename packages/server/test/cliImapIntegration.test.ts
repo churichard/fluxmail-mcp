@@ -14,6 +14,7 @@ const ownerEmail = 'cli-owner@example.com';
 function run(args: string[]) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     encoding: 'utf8',
+    timeout: 15_000,
     env: {
       ...process.env,
       FLUXMAIL_DATA_DIR: dataDir,
@@ -115,5 +116,13 @@ describe.skipIf(!host || !existsSync(cliPath)).sequential('IMAP CLI integration'
     ]);
     expect(literal.status).not.toBe(0);
     expect(literal.stderr).toMatch(/unknown option.*--imap-password/i);
+  }, 30_000);
+
+  it('exits after listing a full page from IMAP', () => {
+    const listed = run(['emails', 'list', '--folder', 'inbox', '--page-size', '100']);
+
+    expect(listed.error, listed.stderr).toBeUndefined();
+    expect(listed.status, listed.stderr).toBe(0);
+    expect(JSON.parse(listed.stdout)).toMatchObject({ data: expect.any(Array) });
   }, 30_000);
 });

@@ -205,7 +205,9 @@ function curlExample(
   operation: OpenApiOperation,
   bodySchema: JsonObject | undefined,
 ): string {
-  const urlPath = apiPath.replace(/\{([^}]+)\}/g, (_match, name: string) => pathParameterExample(name));
+  const urlPath = apiPath.replace(/\{([^}]+)\}/g, (_match, name: string) =>
+    pathParameterExample(name, operation.parameters ?? []),
+  );
   const lines = [`curl 'http://localhost:8977${urlPath}'`];
   if (method !== 'get') lines.push(`  -X ${method.toUpperCase()}`);
   if (operation.security?.length) {
@@ -224,7 +226,10 @@ function curlExample(
   return `\`\`\`bash\n${lines.map((line, index) => `${line}${index < lines.length - 1 ? ' \\' : ''}`).join('\n')}\n\`\`\``;
 }
 
-function pathParameterExample(name: string): string {
+function pathParameterExample(name: string, parameters: OpenApiParameter[]): string {
+  const parameter = parameters.find((candidate) => candidate.in === 'path' && candidate.name === name);
+  const explicit = parameter?.schema?.example;
+  if (typeof explicit === 'string' || typeof explicit === 'number') return encodeURIComponent(String(explicit));
   const examples: Record<string, string> = {
     accountId: 'acct_123',
     messageId: 'msg_123',

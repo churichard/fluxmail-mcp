@@ -4,7 +4,6 @@ import { existsSync, linkSync, readFileSync, rmSync, writeFileSync } from 'node:
 import { Agent as HttpAgent, request as httpRequest } from 'node:http';
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
 import path from 'node:path';
-import { readStoredConfig } from './config.js';
 import { VERSION } from './version.js';
 
 // PostHog project tokens are public ingestion identifiers. This is the same
@@ -216,21 +215,21 @@ function telemetryDisabledFile(dataDir: string): string {
   return path.join(dataDir, 'telemetry.disabled');
 }
 
-export function telemetryDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+export function telemetryOptedOut(env: NodeJS.ProcessEnv = process.env): boolean {
   const setting = env.FLUXMAIL_TELEMETRY?.toLowerCase();
-  return (
-    setting === '0' ||
-    setting === 'false' ||
-    setting === 'no' ||
-    setting === 'off' ||
-    isTruthy(env.DO_NOT_TRACK) ||
-    env.NODE_ENV === 'test' ||
-    env.VITEST !== undefined
-  );
+  return setting === '0' || setting === 'false' || setting === 'no' || setting === 'off' || isTruthy(env.DO_NOT_TRACK);
+}
+
+export function telemetryDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return telemetryOptedOut(env) || env.NODE_ENV === 'test' || env.VITEST !== undefined;
+}
+
+export function telemetryDisabledInAnyEnvironment(...environments: NodeJS.ProcessEnv[]): boolean {
+  return environments.some((environment) => telemetryDisabled(environment));
 }
 
 export function isTelemetryEnabled(dataDir: string, env?: NodeJS.ProcessEnv): boolean {
-  return !existsSync(telemetryDisabledFile(dataDir)) && !telemetryDisabled(env ?? withStoredTelemetrySetting(dataDir));
+  return !existsSync(telemetryDisabledFile(dataDir)) && !telemetryDisabled(env ?? process.env);
 }
 
 export function setTelemetryEnabled(dataDir: string, enabled: boolean): void {
@@ -239,18 +238,12 @@ export function setTelemetryEnabled(dataDir: string, enabled: boolean): void {
   else writeFileSync(file, 'disabled\n', { mode: 0o600 });
 }
 
-export function withStoredTelemetrySetting(dataDir: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  if (env.FLUXMAIL_TELEMETRY !== undefined) return env;
-  const storedSetting = readStoredConfig(dataDir).FLUXMAIL_TELEMETRY;
-  return storedSetting === undefined ? env : { ...env, FLUXMAIL_TELEMETRY: storedSetting };
-}
-
 export function createTelemetry(options: {
   dataDir: string;
   env?: NodeJS.ProcessEnv;
   client?: PostHogClient;
 }): Telemetry {
-  const env = options.env ?? withStoredTelemetrySetting(options.dataDir);
+  const env = options.env ?? process.env;
   let initialized: { client: PostHogClient; distinctId: string; transport?: PostHogTransport } | undefined;
   let initializationFailed = false;
   let activeActivities = 0;
@@ -365,8 +358,8 @@ export function installTelemetryStreamEndHandler(
   });
 }
 
-export function getTelemetry(dataDir: string): Telemetry {
-  sharedTelemetry ??= createTelemetry({ dataDir });
+export function getTelemetry(dataDir: string, env?: NodeJS.ProcessEnv): Telemetry {
+  sharedTelemetry ??= createTelemetry({ dataDir, env });
   return sharedTelemetry;
 }
 

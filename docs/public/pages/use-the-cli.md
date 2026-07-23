@@ -222,4 +222,4 @@ Fluxmail does not show update notices for MCP stdio, redirected output, CI, npm 
 fluxmail --no-update-notifier status
 ```
 
-Set `NO_UPDATE_NOTIFIER=1` in your shell or container environment to turn off update checks. This variable controls only CLI update checks and is not stored by `fluxmail config set`.
+Set `NO_UPDATE_NOTIFIER=1` in your shell or container environment to turn off update checks. This variable controls only CLI update checks and is not part of Fluxmail configuration.

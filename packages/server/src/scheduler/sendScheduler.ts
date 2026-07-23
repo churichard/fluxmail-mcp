@@ -1,5 +1,6 @@
 import { isEmailError, type SendResult } from '@fluxmail/core';
 import type { FluxmailDb } from '../storage/db.js';
+import { logFailure, type Logger } from '../logging.js';
 import {
   claimScheduledSend,
   completeClaim,
@@ -44,6 +45,7 @@ export class SendScheduler {
   constructor(
     private readonly db: FluxmailDb,
     private readonly service: ScheduledSender,
+    private readonly logger?: Logger,
   ) {}
 
   /** Starts the loop; immediately fires anything past due (catch-up after downtime). */
@@ -85,11 +87,14 @@ export class SendScheduler {
           // is renewed or usage is trimmed to fit the plan.
           this.quotaHoldUntil = now + MAX_ARM_MS;
           const message = err instanceof Error ? err.message : String(err);
+          logFailure(this.logger, 'scheduler.quota_held', err, { details: { pending_count: due.length } });
           for (const row of due) holdPending(this.db, row.id, message);
           due = [];
         }
       }
       for (const row of due) await this.fire(row);
+    } catch (err) {
+      logFailure(this.logger, 'scheduler.tick_failed', err);
     } finally {
       this.processing = false;
     }
@@ -113,6 +118,9 @@ export class SendScheduler {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (isEmailError(err) && PERMANENT_CODES.has(err.code)) {
+        this.logger?.warn('scheduler.send_failed', message, err, {
+          details: { permanent: true },
+        });
         failClaim(
           this.db,
           row.id,
@@ -124,6 +132,9 @@ export class SendScheduler {
         // Transient (auth_expired, rate_limited, network): retry forever, late but sent.
         retryClaim(this.db, row.id, claim.token, message);
         const attempt = (this.backoff.get(row.id)?.attempt ?? 0) + 1;
+        logFailure(this.logger, 'scheduler.send_retry', err, {
+          details: { attempt, permanent: false },
+        });
         this.backoff.set(row.id, {
           attempt,
           notBefore: Date.now() + Math.min(BASE_BACKOFF_MS * 2 ** (attempt - 1), MAX_ARM_MS),

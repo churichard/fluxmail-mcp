@@ -6,8 +6,8 @@ services:
       - '8977:8977'
       # Local OAuth callback for Outlook and optional local Gmail setup.
       - '127.0.0.1:8976:8976'
-    # Settings (provider credentials, FLUXMAIL_PUBLIC_URL, license key, ...) live in
-    # a .env file next to this file; see .env.example in the repo.
+    # Compose loads restart-bound deployment overrides from .env. OAuth apps and
+    # the license are normally configured through authenticated Fluxmail commands.
     env_file:
       - path: .env
         required: false
@@ -15,6 +15,11 @@ services:
       FLUXMAIL_OAUTH_HOST: 0.0.0.0
     volumes:
       - fluxmail-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '3'
     restart: unless-stopped
 
 volumes:

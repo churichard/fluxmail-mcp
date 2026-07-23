@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { FluxmailConfig } from '../config.js';
-import { readStoredConfig } from '../config.js';
+import type { ConfigurationService, FluxmailConfig } from '../config.js';
 import type { FluxmailDb } from '../storage/db.js';
+import { logFailure, type Logger } from '../logging.js';
 import { validateLicense } from './client.js';
 import { licensePublicKeys, verifyLease, type LeasePayload } from './lease.js';
 import { getEntitlements, readLeaseRow, saveLeaseToken } from './entitlements.js';
@@ -12,6 +12,8 @@ import { getEntitlements, readLeaseRow, saveLeaseToken } from './entitlements.js
 export const VALIDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** After an outage, retry sooner than the daily cadence. */
 const OUTAGE_RETRY_MS = 60 * 60 * 1000;
+/** Notice a license added through another local process while the server is running. */
+export const LICENSE_CONFIG_RECHECK_MS = 5_000;
 
 export type RefreshResult =
   | { outcome: 'refreshed'; lease: LeasePayload }
@@ -47,7 +49,9 @@ export interface RefreshOptions {
 export interface LicenseControllerOptions {
   db: FluxmailDb;
   config: FluxmailConfig;
+  configuration?: ConfigurationService;
   log?: (line: string) => void;
+  logger?: Logger;
   onRefreshed?: () => void;
   fetchImpl?: typeof fetch;
 }
@@ -135,12 +139,11 @@ export class LicenseController {
   constructor(private readonly deps: LicenseControllerOptions) {}
 
   configuredKey(): string | undefined {
-    if (this.deps.config.licenseKeyFromEnvironment) return this.deps.config.licenseKey;
-    return readStoredConfig(this.deps.config.dataDir).FLUXMAIL_LICENSE_KEY?.trim() || this.deps.config.licenseKey;
+    return this.deps.configuration?.config.licenseKey ?? this.deps.config.licenseKey;
   }
 
   private schedule(delayMs: number): void {
-    if (this.stopped || !this.configuredKey()) return;
+    if (this.stopped) return;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => void this.refreshNow(), delayMs);
     this.timer.unref();
@@ -149,7 +152,10 @@ export class LicenseController {
   async refreshNow(): Promise<RefreshResult | undefined> {
     if (this.running) return this.running;
     const licenseKey = this.configuredKey();
-    if (!licenseKey) return undefined;
+    if (!licenseKey) {
+      this.schedule(LICENSE_CONFIG_RECHECK_MS);
+      return undefined;
+    }
     this.running = this.run(licenseKey).finally(() => {
       const refreshPending = this.refreshPending && !this.stopped;
       this.refreshPending = false;
@@ -173,15 +179,22 @@ export class LicenseController {
         ...(this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {}),
       });
     } catch (err) {
+      logFailure(this.deps.logger, 'license.refresh_failed', err);
       this.deps.log?.(`License refresh failed: ${err instanceof Error ? err.message : String(err)}`);
       this.schedule(OUTAGE_RETRY_MS);
       return undefined;
     }
     if (result.outcome === 'refreshed') {
+      this.deps.logger?.info('license.refreshed', 'License lease renewed', {
+        details: { expires_at: result.lease.expiresAt },
+      });
       this.deps.log?.(`License validated; lease renewed until ${result.lease.expiresAt}`);
       this.deps.onRefreshed?.();
       this.schedule(VALIDATE_INTERVAL_MS);
     } else {
+      this.deps.logger?.warn('license.refresh_failed', result.message, undefined, {
+        details: { outcome: result.outcome, cached_lease_active: result.cachedLeaseActive },
+      });
       this.deps.log?.(
         `License validation: ${result.message}` +
           (result.cachedLeaseActive
@@ -196,7 +209,10 @@ export class LicenseController {
   start(log?: (line: string) => void): void {
     if (log) this.deps.log = log;
     this.stopped = false;
-    if (!this.configuredKey()) return;
+    if (!this.configuredKey()) {
+      this.schedule(LICENSE_CONFIG_RECHECK_MS);
+      return;
+    }
     const row = readLeaseRow(this.deps.db);
     const sinceLastValidation = row ? Date.now() - row.updatedAt : Number.POSITIVE_INFINITY;
     if (sinceLastValidation >= VALIDATE_INTERVAL_MS) void this.refreshNow();

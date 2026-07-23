@@ -1,19 +1,19 @@
 ---
-title: 'fluxmail config list'
-description: 'Show stored settings (secret values are masked)'
+title: 'fluxmail oauth status'
+description: 'Show OAuth application status without secrets'
 updated: '2026-07-15'
 ---
 
 <!-- This page is generated from the CLI command definitions. Run pnpm docs:generate to update it. -->
 
-`fluxmail config list`
+`fluxmail oauth status`
 
-Show stored settings (secret values are masked)
+Show OAuth application status without secrets
 
 ## Usage
 
 ```bash
-fluxmail config list
+fluxmail oauth status
 ```
 
 ## Options

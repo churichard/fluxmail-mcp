@@ -1,6 +1,6 @@
 ---
 title: 'fluxmail config'
-description: 'Persistent settings stored in the data dir, usable from any directory'
+description: 'Inspect and initialize deployment configuration'
 updated: '2026-07-15'
 ---
 
@@ -8,7 +8,7 @@ updated: '2026-07-15'
 
 `fluxmail config`
 
-Persistent settings stored in the data dir, usable from any directory
+Inspect and initialize deployment configuration
 
 ## Usage
 
@@ -24,6 +24,6 @@ This command has no command-specific options.
 
 | Command | Description |
 | --- | --- |
-| [`fluxmail config set`](/docs/cli/config-set) | Store a setting (shell env vars and local .env files still take precedence) |
-| [`fluxmail config unset`](/docs/cli/config-unset) | Remove a stored setting |
-| [`fluxmail config list`](/docs/cli/config-list) | Show stored settings (secret values are masked) |
+| [`fluxmail config init`](/docs/cli/config-init) | Create config.toml in the Fluxmail data directory |
+| [`fluxmail config show`](/docs/cli/config-show) | Show effective configuration, sources, paths, and restart requirements |
+| [`fluxmail config migrate`](/docs/cli/config-migrate) | Import settings from an env file without deleting it |

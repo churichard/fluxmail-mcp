@@ -4,7 +4,7 @@ import { EmailError, isEmailError } from '@fluxmail/core';
 import type { ImapCredentials } from '@fluxmail/provider-imap';
 import type { AccountRegistry } from '../accounts/registry.js';
 import { prepareHostedGmailConnection, prepareHostedOutlookConnection } from '../accounts/gmailConnection.js';
-import { unsetStoredConfig, type FluxmailConfig } from '../config.js';
+import { EnvironmentControlledSettingError, type ConfigurationService, type FluxmailConfig } from '../config.js';
 import { LICENSE_KEY_PATTERN, releaseLicense } from '../licensing/client.js';
 import { activateLicense } from '../licensing/activation.js';
 import { checkLicenseState, clearLease, readLeaseRow } from '../licensing/entitlements.js';
@@ -24,6 +24,7 @@ import { findMember } from '../storage/members.js';
 import type { Principal } from '../auth.js';
 import { canAdminister, canSeeAccountMetadata } from '../authorization.js';
 import { operationIdForRequest } from './operationRoutes.js';
+import { logCodedFailure, logFailure, type Logger } from '../logging.js';
 
 export const ADMIN_BODY_LIMIT = 64 * 1024;
 export const ADMIN_CONNECTION_TIMEOUT_MS = 30_000;
@@ -63,6 +64,21 @@ export const adminOperationRoutes = {
     method: 'delete',
     path: '/api/v1/admin/api-keys/{keyId}',
     operationId: 'revokeAdministrativeApiKey',
+  },
+  getOauthApps: {
+    method: 'get',
+    path: '/api/v1/admin/oauth-apps',
+    operationId: 'getAdministrativeOAuthApps',
+  },
+  putOauthApp: {
+    method: 'put',
+    path: '/api/v1/admin/oauth-apps/{provider}',
+    operationId: 'putAdministrativeOAuthApp',
+  },
+  deleteOauthApp: {
+    method: 'delete',
+    path: '/api/v1/admin/oauth-apps/{provider}',
+    operationId: 'deleteAdministrativeOAuthApp',
   },
   getLicense: {
     method: 'get',
@@ -193,9 +209,11 @@ export async function requestBodyExceedsLimit(request: Request, limit = ADMIN_BO
 
 export interface AdminApiDeps {
   config: FluxmailConfig;
+  configuration: ConfigurationService;
   db: FluxmailDb;
   registry?: AccountRegistry;
   licenseController?: LicenseController;
+  logger?: Logger;
 }
 
 const identifier = z.string().trim().min(1).max(200);
@@ -347,6 +365,35 @@ const ApiKeySchema = z
   .openapi('AdministrativeApiKey');
 const GenericDataSchema = z.object({ data: z.record(z.unknown()) }).strict();
 const ApiKeyCreateResponseSchema = z.object({ data: ApiKeySchema.extend({ key: z.string() }) }).strict();
+const OAuthProviderSchema = z.enum(['google', 'outlook']).openapi({ example: 'google' });
+const OAuthAppInputSchema = z
+  .object({
+    clientId: z.string().trim().min(1).max(2048).openapi({ example: 'client-id.apps.example.com' }),
+    clientSecret: z.string().trim().min(1).max(16_384).optional().openapi({ example: 'client-secret' }),
+    tenantId: z.string().trim().min(1).max(2048).optional().openapi({ example: 'common' }),
+    publicClient: z.boolean().optional(),
+  })
+  .strict()
+  .openapi({ example: { clientId: 'client-id.apps.example.com', clientSecret: 'client-secret' } });
+const OAuthAppsResponseSchema = z
+  .object({
+    data: z.object({
+      google: z.object({
+        clientId: z.string(),
+        clientSecretConfigured: z.boolean(),
+        source: z.enum(['built-in', 'stored', 'environment', 'environment-file']),
+        mutable: z.boolean(),
+      }),
+      outlook: z.object({
+        clientId: z.string().nullable(),
+        tenantId: z.string().nullable(),
+        clientSecretConfigured: z.boolean(),
+        source: z.enum(['stored', 'environment', 'environment-file']).nullable(),
+        mutable: z.boolean(),
+      }),
+    }),
+  })
+  .strict();
 
 const errors = {
   400: { content: { 'application/json': { schema: ErrorSchema } }, description: 'Invalid request' },
@@ -467,10 +514,19 @@ function serializeApiKey(key: ReturnType<typeof listApiKeys>[number]) {
   };
 }
 
-async function run<T extends Response>(fn: () => Promise<T> | T): Promise<any> {
+async function run<T extends Response>(deps: AdminApiDeps, fn: () => Promise<T> | T): Promise<any> {
   try {
     return await fn();
   } catch (error) {
+    const context = {
+      productSurface: 'rest',
+      operation: 'administrative_request',
+    } as const;
+    if (error instanceof AdminFailure) {
+      logCodedFailure(deps.logger, 'rest.operation_failed', error.code, error.message, context);
+    } else {
+      logFailure(deps.logger, 'rest.operation_failed', error, context);
+    }
     return failureResponse(error);
   }
 }
@@ -491,7 +547,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     },
   });
   app.openapi(connectionsRoute, (c) =>
-    run(async () => {
+    run(deps, async () => {
       const auth = c.get('restAuth') as Principal;
       requireAdmin(auth, 'admin.accounts');
       const input = c.req.valid('json');
@@ -572,7 +628,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     },
   });
   app.openapi(imapTestRoute, (c) =>
-    run(async () => {
+    run(deps, async () => {
       requireAdmin(c.get('restAuth'), 'admin.accounts');
       const input = c.req.valid('json');
       const warnings = await registry(deps).testImapCredentials(
@@ -605,7 +661,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     },
   });
   app.openapi(folderRoute, (c) =>
-    run(async () => {
+    run(deps, async () => {
       const auth = c.get('restAuth') as Principal;
       requireAdmin(auth, 'admin.accounts');
       const { accountId } = c.req.valid('param');
@@ -650,7 +706,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     },
   });
   app.openapi(listKeysRoute, (c) =>
-    run(() => {
+    run(deps, () => {
       requireAdmin(c.get('restAuth'), 'admin.api_keys');
       return json({ data: listApiKeys(deps.db).map(serializeApiKey) });
     }),
@@ -671,7 +727,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     },
   });
   app.openapi(createKeyRoute, (c) =>
-    run(() => {
+    run(deps, () => {
       requireAdmin(c.get('restAuth'), 'admin.api_keys');
       const input = c.req.valid('json');
       const member = findMember(deps.db, input.member);
@@ -704,7 +760,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     },
   });
   app.openapi(patchKeyRoute, (c) =>
-    run(() => {
+    run(deps, () => {
       requireAdmin(c.get('restAuth'), 'admin.api_keys');
       const { keyId } = c.req.valid('param');
       const input = c.req.valid('json');
@@ -740,11 +796,112 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     },
   });
   app.openapi(deleteKeyRoute, (c) =>
-    run(() => {
+    run(deps, () => {
       requireAdmin(c.get('restAuth'), 'admin.api_keys');
       const { keyId } = c.req.valid('param');
       if (!revokeApiKey(deps.db, keyId)) throw new EmailError('not_found', `No API key with id "${keyId}".`);
       return json({ data: { id: keyId, revoked: true } });
+    }),
+  );
+
+  const getOauthAppsRoute = createRoute({
+    ...adminOperationRoutes.getOauthApps,
+    summary: 'Get OAuth application status',
+    description: 'Get safe OAuth application metadata without returning client secrets. Requires admin.accounts.',
+    ...protectedRoute,
+    responses: {
+      200: { content: { 'application/json': { schema: OAuthAppsResponseSchema } }, description: 'OAuth applications' },
+      ...errors,
+    },
+  });
+  app.openapi(getOauthAppsRoute, (c) =>
+    run(deps, () => {
+      requireAdmin(c.get('restAuth'), 'admin.accounts');
+      return json({ data: deps.configuration.oauthStatus() });
+    }),
+  );
+
+  const putOauthAppRoute = createRoute({
+    ...adminOperationRoutes.putOauthApp,
+    summary: 'Configure an OAuth application',
+    description: 'Save an OAuth application in encrypted instance settings. Requires admin.accounts.',
+    ...protectedRoute,
+    request: {
+      params: z.object({ provider: OAuthProviderSchema }).strict(),
+      body: { required: true, content: { 'application/json': { schema: OAuthAppInputSchema } } },
+    },
+    responses: {
+      200: { content: { 'application/json': { schema: OAuthAppsResponseSchema } }, description: 'OAuth applications' },
+      ...errors,
+    },
+  });
+  app.openapi(putOauthAppRoute, (c) =>
+    run(deps, () => {
+      requireAdmin(c.get('restAuth'), 'admin.accounts');
+      const { provider } = c.req.valid('param');
+      const input = c.req.valid('json');
+      try {
+        if (provider === 'google') {
+          if (!input.clientSecret) {
+            throw new AdminFailure('invalid_request', 'Google OAuth requires a client secret.', 400);
+          }
+          if (input.tenantId !== undefined || input.publicClient !== undefined) {
+            throw new AdminFailure('invalid_request', 'Google OAuth does not accept Microsoft settings.', 400);
+          }
+          deps.configuration.setGoogle({ clientId: input.clientId, clientSecret: input.clientSecret });
+        } else {
+          if (input.publicClient === true && input.clientSecret) {
+            throw new AdminFailure('invalid_request', 'A public client cannot include a client secret.', 400);
+          }
+          if (input.publicClient !== true && !input.clientSecret) {
+            throw new AdminFailure('invalid_request', 'Choose a public client or provide a client secret.', 400);
+          }
+          deps.configuration.setMicrosoft({
+            clientId: input.clientId,
+            tenantId: input.tenantId ?? 'common',
+            ...(input.clientSecret ? { clientSecret: input.clientSecret } : {}),
+          });
+        }
+      } catch (error) {
+        if (error instanceof AdminFailure) throw error;
+        if (!(error instanceof EnvironmentControlledSettingError)) throw error;
+        throw new AdminFailure(
+          'oauth_from_environment',
+          'Remove the OAuth environment overrides before changing this application.',
+          409,
+        );
+      }
+      return json({ data: deps.configuration.oauthStatus() });
+    }),
+  );
+
+  const deleteOauthAppRoute = createRoute({
+    ...adminOperationRoutes.deleteOauthApp,
+    summary: 'Reset an OAuth application',
+    description: 'Remove a stored OAuth application. Requires admin.accounts.',
+    ...protectedRoute,
+    request: { params: z.object({ provider: OAuthProviderSchema }).strict() },
+    responses: {
+      200: { content: { 'application/json': { schema: OAuthAppsResponseSchema } }, description: 'OAuth applications' },
+      ...errors,
+    },
+  });
+  app.openapi(deleteOauthAppRoute, (c) =>
+    run(deps, () => {
+      requireAdmin(c.get('restAuth'), 'admin.accounts');
+      const { provider } = c.req.valid('param');
+      try {
+        if (provider === 'google') deps.configuration.resetGoogle();
+        else deps.configuration.resetMicrosoft();
+      } catch (error) {
+        if (!(error instanceof EnvironmentControlledSettingError)) throw error;
+        throw new AdminFailure(
+          'oauth_from_environment',
+          'Remove the OAuth environment overrides before resetting this application.',
+          409,
+        );
+      }
+      return json({ data: deps.configuration.oauthStatus() });
     }),
   );
 
@@ -762,7 +919,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     },
   });
   app.openapi(licenseRoute, (c) =>
-    run(() => {
+    run(deps, () => {
       requireAdmin(c.get('restAuth'), 'admin.license');
       const state = checkLicenseState(deps.db);
       const row = readLeaseRow(deps.db);
@@ -770,7 +927,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
       return json({
         data: {
           configured,
-          source: configured ? (deps.config.licenseKeyFromEnvironment ? 'environment' : 'stored') : null,
+          source: configured ? deps.configuration.licenseSource() : null,
           entitlements: state.entitlements,
           usage: { accounts: state.accountCount, members: state.memberCount, overQuota: state.overQuota },
           lastValidatedAt: row ? new Date(row.updatedAt).toISOString() : null,
@@ -796,7 +953,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     },
   });
   app.openapi(activateRoute, (c) =>
-    run(async () => {
+    run(deps, async () => {
       requireAdmin(c.get('restAuth'), 'admin.license');
       const { licenseKey } = c.req.valid('json');
       if (!LICENSE_KEY_PATTERN.test(licenseKey)) {
@@ -809,7 +966,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
           409,
         );
       }
-      const result = await activateLicense(deps.db, {
+      const result = await activateLicense(deps.db, deps.configuration, {
         licenseKey,
         serverUrl: deps.config.licenseServerUrl,
         dataDir: deps.config.dataDir,
@@ -843,7 +1000,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
     },
   });
   app.openapi(deactivateRoute, (c) =>
-    run(async () => {
+    run(deps, async () => {
       requireAdmin(c.get('restAuth'), 'admin.license');
       if (deps.config.licenseKeyFromEnvironment) {
         throw new AdminFailure(
@@ -860,7 +1017,7 @@ export function registerAdminRoutes(app: OpenAPIHono<any>, deps: AdminApiDeps): 
             instanceId: loadInstanceId(deps.config.dataDir),
           })
         : false;
-      const removed = unsetStoredConfig(deps.config.dataDir, 'FLUXMAIL_LICENSE_KEY');
+      const removed = deps.configuration.removeLicenseKey();
       clearLease(deps.db);
       deps.licenseController?.wake();
       return json({ data: { deactivated: true, released, removedStoredKey: removed } });

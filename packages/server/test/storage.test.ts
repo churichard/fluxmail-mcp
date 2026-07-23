@@ -312,7 +312,7 @@ describe('account storage', () => {
 });
 
 describe('store compatibility', () => {
-  it('adopts a legacy store as format 1 and creates a backup', () => {
+  it('adopts a legacy store at the current format and creates a backup', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'fluxmail-store-'));
     const dbPath = path.join(directory, 'fluxmail.db');
     const legacy = new Database(dbPath);

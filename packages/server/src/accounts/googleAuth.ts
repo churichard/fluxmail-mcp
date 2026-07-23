@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { CodeChallengeMethod, OAuth2Client, type Credentials } from 'google-auth-library';
 import { EmailError } from '@fluxmail/core';
 import type { FluxmailConfig } from '../config.js';
+import type { StoredGoogleOAuthApp } from '../instanceConfig.js';
 import { DEFAULT_GOOGLE_CLIENT_ID } from './defaultGoogleOAuth.js';
 
 const GOOGLE_IDENTITY_SCOPES = ['openid', 'email', 'profile'];
@@ -34,13 +35,20 @@ export function requireHostedGoogleConfig(config: FluxmailConfig): { clientId: s
   return { clientId: google.clientId, clientSecret: google.clientSecret };
 }
 
-export function createOAuthClient(config: FluxmailConfig, redirectUri: string): OAuth2Client {
-  const { clientId, clientSecret } = requireGoogleConfig(config);
+export function createOAuthClient(
+  config: FluxmailConfig,
+  redirectUri: string,
+  oauthClient: StoredGoogleOAuthApp = requireGoogleConfig(config),
+): OAuth2Client {
+  const { clientId, clientSecret } = oauthClient;
   return new OAuth2Client({ clientId, clientSecret, redirectUri });
 }
 
-export function gmailScopes(config: FluxmailConfig): string[] {
-  return requireGoogleConfig(config).clientId === DEFAULT_GOOGLE_CLIENT_ID ? GMAIL_SCOPES : CUSTOM_GMAIL_SCOPES;
+export function gmailScopes(
+  config: FluxmailConfig,
+  oauthClient: StoredGoogleOAuthApp = requireGoogleConfig(config),
+): string[] {
+  return oauthClient.clientId === DEFAULT_GOOGLE_CLIENT_ID ? GMAIL_SCOPES : CUSTOM_GMAIL_SCOPES;
 }
 
 export function buildAuthUrl(client: OAuth2Client, state: string, scopes: string[], codeChallenge?: string): string {
@@ -75,6 +83,10 @@ export interface OAuthResult {
   email: string;
   displayName?: string;
   tokens: Credentials;
+}
+
+export interface AuthorizedOAuthResult extends OAuthResult {
+  oauthClient: StoredGoogleOAuthApp;
 }
 
 function oauthErrorText(value: unknown): string | undefined {
@@ -148,13 +160,14 @@ export async function exchangeCode(client: OAuth2Client, code: string, codeVerif
  * Loopback OAuth flow for the CLI: listens once on config.oauthPort, prints the
  * consent URL, and resolves when Google redirects back with a code.
  */
-export async function runLoopbackFlow<T = OAuthResult>(
+export async function runLoopbackFlow<T = AuthorizedOAuthResult>(
   config: FluxmailConfig,
   onAuthUrl: (url: string) => void,
-  onAuthorized?: (result: OAuthResult) => T | Promise<T>,
+  onAuthorized?: (result: AuthorizedOAuthResult) => T | Promise<T>,
 ): Promise<T> {
+  const oauthClient = { ...requireGoogleConfig(config) };
   const redirectUri = `http://127.0.0.1:${config.oauthPort}/oauth/callback`;
-  const client = createOAuthClient(config, redirectUri);
+  const client = createOAuthClient(config, redirectUri, oauthClient);
   const { codeVerifier, codeChallenge } = await client.generateCodeVerifierAsync();
   const state = randomBytes(16).toString('hex');
 
@@ -191,7 +204,7 @@ export async function runLoopbackFlow<T = OAuthResult>(
           res.writeHead(400).end('Missing code parameter.');
           return;
         }
-        const result = await exchangeCode(client, code, codeVerifier);
+        const result = { ...(await exchangeCode(client, code, codeVerifier)), oauthClient };
         const accepted = onAuthorized ? await onAuthorized(result) : (result as T);
         finish(() => resolve(accepted));
         res
@@ -210,7 +223,7 @@ export async function runLoopbackFlow<T = OAuthResult>(
     });
     server.on('error', (err) => reject(oauthListenerError(err, config.oauthPort)));
     server.listen(config.oauthPort, config.oauthHost, () => {
-      onAuthUrl(buildAuthUrl(client, state, gmailScopes(config), codeChallenge));
+      onAuthUrl(buildAuthUrl(client, state, gmailScopes(config, oauthClient), codeChallenge));
     });
   });
 }

@@ -28,6 +28,7 @@ import { prepareHostedGmailConnection, prepareHostedOutlookConnection } from '..
 import type { ImapCredentials } from '@fluxmail/provider-imap';
 import { requestClientAddress } from './admin.js';
 import { operationIdForRequest, type OperationRoute } from './operationRoutes.js';
+import { logFailure, type Logger } from '../logging.js';
 
 export const identityOperationRoutes = [
   { method: 'post', path: '/api/v1/auth/login', operationId: 'login' },
@@ -154,6 +155,10 @@ const folderPatch = z
   .strict();
 
 function jsonError(c: any, error: unknown): Response {
+  logFailure(c.get?.('restLogger') as Logger | undefined, 'rest.operation_failed', error, {
+    productSurface: 'rest',
+    operation: identityOperationId(c.req.method, c.req.path) ?? 'identity_request',
+  });
   if (isEmailError(error)) {
     const statuses: Record<string, number> = {
       invalid_request: 400,

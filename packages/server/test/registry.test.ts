@@ -186,6 +186,20 @@ describe('AccountRegistry', () => {
     expect(JSON.parse(decryptString(config.encryptionKey, row!.encryptedCredentials))).toEqual(imapCredentials);
   });
 
+  it('closes every cached provider during shutdown', async () => {
+    const db = openDb(':memory:');
+    const registry = new AccountRegistry(db, testConfig());
+    const owner = addMember(db, { name: 'Owner' });
+    const account = registry.addImapAccount('me@example.com', imapCredentials, undefined, owner.id);
+    registry.getProvider(account.id);
+    const close = vi.spyOn(ImapProvider.prototype, 'close').mockResolvedValue();
+
+    await registry.close();
+    await registry.close();
+
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('adds an Outlook account with encrypted Graph credentials and Outlook capabilities', () => {
     const config = testConfig();
     const db = openDb(':memory:');
@@ -655,18 +669,5 @@ describe('AccountRegistry', () => {
     const account = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
     registry.removeAccount(account.id);
     expect(registry.listAccounts()).toHaveLength(0);
-  });
-
-  it('closes every cached provider', async () => {
-    const db = openDb(':memory:');
-    const registry = new AccountRegistry(db, testConfig());
-    const owner = addMember(db, { name: 'Owner' });
-    const account = registry.addGmailAccount('me@example.com', tokens, undefined, owner.id);
-    const provider = registry.getProvider(account.id) as unknown as { close: ReturnType<typeof vi.fn> };
-    provider.close = vi.fn(async () => undefined);
-
-    await registry.close();
-
-    expect(provider.close).toHaveBeenCalledOnce();
   });
 });

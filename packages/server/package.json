@@ -1,6 +1,6 @@
 {
   "name": "fluxmail",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "mcpName": "io.github.churichard/fluxmail",
   "description": "Self-hosted email API with MCP and REST support for Gmail, Outlook, and IMAP/SMTP",
   "keywords": [
@@ -84,6 +84,7 @@
     "hono": "^4.7.11",
     "mime-types": "^3.0.2",
     "posthog-node": "^5.41.0",
+    "smol-toml": "^1.7.0",
     "update-notifier": "7.3.1",
     "zod": "^3.25.67"
   },

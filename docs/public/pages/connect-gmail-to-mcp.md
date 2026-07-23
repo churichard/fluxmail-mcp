@@ -74,11 +74,11 @@ Fluxmail requests the full `https://mail.google.com/` scope when you configure a
 
 Go to **Google Auth Platform → Clients → Create client**, then choose **Desktop app**. Download the OAuth client JSON after Google creates it. Desktop apps cannot keep this credential confidential, but Google's token endpoint still requires the generated client secret.
 
-Save both values from the JSON in Fluxmail's config:
+Save both values in encrypted instance settings. Fluxmail prompts for the client secret without displaying it:
 
 ```bash
-fluxmail config set GOOGLE_CLIENT_ID <your-client-id>.apps.googleusercontent.com
-fluxmail config set GOOGLE_CLIENT_SECRET <your-client-secret>
+fluxmail oauth configure google \
+  --client-id <your-client-id>.apps.googleusercontent.com
 ```
 
 Fluxmail uses PKCE when it exchanges the local authorization code.
@@ -93,14 +93,14 @@ For example, a server available at `https://mail.example.com` uses:
 https://mail.example.com/auth/google/callback
 ```
 
-Copy the client ID and client secret, then add both values to the server's `.env`:
+Copy the client ID and client secret, then configure the running instance:
 
-```dotenv
-GOOGLE_CLIENT_ID=<your-client-id>.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=<your-client-secret>
+```bash
+fluxmail oauth configure google \
+  --client-id <your-client-id>.apps.googleusercontent.com
 ```
 
-Restart Fluxmail after changing environment variables. `fluxmail config list` shows stored secrets in masked form.
+The change takes effect immediately. For Docker, prefix the command with `docker compose exec fluxmail`. In a managed deployment, you can instead set `GOOGLE_CLIENT_ID` with `GOOGLE_CLIENT_SECRET_FILE`; both values must be present, and changing them requires a restart.
 
 ### Create a hosted link through the API
 

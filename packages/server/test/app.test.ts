@@ -262,7 +262,13 @@ describe('HTTP app', () => {
     expect(start.status).toBe(302);
     const microsoftUrl = new URL(start.headers.get('location') ?? '');
     expect(microsoftUrl.searchParams.get('redirect_uri')).toBe('https://mail.example.com/auth/microsoft/callback');
+    const oauthClient = { ...deps.config.microsoft! };
     const state = microsoftUrl.searchParams.get('state');
+    deps.config.microsoft = {
+      clientId: 'replacement-client-id',
+      clientSecret: 'replacement-secret',
+      tenantId: 'replacement-tenant',
+    };
 
     const callback = await app.request(`/auth/microsoft/callback?state=${state}&code=authorization-code`);
     expect(callback.status).toBe(200);
@@ -279,6 +285,7 @@ describe('HTTP app', () => {
       'https://mail.example.com/auth/microsoft/callback',
       expect.any(String),
       'confidential',
+      oauthClient,
     );
   });
 
@@ -606,6 +613,38 @@ describe('HTTP app', () => {
       email: 'owner@example.com',
       displayName: 'Owner Updated',
     });
+  });
+
+  it('uses the Google OAuth app that started a hosted flow through token persistence', async () => {
+    vi.mocked(exchangeCode).mockResolvedValue({
+      email: 'owner@example.com',
+      tokens: { refresh_token: 'refresh', id_token: 'id' },
+    });
+    const deps = appDeps();
+    const oauthClient = { ...deps.config.google! };
+    const addGmailAccount = vi.spyOn(deps.registry, 'addGmailAccount');
+    const member = addMember(deps.db, { name: 'Owner' });
+    const app = createApp(deps);
+    const { token } = createGmailConnectionGrant(deps.db, { ownerMemberId: member.id });
+
+    const start = await app.request(`/auth/google/connect?token=${encodeURIComponent(token)}`, { method: 'POST' });
+    const state = new URL(start.headers.get('location') ?? '').searchParams.get('state');
+    deps.config.google = { clientId: 'replacement-client-id', clientSecret: 'replacement-secret' };
+
+    const callback = await app.request(`/auth/google/callback?state=${state}&code=authorization-code`);
+
+    expect(callback.status).toBe(200);
+    const client = vi.mocked(exchangeCode).mock.calls[0]![0];
+    expect(client._clientId).toBe(oauthClient.clientId);
+    expect(client._clientSecret).toBe(oauthClient.clientSecret);
+    expect(addGmailAccount).toHaveBeenCalledWith(
+      'owner@example.com',
+      { refresh_token: 'refresh', id_token: 'id' },
+      undefined,
+      member.id,
+      { sharedWithAll: false, grantedMemberIds: [] },
+      oauthClient,
+    );
   });
 
   it('preserves member ownership and reauthorization checks through the hosted flow', async () => {

@@ -235,9 +235,19 @@ export class InstanceClient {
     if (this.profile.kind === 'local') {
       const context = createContext();
       try {
-        return await createApp(context).request(pathname, { ...init, headers });
+        const response = await createApp(context).request(pathname, { ...init, headers });
+        const body = response.body ? await response.arrayBuffer() : null;
+        return new Response(body?.byteLength ? body : null, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
       } finally {
-        await context.registry.close();
+        try {
+          await context.registry.close();
+        } finally {
+          (context.db as unknown as { $client: { close(): void } }).$client.close();
+        }
       }
     }
     const baseUrl = new URL(`${this.profile.serverUrl}/`);

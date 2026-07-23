@@ -4,7 +4,7 @@ import { EmailError, isEmailError } from '@fluxmail/core';
 import type { HttpBindings } from '@hono/node-server';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { FluxmailConfig } from '../config.js';
+import type { ConfigurationService, FluxmailConfig } from '../config.js';
 import type { FluxmailDb } from '../storage/db.js';
 import type { AccountRegistry } from '../accounts/registry.js';
 import type { EmailService } from '../service/emailService.js';
@@ -35,25 +35,37 @@ import { canAdminister, canSeeAccountMetadata } from '../authorization.js';
 import type { LicenseController } from '../licensing/refresher.js';
 import { administrationUsesHttps as administrationRequestUsesHttps, requestBodyExceedsLimit } from './admin.js';
 import { recordAdminAuditEvent } from '../storage/adminAudit.js';
+import type { StoredGoogleOAuthApp, StoredMicrosoftOAuthApp } from '../instanceConfig.js';
+import { logCodedFailure, logFailure, type Logger } from '../logging.js';
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 export interface AppDeps {
   config: FluxmailConfig;
+  configuration: ConfigurationService;
   db: FluxmailDb;
   registry: AccountRegistry;
   service: EmailService;
   telemetry?: Telemetry;
+  logger?: Logger;
   licenseController?: LicenseController;
 }
 
 export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
-  const { config, db, registry, service, telemetry, licenseController } = deps;
+  const { config, configuration, db, registry, service, telemetry, logger, licenseController } = deps;
   const app = new Hono<{ Bindings: HttpBindings }>();
-  const googleOauthStates = new Map<string, { expiresAt: number; intent?: GmailConnectionIntent }>();
+  const googleOauthStates = new Map<
+    string,
+    { expiresAt: number; oauthClient: StoredGoogleOAuthApp; intent?: GmailConnectionIntent }
+  >();
   const microsoftOauthStates = new Map<
     string,
-    { expiresAt: number; verifier: string; intent?: GmailConnectionIntent }
+    {
+      expiresAt: number;
+      verifier: string;
+      oauthClient: StoredMicrosoftOAuthApp;
+      intent?: GmailConnectionIntent;
+    }
   >();
 
   const escapeHtml = (value: string): string =>
@@ -113,20 +125,24 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     `<button type="submit">Continue with ${identityProvider}</button></form></body></html>`;
 
   const beginGoogleOAuth = (intent?: GmailConnectionIntent): string => {
-    requireHostedGoogleConfig(config);
+    const oauthClient = { ...requireHostedGoogleConfig(config) };
     const now = Date.now();
     for (const [state, pending] of googleOauthStates) {
       if (pending.expiresAt < now) googleOauthStates.delete(state);
     }
     const state = randomBytes(16).toString('hex');
-    googleOauthStates.set(state, { expiresAt: now + OAUTH_STATE_TTL_MS, ...(intent ? { intent } : {}) });
-    const client = createOAuthClient(config, `${config.publicUrl}/auth/google/callback`);
-    return buildAuthUrl(client, state, gmailScopes(config));
+    googleOauthStates.set(state, {
+      expiresAt: now + OAUTH_STATE_TTL_MS,
+      oauthClient,
+      ...(intent ? { intent } : {}),
+    });
+    const client = createOAuthClient(config, `${config.publicUrl}/auth/google/callback`, oauthClient);
+    return buildAuthUrl(client, state, gmailScopes(config, oauthClient));
   };
 
   const beginMicrosoftOAuth = (intent?: GmailConnectionIntent): string => {
-    const microsoft = requireMicrosoftConfig(config);
-    if (!microsoft.clientSecret) {
+    const oauthClient = { ...requireMicrosoftConfig(config) };
+    if (!oauthClient.clientSecret) {
       throw new EmailError('invalid_request', 'MICROSOFT_CLIENT_SECRET is required for hosted Outlook connections.');
     }
     const now = Date.now();
@@ -138,9 +154,10 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     microsoftOauthStates.set(state, {
       expiresAt: now + OAUTH_STATE_TTL_MS,
       verifier,
+      oauthClient,
       ...(intent ? { intent } : {}),
     });
-    return buildMicrosoftAuthUrl(config, `${config.publicUrl}/auth/microsoft/callback`, state, verifier);
+    return buildMicrosoftAuthUrl(config, `${config.publicUrl}/auth/microsoft/callback`, state, verifier, oauthClient);
   };
 
   // Legacy connection routes use the same administrator policy as the REST API.
@@ -299,6 +316,10 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
         201,
       );
     } catch (err) {
+      logFailure(logger, 'rest.operation_failed', err, {
+        productSurface: 'rest',
+        operation: 'createLegacyConnection',
+      });
       if (isEmailError(err)) {
         audit('error', err.code);
         return c.json({ error: err.message }, 400);
@@ -314,6 +335,10 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
   app.post('/mcp', async (c) => {
     const auth = authForRequest(c);
     if (!auth) {
+      logCodedFailure(logger, 'mcp.request_rejected', 'unauthorized', 'MCP request was not authorized', {
+        productSurface: 'mcp',
+        operation: 'request',
+      });
       return c.json(
         {
           jsonrpc: '2.0',
@@ -327,6 +352,10 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     try {
       body = await c.req.json();
     } catch {
+      logCodedFailure(logger, 'mcp.request_rejected', 'invalid_request', 'MCP request body was not valid JSON', {
+        productSurface: 'mcp',
+        operation: 'request',
+      });
       return c.json({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }, 400);
     }
     const server = buildMcpServer(service.withPrincipal(auth), {
@@ -334,6 +363,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
       maxAttachmentBytes: config.maxAttachmentBytes,
       telemetry,
       transport: 'http',
+      logger,
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -380,6 +410,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
       const owner = findMember(db, ownerRef);
       return c.redirect(beginGoogleOAuth({ ownerMemberId: owner.id, sharedWithAll: false }));
     } catch (err) {
+      logFailure(logger, 'oauth.google_start_failed', err);
       return c.text(err instanceof Error ? err.message : String(err), 400);
     }
   });
@@ -434,7 +465,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
     const code = c.req.query('code');
     if (!code) return c.text('Missing code parameter.', 400);
 
-    const client = createOAuthClient(config, `${config.publicUrl}/auth/google/callback`);
+    const client = createOAuthClient(config, `${config.publicUrl}/auth/google/callback`, pending.oauthClient);
     try {
       const { email, displayName, tokens } = await exchangeCode(client, code);
       const reauthorizeAccount = pending.intent?.reauthorizeAccountId
@@ -456,10 +487,17 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
       if (duplicate && !reauthorizeAccount && pending.intent?.ownerMemberId !== duplicate.ownerMemberId) {
         throw new EmailError('permission_denied', 'This mailbox is already owned by another member.');
       }
-      const account = registry.addGmailAccount(email, tokens, displayName, pending.intent?.ownerMemberId, {
-        sharedWithAll: pending.intent?.sharedWithAll ?? false,
-        grantedMemberIds: pending.intent?.grantedMemberIds ?? [],
-      });
+      const account = registry.addGmailAccount(
+        email,
+        tokens,
+        displayName,
+        pending.intent?.ownerMemberId,
+        {
+          sharedWithAll: pending.intent?.sharedWithAll ?? false,
+          grantedMemberIds: pending.intent?.grantedMemberIds ?? [],
+        },
+        pending.oauthClient,
+      );
       recordAdminAuditEvent(db, {
         operation: 'account.connection.complete',
         outcome: 'success',
@@ -472,6 +510,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
           `<p>Account id: <code>${escapeHtml(account.id)}</code>. You can close this tab.</p></body></html>`,
       );
     } catch (err) {
+      logFailure(logger, 'oauth.google_callback_failed', err);
       // Surface why connecting failed (expired code, missing refresh token,
       // account limit) instead of a blank 500 the user cannot act on.
       if (isEmailError(err)) return c.text(`Could not connect the account: ${err.message}`, 400);
@@ -498,6 +537,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
       const owner = findMember(db, ownerRef);
       return c.redirect(beginMicrosoftOAuth({ ownerMemberId: owner.id, sharedWithAll: false }));
     } catch (err) {
+      logFailure(logger, 'oauth.microsoft_start_failed', err);
       return c.text(err instanceof Error ? err.message : String(err), 400);
     }
   });
@@ -559,6 +599,7 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
         `${config.publicUrl}/auth/microsoft/callback`,
         pending.verifier,
         'confidential',
+        pending.oauthClient,
       );
       const reauthorizeAccount = pending.intent?.reauthorizeAccountId
         ? registry.getAccount(pending.intent.reauthorizeAccountId)
@@ -602,12 +643,25 @@ export function createApp(deps: AppDeps): Hono<{ Bindings: HttpBindings }> {
           `<p>Account id: <code>${escapeHtml(account.id)}</code>. You can close this tab.</p></body></html>`,
       );
     } catch (err) {
+      logFailure(logger, 'oauth.microsoft_callback_failed', err);
       if (isEmailError(err)) return c.text(`Could not connect the account: ${err.message}`, 400);
       return c.text('Could not connect the account; check the server logs.', 500);
     }
   });
 
-  app.route('/', createRestApi({ config, db, service, telemetry, registry, licenseController }));
+  app.route(
+    '/',
+    createRestApi({
+      config,
+      configuration,
+      db,
+      service,
+      telemetry,
+      logger,
+      registry,
+      licenseController,
+    }),
+  );
 
   return app;
 }

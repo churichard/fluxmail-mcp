@@ -82,6 +82,32 @@ describe('OpenAPI documentation generation', () => {
     expect(page).not.toContain('[1-9]\\\\|[1-9][0-9]');
   });
 
+  it('uses explicit path parameter examples in curl commands', () => {
+    const reference = generateRestApiReference(
+      {
+        paths: {
+          '/api/v1/oauth-apps/{provider}': {
+            put: {
+              operationId: 'putOAuthApp',
+              parameters: [
+                {
+                  name: 'provider',
+                  in: 'path',
+                  required: true,
+                  schema: { type: 'string', enum: ['google', 'outlook'], example: 'google' },
+                },
+              ],
+              responses: { 200: { description: 'Updated' } },
+            },
+          },
+        },
+      },
+      '2026-07-15',
+    );
+
+    expect(reference.pages.get('put-oauth-app.md')).toContain("curl 'http://localhost:8977/api/v1/oauth-apps/google'");
+  });
+
   it('documents safe retries and every successful response schema', () => {
     const reference = generateRestApiReference(
       {

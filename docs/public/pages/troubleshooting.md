@@ -1,7 +1,7 @@
 ---
 title: 'Troubleshooting'
 description: 'Fix common Fluxmail installation, mailbox connection, and authentication problems.'
-updated: '2026-07-17'
+updated: '2026-07-19'
 ---
 
 Start by checking the service and connected mailboxes:
@@ -9,6 +9,12 @@ Start by checking the service and connected mailboxes:
 ```bash
 fluxmail status
 fluxmail accounts list
+```
+
+Show recent warnings and errors with:
+
+```bash
+fluxmail logs --level warn
 ```
 
 For Docker, prefix each command with `docker compose exec fluxmail`.
@@ -69,6 +75,19 @@ Check the container status and recent logs:
 ```bash
 docker compose ps
 docker compose logs --tail=100 fluxmail
+docker compose exec fluxmail fluxmail logs --level warn
 ```
 
 Confirm that port 8977 is reachable and that your reverse proxy forwards requests to it. See [Deploy with Docker](/docs/deploy-with-docker) for the expected public URL and authentication settings.
+
+## A configuration import fails
+
+`fluxmail config migrate` preserves the source file whether the command succeeds or fails. Read the error before changing any files. A key mismatch means the configured key differs from `<data dir>/encryption.key` or cannot decrypt the existing database. Restore the key that was used with the database, then retry the command.
+
+Do not replace the key just to clear the error. Provider credentials and encrypted instance settings cannot be decrypted with a different key.
+
+If `config.toml` already exists, move it aside only when the env file should replace its deployment settings. After a successful import, run `fluxmail config show` and `fluxmail oauth status` before removing the old file.
+
+## An OAuth application cannot be changed
+
+Run `fluxmail oauth status` and check the source. An application with an `environment` or `environment-file` source is controlled by deployment overrides. Remove the complete provider override group, restart Fluxmail, then run `fluxmail oauth configure` or `fluxmail oauth reset` again.

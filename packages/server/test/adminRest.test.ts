@@ -3,21 +3,21 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HttpBindings } from '@hono/node-server';
-import type { FluxmailConfig } from '../src/config.js';
+import { ConfigurationService, type DeploymentConfig } from '../src/config.js';
 import { AccountRegistry } from '../src/accounts/registry.js';
 import { EmailService } from '../src/service/emailService.js';
 import { createApp } from '../src/http/app.js';
 import { permissionPolicyForProfile } from '../src/permissions.js';
 import { createApiKey } from '../src/storage/apiKeys.js';
-import { adminAuditEvents, members, openDb } from '../src/storage/db.js';
+import { adminAuditEvents, instanceSettings, members, openDb } from '../src/storage/db.js';
 import { addMember, setMemberRole } from '../src/storage/members.js';
 import { recordAdminAuditEvent } from '../src/storage/adminAudit.js';
 import { administrationUsesHttps, requestClientAddress } from '../src/http/admin.js';
 import type { Telemetry } from '../src/telemetry.js';
 
-function fixture(telemetry?: Telemetry) {
+function fixture(telemetry?: Telemetry, environment: NodeJS.ProcessEnv = {}) {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-admin-rest-'));
-  const config: FluxmailConfig = {
+  const deployment: DeploymentConfig = {
     dataDir,
     dbPath: ':memory:',
     encryptionKey: Buffer.alloc(32, 9),
@@ -28,10 +28,34 @@ function fixture(telemetry?: Telemetry) {
     oauthHost: '127.0.0.1',
     maxAttachmentBytes: 1024,
     licenseServerUrl: 'https://license.invalid',
-    google: { clientId: 'google-client', clientSecret: 'google-secret' },
-    microsoft: { clientId: 'microsoft-client', clientSecret: 'microsoft-secret', tenantId: 'common' },
+    configFile: path.join(dataDir, 'config.toml'),
+    environment,
+    sources: {
+      dataDir: 'environment',
+      dbPath: 'default',
+      encryptionKey: 'environment',
+      port: 'default',
+      publicUrl: 'default',
+      trustProxy: 'default',
+      oauthPort: 'default',
+      oauthHost: 'default',
+      maxAttachmentBytes: 'default',
+      licenseServerUrl: 'default',
+    },
   };
   const db = openDb(':memory:');
+  const configuration = new ConfigurationService(deployment, db);
+  if (!environment.GOOGLE_CLIENT_ID) {
+    configuration.setGoogle({ clientId: 'google-client', clientSecret: 'google-secret' });
+  }
+  if (!environment.MICROSOFT_CLIENT_ID) {
+    configuration.setMicrosoft({
+      clientId: 'microsoft-client',
+      clientSecret: 'microsoft-secret',
+      tenantId: 'common',
+    });
+  }
+  const config = configuration.config;
   const member = addMember(db, { name: 'Admin', role: 'admin' });
   const root = createApiKey(
     db,
@@ -40,9 +64,9 @@ function fixture(telemetry?: Telemetry) {
     permissionPolicyForProfile('full', ['admin.accounts', 'admin.api_keys', 'admin.license']),
   );
   const registry = new AccountRegistry(db, config);
-  const app = createApp({ config, db, registry, service: new EmailService(registry, db), telemetry });
+  const app = createApp({ config, configuration, db, registry, service: new EmailService(registry, db), telemetry });
   const auth = { authorization: `Bearer ${root.key}` };
-  return { app, auth, config, db, member, registry, root };
+  return { app, auth, config, configuration, db, member, registry, root };
 }
 
 function jsonRequest(method: string, body: unknown, headers: Record<string, string> = {}): RequestInit {
@@ -117,6 +141,95 @@ describe('administrative REST API', () => {
         outcome: 'success',
       }),
     );
+  });
+
+  it('configures and resets OAuth applications without exposing secrets to responses, telemetry, or audit', async () => {
+    const capture = vi.fn();
+    const telemetry = { capture, shutdown: vi.fn().mockResolvedValue(undefined) };
+    const { app, auth, config, db } = fixture(telemetry);
+    const privateSecret = 'rest-private-client-secret';
+
+    const initial = await app.request('/api/v1/admin/oauth-apps', { headers: auth });
+    expect(initial.status).toBe(200);
+
+    const updated = await app.request(
+      '/api/v1/admin/oauth-apps/google',
+      jsonRequest('PUT', { clientId: 'rest-google-id', clientSecret: privateSecret }, auth),
+    );
+    expect(updated.status).toBe(200);
+    const body = await updated.text();
+    expect(body).toContain('rest-google-id');
+    expect(body).not.toContain(privateSecret);
+    expect(config.google).toEqual({ clientId: 'rest-google-id', clientSecret: privateSecret });
+    expect(JSON.stringify(db.select().from(instanceSettings).all())).not.toContain(privateSecret);
+
+    const reset = await app.request('/api/v1/admin/oauth-apps/google', { method: 'DELETE', headers: auth });
+    expect(reset.status).toBe(200);
+    expect(config.google?.clientId).not.toBe('rest-google-id');
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'getAdministrativeOAuthApps',
+        outcome: 'success',
+      }),
+    );
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'putAdministrativeOAuthApp',
+        outcome: 'success',
+      }),
+    );
+    expect(JSON.stringify(capture.mock.calls)).not.toContain(privateSecret);
+    const audits = db.select().from(adminAuditEvents).all();
+    expect(audits.map((event) => event.operation)).toContain('put /api/v1/admin/oauth-apps/:provider');
+    expect(JSON.stringify(audits)).not.toContain(privateSecret);
+  });
+
+  it('rejects REST changes to environment-controlled OAuth applications', async () => {
+    const capture = vi.fn();
+    const telemetry = { capture, shutdown: vi.fn().mockResolvedValue(undefined) };
+    const { app, auth } = fixture(telemetry, {
+      GOOGLE_CLIENT_ID: 'environment-google-id',
+      GOOGLE_CLIENT_SECRET: 'environment-google-secret',
+    });
+    const privateSecret = 'replacement-secret';
+    const response = await app.request(
+      '/api/v1/admin/oauth-apps/google',
+      jsonRequest('PUT', { clientId: 'replacement-id', clientSecret: privateSecret }, auth),
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: 'oauth_from_environment' } });
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'putAdministrativeOAuthApp',
+        outcome: 'error',
+        error_code: 'oauth_from_environment',
+      }),
+    );
+    expect(JSON.stringify(capture.mock.calls)).not.toContain(privateSecret);
+  });
+
+  it('rejects whitespace-only OAuth client secrets', async () => {
+    const { app, auth, config } = fixture();
+
+    const google = await app.request(
+      '/api/v1/admin/oauth-apps/google',
+      jsonRequest('PUT', { clientId: 'replacement-google-id', clientSecret: ' ' }, auth),
+    );
+    const outlook = await app.request(
+      '/api/v1/admin/oauth-apps/outlook',
+      jsonRequest('PUT', { clientId: 'replacement-outlook-id', clientSecret: ' ' }, auth),
+    );
+
+    expect(google.status).toBe(400);
+    expect(outlook.status).toBe(400);
+    expect(config.google?.clientId).toBe('google-client');
+    expect(config.microsoft?.clientId).toBe('microsoft-client');
   });
 
   it('does not attribute unmatched admin paths to an OpenAPI operation', async () => {

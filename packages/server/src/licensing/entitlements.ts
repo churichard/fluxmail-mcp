@@ -149,7 +149,7 @@ export function assertWithinQuota(db: DbReader, now = new Date()): LicenseState 
       'entitlement_exceeded',
       `This instance has ${state.accountCount} connected mailboxes and ${state.memberCount} members, but the ` +
         `${ent.plan} plan allows ${ent.maxAccounts} and ${ent.maxMembers}. Renew the license ` +
-        '("fluxmail license activate <key>") or remove mailboxes/members ' +
+        '("fluxmail license activate") or remove mailboxes/members ' +
         '("fluxmail accounts remove", "fluxmail members remove") to fit the plan.',
     );
   }

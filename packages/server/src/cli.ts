@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { emitKeypressEvents } from 'node:readline';
 import { createInterface } from 'node:readline/promises';
 import { hostname } from 'node:os';
@@ -11,13 +11,15 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { EmailError, isEmailError } from '@fluxmail/core';
 import { createContext } from './context.js';
 import {
-  configFilePath,
-  maskStoredConfigValue,
-  readStoredConfig,
+  configTomlPath,
+  createConfigurationService,
+  deploymentToml,
+  readLoggingSettings,
   resolveDataDir,
-  setStoredConfig,
-  unsetStoredConfig,
+  resolveStoreLocation,
+  writeDeploymentConfig,
 } from './config.js';
+import { migrateConfigurationFile, parseEnvContent, recognizedMigrationSettings } from './configMigration.js';
 import { createApp } from './http/app.js';
 import { buildMcpServer } from './mcp/buildServer.js';
 import { runLoopbackFlow } from './accounts/googleAuth.js';
@@ -33,7 +35,13 @@ import { findMember } from './storage/members.js';
 import { LICENSE_KEY_PATTERN } from './licensing/client.js';
 import { checkLicenseState, getEntitlements, type Entitlements } from './licensing/entitlements.js';
 import { VERSION } from './version.js';
-import type { FluxmailDb } from './storage/db.js';
+import {
+  inspectStoreCompatibility,
+  MIN_SUPPORTED_STORE_FORMAT,
+  openDb,
+  openReadonlyDb,
+  type FluxmailDb,
+} from './storage/db.js';
 import type { ImapSecurity } from '@fluxmail/provider-imap';
 import {
   customPermissionPolicy,
@@ -52,6 +60,7 @@ import {
   isTelemetryEnabled,
   setTelemetryEnabled,
   shutdownTelemetry,
+  telemetryDisabledInAnyEnvironment,
   type Telemetry,
 } from './telemetry.js';
 import {
@@ -70,6 +79,17 @@ import { recordAdminAuditEvent } from './storage/adminAudit.js';
 import { canManageOwnedAccount } from './authorization.js';
 import { createCliUpdateNotifier, type CliUpdateNotifier, type CliUpdateNotifierFactory } from './updateNotifier.js';
 import { registerMailCommands } from './cliMail.js';
+import {
+  flushLogging,
+  escapeLogTextForConsole,
+  getLogger,
+  logCodedFailure,
+  logFailure,
+  readLocalLogs,
+  shutdownLogging,
+  type Logger,
+  type LogLevel,
+} from './logging.js';
 
 interface AddAccountOptions {
   reauthorize?: string;
@@ -165,7 +185,10 @@ function connectionSecurity(value: string, option: string): ImapSecurity {
 
 async function hiddenPrompt(label: string): Promise<string> {
   if (!process.stdin.isTTY || !process.stdin.setRawMode) {
-    throw new EmailError('invalid_request', `${label} must be supplied through a password environment variable.`);
+    throw new EmailError(
+      'invalid_request',
+      `${label} requires an interactive terminal or an explicit non-interactive input.`,
+    );
   }
   const wasFlowing = process.stdin.readableFlowing === true;
   emitKeypressEvents(process.stdin);
@@ -249,6 +272,16 @@ async function accountSecret(envName: string | undefined, label: string): Promis
   return value;
 }
 
+function readSecretFile(file: string): string {
+  const value = readFileSync(file === '-' ? 0 : file, 'utf8').replace(/\r?\n$/, '');
+  if (!value) throw new EmailError('invalid_request', 'The secret input is empty.');
+  return value;
+}
+
+async function secretInput(file: string | undefined, label: string): Promise<string> {
+  return file === undefined ? hiddenPrompt(label) : readSecretFile(file);
+}
+
 function planLine(ent: Entitlements): string {
   const members = `${ent.maxMembers} member${ent.maxMembers === 1 ? '' : 's'}`;
   return `${ent.plan} (up to ${ent.maxAccounts} mailboxes, ${members})`;
@@ -271,21 +304,46 @@ interface ActiveCliOperation {
   operation: string;
   startedAt: number;
   initialExitCode: number | string | null | undefined;
+  logger: Logger;
+  errorLogged?: boolean;
 }
 
 const activeCliOperations = new WeakMap<Command, ActiveCliOperation>();
 const activeUpdateNotifiers = new WeakMap<Command, CliUpdateNotifier>();
 
-function finishCliOperation(program: Command, outcome: 'success' | 'error', errorCode?: string): void {
+function finishCliOperation(program: Command, outcome: 'success' | 'error', errorCode?: string, error?: unknown): void {
   const active = activeCliOperations.get(program);
   if (!active) return;
   activeCliOperations.delete(program);
+  if (outcome === 'error' && !active.errorLogged) {
+    const context = { productSurface: 'cli' as const, operation: active.operation, skipConsole: true };
+    if (error !== undefined) logFailure(active.logger, 'cli.operation_failed', error, context);
+    else
+      logCodedFailure(
+        active.logger,
+        'cli.operation_failed',
+        errorCode ?? 'command_failed',
+        'CLI command failed',
+        context,
+      );
+  }
   captureOperation(active.telemetry, {
     productSurface: 'cli',
     operation: active.operation,
     outcome,
     durationMs: performance.now() - active.startedAt,
     errorCode,
+  });
+}
+
+function logActiveCliError(program: Command, error: unknown): void {
+  const active = activeCliOperations.get(program);
+  if (!active || active.errorLogged) return;
+  active.errorLogged = true;
+  logFailure(active.logger, 'cli.operation_failed', error, {
+    productSurface: 'cli',
+    operation: active.operation,
+    skipConsole: true,
   });
 }
 
@@ -302,6 +360,32 @@ export function waitForServerListening(server: ReturnType<typeof serve>): Promis
     server.once('error', onError);
     server.once('listening', onListening);
   });
+}
+
+interface EndEventSource {
+  once(event: 'end', listener: () => void): unknown;
+}
+
+async function shutdownTelemetryThenLogging(): Promise<void> {
+  try {
+    await shutdownTelemetry();
+  } finally {
+    await shutdownLogging();
+  }
+}
+
+export async function shutdownTelemetryAndLogging(): Promise<void> {
+  const initialLogFlush = flushLogging().catch(() => {});
+  try {
+    await shutdownTelemetry();
+  } finally {
+    await initialLogFlush;
+    await shutdownLogging();
+  }
+}
+
+export function installStdioShutdownHandler(stream: EndEventSource): void {
+  installTelemetryStreamEndHandler(stream, shutdownTelemetryThenLogging);
 }
 
 /** Build the command tree without parsing arguments or running command actions. */
@@ -328,7 +412,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   let telemetrySignalHandlersInstalled = false;
   const TELEMETRY_SIGNAL_SHUTDOWN_TIMEOUT_MS = 1_000;
 
-  /** Flush queued telemetry before restoring Node's default signal behavior. */
+  /** Flush queued telemetry and local logs before restoring Node's default signal behavior. */
   function installTelemetrySignalHandlers(): void {
     if (telemetrySignalHandlersInstalled) return;
     telemetrySignalHandlersInstalled = true;
@@ -344,7 +428,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         process.kill(process.pid, signal);
       };
       const timeout = setTimeout(resignal, TELEMETRY_SIGNAL_SHUTDOWN_TIMEOUT_MS);
-      void shutdownTelemetry().finally(() => {
+      void shutdownTelemetryAndLogging().finally(() => {
         clearTimeout(timeout);
         resignal();
       });
@@ -371,11 +455,41 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     }
     // Respect the opt-out before creating a telemetry client or recording this command.
     if (command === 'telemetry disable') return;
+    let telemetryEnvironment: NodeJS.ProcessEnv | undefined;
+    let telemetryDataDir: string | undefined;
+    if (command === 'config migrate') {
+      const migration = actionCommand.opts<{ from?: string }>();
+      if (migration.from) {
+        try {
+          const values = parseEnvContent(readFileSync(path.resolve(migration.from), 'utf8'));
+          if (values.FLUXMAIL_DATA_DIR !== undefined) {
+            telemetryDataDir = resolveDataDir({
+              env: { ...process.env, FLUXMAIL_DATA_DIR: values.FLUXMAIL_DATA_DIR },
+            });
+          }
+          if (telemetryDisabledInAnyEnvironment(process.env, values)) {
+            telemetryEnvironment = { ...process.env, FLUXMAIL_TELEMETRY: '0' };
+          }
+        } catch {
+          // The command action reports file and parsing errors.
+        }
+      }
+    }
+    const dataDir = telemetryDataDir ?? resolveDataDir();
+    let logging: ReturnType<typeof readLoggingSettings>;
+    try {
+      logging = readLoggingSettings(dataDir);
+    } catch {
+      // Keep recovery and remote commands available when logging configuration is invalid.
+      logging = { level: 'info', destination: 'both' };
+    }
+    const mode = actionCommand.name() === 'serve' ? 'serve' : actionCommand.name() === 'stdio' ? 'stdio' : 'cli';
     activeCliOperations.set(program, {
-      telemetry: options.telemetry ?? getTelemetry(resolveDataDir()),
+      telemetry: options.telemetry ?? getTelemetry(dataDir, telemetryEnvironment),
       operation: command,
       startedAt: performance.now(),
       initialExitCode: process.exitCode,
+      logger: getLogger(dataDir, mode, logging),
     });
   });
 
@@ -388,8 +502,8 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       process.exitCode !== 0;
     finishCliOperation(program, failed ? 'error' : 'success', failed ? 'command_failed' : undefined);
     try {
-      if (!options.telemetry && actionCommand.name() !== 'serve' && actionCommand.name() !== 'stdio') {
-        await shutdownTelemetry();
+      if (actionCommand.name() !== 'serve' && actionCommand.name() !== 'stdio') {
+        await Promise.all([options.telemetry ? Promise.resolve() : shutdownTelemetry(), shutdownLogging()]);
       }
     } finally {
       const notifier = activeUpdateNotifiers.get(program);
@@ -434,6 +548,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         });
         console.log(`Fluxmail is ready. Logged in to local as ${result.member.name}.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -494,6 +609,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         useInstance(instanceName);
         console.log(`Logged in to ${instanceName} as ${result.member.name}.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -512,6 +628,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         clearSessionToken(selected.name);
         console.log(`Logged out of ${selected.name}.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -538,6 +655,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         useInstance(name);
         console.log(`Using ${name}.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -551,6 +669,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         removeInstance(name);
         console.log(`Removed CLI instance ${name}. Server data was not changed.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -583,6 +702,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         });
         console.log(`Reset ${member.name}'s password and revoked existing sessions.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -602,6 +722,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           );
         }
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -617,6 +738,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         });
         console.log(`Revoked ${sessionId}.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -631,6 +753,10 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       const app = createApp(ctx);
       ctx.scheduler.start();
       const server = serve({ fetch: app.fetch, port: ctx.config.port }, () => {
+        ctx.logger.info('server.started', 'Fluxmail HTTP server started', {
+          details: { port: ctx.config.port },
+          skipConsole: true,
+        });
         ctx.telemetry.capture('mcp server started', { product_surface: 'mcp', transport: 'http' });
         console.log(`Fluxmail listening on ${ctx.config.publicUrl}`);
         console.log(`  MCP endpoint:   ${ctx.config.publicUrl}/mcp`);
@@ -651,7 +777,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         }
         console.log(`  Plan:           ${planLine(getEntitlements(ctx.db))}`);
         warnLicense(ctx.db, console.log);
-        ctx.licenseController.start(console.log);
+        ctx.licenseController.start();
       });
       await waitForServerListening(server);
     });
@@ -664,7 +790,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .option('--allow <capability>', 'Allow one MCP capability; repeat as needed', collectOption, [])
     .action(async (opts: ScopedMcpOptions) => {
       installTelemetrySignalHandlers();
-      installTelemetryStreamEndHandler(process.stdin);
+      installStdioShutdownHandler(process.stdin);
       const ctx = createContext();
       const permissions = permissionPolicyFromOptions(opts);
       const selected = resolveInstance(selectedInstance());
@@ -689,12 +815,18 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         maxAttachmentBytes: ctx.config.maxAttachmentBytes,
         telemetry: ctx.telemetry,
         transport: 'stdio',
+        logger: ctx.logger,
       });
       ctx.scheduler.start();
       await server.connect(new StdioServerTransport());
       ctx.telemetry.capture('mcp server started', { product_surface: 'mcp', transport: 'stdio' });
+      ctx.logger.info('server.started', 'Fluxmail stdio MCP server started', {
+        productSurface: 'mcp',
+        details: { transport: 'stdio' },
+        skipConsole: true,
+      });
       // stdout belongs to the MCP protocol; log to stderr only.
-      ctx.licenseController.start(console.error);
+      ctx.licenseController.start();
       console.error('Fluxmail MCP server running on stdio');
       warnLicense(ctx.db);
       const pending = scopedService.listScheduled().filter((send) => send.status === 'pending').length;
@@ -745,6 +877,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       try {
         validateAccountConnectionFlags(provider, opts);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
         return;
@@ -754,6 +887,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         try {
           useControlPlane = selectGmailConnectionMode(createContext().config, opts) === 'hosted';
         } catch (err) {
+          logActiveCliError(program, err);
           console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
           process.exitCode = 1;
           return;
@@ -822,6 +956,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
             for (const warning of result.warnings ?? []) console.log(`Warning: ${warning.message}.`);
           }
         } catch (err) {
+          logActiveCliError(program, err);
           console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
           process.exitCode = 1;
         }
@@ -956,7 +1091,14 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
                   'Try again and choose the matching Google account.',
               );
             }
-            return ctx.registry.addGmailAccount(result.email, result.tokens, result.displayName, owner.id, access);
+            return ctx.registry.addGmailAccount(
+              result.email,
+              result.tokens,
+              result.displayName,
+              owner.id,
+              access,
+              result.oauthClient,
+            );
           },
         );
         auditConnection('account.connection.complete', account.id);
@@ -972,7 +1114,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           );
         }
       } catch (err) {
-        finishCliOperation(program, 'error', isEmailError(err) ? err.code : 'internal');
+        finishCliOperation(program, 'error', isEmailError(err) ? err.code : 'internal', err);
         console.error(`\nError: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1023,6 +1165,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           console.log(`Updated folder settings for ${accountId}.`);
           for (const warning of result.warnings) console.log(`Warning: ${warning.message}.`);
         } catch (err) {
+          logActiveCliError(program, err);
           console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
           process.exitCode = 1;
         }
@@ -1058,6 +1201,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           console.log(`${a.id}  ${a.provider}  ${a.email}  [${a.status}]  owner=${a.ownerMemberId}  access=${access}`);
         }
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1074,6 +1218,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         });
         console.log(`Removed ${accountId}`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1096,6 +1241,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         );
         console.log(`${account.email} is now owned by ${account.ownerMemberId}.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1131,6 +1277,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           `Updated access for ${account.email}: ${account.sharedWithAll ? 'all members' : `${account.grantedMemberIds.length} explicit grant(s)`}.`,
         );
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1163,6 +1310,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         console.log(`Enrollment code (shown once): ${member.invitation.token}`);
         console.log(`Expires: ${new Date(member.invitation.expiresAt).toISOString()}`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1194,6 +1342,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           );
         }
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1210,6 +1359,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         });
         console.log(`Removed ${memberId}.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1235,6 +1385,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         );
         console.log(`${member.name} now has the ${member.role} role.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1260,6 +1411,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         );
         console.log(`${member.name} is now ${member.status}.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1282,6 +1434,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           console.log(`${label} (shown once): ${token.token}`);
           console.log(`Expires: ${new Date(token.expiresAt).toISOString()}`);
         } catch (err) {
+          logActiveCliError(program, err);
           console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
           process.exitCode = 1;
         }
@@ -1301,6 +1454,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           console.log(`${session.id}  ${session.deviceName}  expires=${new Date(session.expiresAt).toISOString()}`);
         }
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1319,6 +1473,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         );
         console.log(`Revoked ${sessionId}.`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1383,6 +1538,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         console.log(`  ${created.key}\n`);
         console.log('Store it now; it cannot be shown again.');
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1413,6 +1569,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           );
         }
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1441,6 +1598,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
             : `Updated ${keyId} to ${accountIds.length} mailbox(es).`,
         );
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1477,6 +1635,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         });
         console.log(`Updated ${keyId} to profile ${permissions.profile}`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1497,6 +1656,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         await client.json(path, { method: 'DELETE' });
         console.log(`Revoked ${keyId}`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1506,9 +1666,19 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
 
   license
     .command('activate')
-    .argument('<key>', 'License key (fluxmail_lic_…), shown once at purchase')
+    .argument('[key]', 'Deprecated: license key shown once at purchase')
+    .option('--key-file <path>', 'Read the license key from a file, or use - for stdin')
     .description('Store a license key and validate it with the license server')
-    .action(async (key: string) => {
+    .action(async (deprecatedKey: string | undefined, options: { keyFile?: string }) => {
+      if (deprecatedKey && options.keyFile) {
+        console.error('Error: The deprecated positional key cannot be combined with --key-file.');
+        process.exitCode = 1;
+        return;
+      }
+      if (deprecatedKey) {
+        console.error('Warning: Passing a license key as an argument is deprecated. Use --key-file or hidden input.');
+      }
+      const key = deprecatedKey ?? (await secretInput(options.keyFile, 'License key'));
       if (!LICENSE_KEY_PATTERN.test(key)) {
         console.error(
           'That does not look like a Fluxmail license key (expected "fluxmail_lic_" followed by 40 hex characters).',
@@ -1539,6 +1709,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
           );
         }
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1551,7 +1722,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       try {
         const status = await instanceClient(selectedInstance()).json<{
           configured: boolean;
-          source: 'environment' | 'stored' | null;
+          source: 'environment' | 'environment-file' | 'stored' | null;
           entitlements: Entitlements;
           usage: { accounts: number; members: number; overQuota: boolean };
           lastValidatedAt: string | null;
@@ -1560,7 +1731,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         console.log(
           status.configured
             ? `License configured from ${status.source}.`
-            : 'No license key configured. Run "fluxmail license activate <key>" after purchasing one.',
+            : 'No license key configured. Run "fluxmail license activate" after purchasing one.',
         );
         console.log(`Current plan: ${planLine(status.entitlements)}`);
         console.log(
@@ -1570,6 +1741,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         if (status.lastValidatedAt) console.log(`Last validated: ${status.lastValidatedAt}`);
         if (status.warning) console.log(`Warning: ${status.warning}`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1591,54 +1763,201 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         );
         console.log('This instance is back to Personal plan limits.');
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
     });
 
-  const configCmd = program
-    .command('config')
-    .description('Persistent settings stored in the data dir, usable from any directory');
+  const configCmd = program.command('config').description('Inspect and initialize deployment configuration');
 
   configCmd
-    .command('set')
-    .argument('<key>', 'Setting name, e.g. GOOGLE_CLIENT_ID')
-    .argument('<value>')
-    .description('Store a setting (shell env vars and local .env files still take precedence)')
-    .action((key: string, value: string) => {
+    .command('init')
+    .description('Create config.toml in the Fluxmail data directory')
+    .action(() => {
       try {
         const dataDir = resolveDataDir();
-        setStoredConfig(dataDir, key, value);
-        console.log(`Set ${key} in ${configFilePath(dataDir)}`);
+        const file = configTomlPath(dataDir);
+        writeDeploymentConfig(file, deploymentToml(), { exclusive: true });
+        console.log(`Created ${file}`);
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
     });
 
   configCmd
-    .command('unset')
-    .argument('<key>')
-    .description('Remove a stored setting')
-    .action((key: string) => {
-      const dataDir = resolveDataDir();
-      console.log(unsetStoredConfig(dataDir, key) ? `Removed ${key}` : `${key} is not set`);
+    .command('show')
+    .description('Show effective configuration, sources, paths, and restart requirements')
+    .action(() => {
+      const deployment = resolveStoreLocation().deployment!;
+      const compatibility = inspectStoreCompatibility(deployment.dbPath, deployment.dataDir);
+      const canReadInstanceSettings =
+        compatibility.storeFormat >= MIN_SUPPORTED_STORE_FORMAT &&
+        compatibility.storeFormat <= compatibility.maximumSupportedFormat;
+      const db =
+        canReadInstanceSettings && deployment.dbPath !== ':memory:'
+          ? openReadonlyDb(deployment.dbPath)
+          : openDb(':memory:', { backupBeforeMigration: false });
+      try {
+        const configuration = createConfigurationService(deployment, db);
+        const config = configuration.config;
+        console.log(`Data directory: ${deployment.dataDir} [${deployment.sources.dataDir}]`);
+        console.log(
+          `Configuration file: ${deployment.configFile}${existsSync(deployment.configFile) ? '' : ' (not created)'}`,
+        );
+        console.log(`Database: ${deployment.dbPath} [${deployment.sources.dbPath}] restart required`);
+        console.log(`Server port: ${deployment.port} [${deployment.sources.port}] restart required`);
+        console.log(`Public URL: ${deployment.publicUrl} [${deployment.sources.publicUrl}] restart required`);
+        console.log(`Trust proxy: ${deployment.trustProxy} [${deployment.sources.trustProxy}] restart required`);
+        console.log(`Local OAuth host: ${deployment.oauthHost} [${deployment.sources.oauthHost}] restart required`);
+        console.log(`Local OAuth port: ${deployment.oauthPort} [${deployment.sources.oauthPort}] restart required`);
+        console.log(
+          `Maximum attachment: ${deployment.maxAttachmentBytes / (1024 * 1024)} MB [${deployment.sources.maxAttachmentBytes}] restart required`,
+        );
+        console.log(
+          `Encryption key: ${deployment.encryptionKey.length === 32 ? 'configured' : 'not configured'} [${deployment.sources.encryptionKey}]`,
+        );
+        const oauth = configuration.oauthStatus();
+        console.log(`Google OAuth: configured [${oauth.google.source}]`);
+        console.log(
+          `Outlook OAuth: ${oauth.outlook.clientId ? 'configured' : 'not configured'} [${oauth.outlook.source ?? 'none'}]`,
+        );
+        console.log(
+          `License: ${config.licenseKey ? 'configured' : 'not configured'} [${configuration.licenseSource() ?? 'none'}]`,
+        );
+      } finally {
+        (db as unknown as { $client: { close(): void } }).$client.close();
+      }
     });
 
   configCmd
-    .command('list')
-    .description('Show stored settings (secret values are masked)')
-    .action(() => {
-      const dataDir = resolveDataDir();
-      const stored = readStoredConfig(dataDir);
-      const keys = Object.keys(stored);
-      if (!keys.length) {
-        console.log(`No stored settings. Run "fluxmail config set <KEY> <value>" (file: ${configFilePath(dataDir)}).`);
+    .command('migrate')
+    .requiredOption('--from <env-file>', 'Read recognized settings from this env file')
+    .option('--dry-run', 'Show recognized setting names without changing Fluxmail')
+    .description('Import settings from an env file without deleting it')
+    .action((options: { from: string; dryRun?: boolean }) => {
+      const source = path.resolve(options.from);
+      if (options.dryRun) {
+        const recognized = recognizedMigrationSettings(parseEnvContent(readFileSync(source, 'utf8')));
+        console.log(recognized.length ? recognized.join('\n') : 'No recognized settings found.');
         return;
       }
-      for (const key of keys) {
-        const value = stored[key] ?? '';
-        console.log(`${key}=${maskStoredConfigValue(key, value)}`);
+      const result = migrateConfigurationFile(source);
+      console.log(
+        `Imported ${result.recognized.length} recognized setting${result.recognized.length === 1 ? '' : 's'} from ${result.source}.`,
+      );
+      console.log('Restart Fluxmail to apply deployment configuration changes.');
+    });
+
+  const oauth = program.command('oauth').description('Manage OAuth applications');
+
+  oauth
+    .command('status')
+    .description('Show OAuth application status without secrets')
+    .action(async () => {
+      const status = await instanceClient(selectedInstance()).json('/api/v1/admin/oauth-apps');
+      console.log(JSON.stringify(status, null, 2));
+    });
+
+  const oauthConfigure = oauth.command('configure').description('Configure an OAuth application');
+  oauthConfigure
+    .command('google')
+    .requiredOption('--client-id <id>', 'Google OAuth client ID')
+    .option('--client-secret-file <path>', 'Read the client secret from a file, or use - for stdin')
+    .description('Configure a custom Google OAuth application')
+    .action(async (options: { clientId: string; clientSecretFile?: string }) => {
+      const clientSecret = await secretInput(options.clientSecretFile, 'Google client secret');
+      await instanceClient(selectedInstance()).json('/api/v1/admin/oauth-apps/google', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ clientId: options.clientId, clientSecret }),
+      });
+      console.log('Google OAuth application configured.');
+    });
+
+  oauthConfigure
+    .command('outlook')
+    .requiredOption('--client-id <id>', 'Microsoft OAuth client ID')
+    .option('--tenant-id <tenant>', 'Microsoft tenant ID', 'common')
+    .option('--public-client', 'Configure a public client without a secret')
+    .option('--client-secret-file <path>', 'Read the client secret from a file, or use - for stdin')
+    .description('Configure a custom Microsoft OAuth application')
+    .action(
+      async (options: { clientId: string; tenantId: string; publicClient?: boolean; clientSecretFile?: string }) => {
+        if (options.publicClient && options.clientSecretFile) {
+          throw new EmailError('invalid_request', '--public-client cannot be combined with --client-secret-file.');
+        }
+        const clientSecret = options.publicClient
+          ? undefined
+          : await secretInput(options.clientSecretFile, 'Microsoft client secret');
+        await instanceClient(selectedInstance()).json('/api/v1/admin/oauth-apps/outlook', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            clientId: options.clientId,
+            tenantId: options.tenantId,
+            publicClient: Boolean(options.publicClient),
+            ...(clientSecret ? { clientSecret } : {}),
+          }),
+        });
+        console.log('Microsoft OAuth application configured.');
+      },
+    );
+
+  oauth
+    .command('reset')
+    .argument('<provider>', 'google or outlook')
+    .description('Remove a stored OAuth application')
+    .action(async (provider: string) => {
+      if (provider !== 'google' && provider !== 'outlook') {
+        throw new EmailError('invalid_request', 'Provider must be google or outlook.');
+      }
+      await instanceClient(selectedInstance()).json(`/api/v1/admin/oauth-apps/${provider}`, { method: 'DELETE' });
+      console.log(`${provider === 'google' ? 'Google' : 'Microsoft'} OAuth application reset.`);
+    });
+
+  program
+    .command('logs')
+    .description('Show recent local log entries')
+    .option('--tail <count>', 'Number of entries to show, from 1 through 1000', '100')
+    .option('--level <level>', 'Minimum level: info, warn, or error', 'info')
+    .option('--json', 'Print each entry as JSON')
+    .action((opts: { tail: string; level: string; json?: boolean }) => {
+      try {
+        const tail = Number(opts.tail);
+        if (!Number.isInteger(tail) || tail < 1 || tail > 1000) {
+          throw new EmailError('invalid_request', '--tail must be an integer from 1 through 1000.');
+        }
+        if (!['info', 'warn', 'error'].includes(opts.level)) {
+          throw new EmailError('invalid_request', '--level must be info, warn, or error.');
+        }
+        const result = readLocalLogs(resolveDataDir(), {
+          tail,
+          minimumLevel: opts.level as Exclude<LogLevel, 'off'>,
+        });
+        for (const entry of result.entries) {
+          if (opts.json) {
+            console.log(entry.raw);
+            continue;
+          }
+          const singleLine = escapeLogTextForConsole;
+          const code = entry.record.error?.code ? ` [${singleLine(entry.record.error.code)}]` : '';
+          console.log(
+            `${singleLine(entry.record.timestamp)} ${entry.record.level.toUpperCase()} ${singleLine(entry.record.event)}${code}: ${singleLine(entry.record.message)}`,
+          );
+        }
+        if (result.malformedLines > 0) {
+          console.error(
+            `Warning: skipped ${result.malformedLines} malformed local log line${result.malformedLines === 1 ? '' : 's'}.`,
+          );
+        }
+      } catch (error) {
+        const code = isEmailError(error) ? error.code : 'internal';
+        finishCliOperation(program, 'error', code, error);
+        console.error(`Error [${code}]: ${error instanceof Error ? error.message : String(error)}`);
+        process.exitCode = 1;
       }
     });
 
@@ -1659,7 +1978,6 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .action(() => {
       const dataDir = resolveDataDir();
       setTelemetryEnabled(dataDir, true);
-      unsetStoredConfig(dataDir, 'FLUXMAIL_TELEMETRY');
       console.log('Telemetry enabled. FLUXMAIL_TELEMETRY=0 or DO_NOT_TRACK=1 can still turn it off.');
     });
 
@@ -1675,7 +1993,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     selectedInstance,
     selectedAccount,
     reportError: (error, code) => {
-      finishCliOperation(program, 'error', code);
+      finishCliOperation(program, 'error', code, error);
       console.error(`Error [${code}]: ${error instanceof Error ? error.message : String(error)}`);
       process.exitCode = 1;
     },
@@ -1689,6 +2007,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
         const status = await instanceClient(selectedInstance()).json('/api/v1/status');
         console.log(JSON.stringify(status, null, 2));
       } catch (err) {
+        logActiveCliError(program, err);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
@@ -1702,10 +2021,10 @@ export async function runCli(argv: readonly string[] = process.argv): Promise<vo
   try {
     await program.parseAsync([...argv]);
   } catch (err) {
-    finishCliOperation(program, 'error', isEmailError(err) ? err.code : 'internal');
+    finishCliOperation(program, 'error', isEmailError(err) ? err.code : 'internal', err);
     console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
-    await shutdownTelemetry();
+    await Promise.all([shutdownTelemetry(), shutdownLogging()]);
   }
 }
 

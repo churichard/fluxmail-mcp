@@ -11,6 +11,7 @@ import {
   listPending,
 } from '../src/storage/scheduledSends.js';
 import { SendScheduler } from '../src/scheduler/sendScheduler.js';
+import type { Logger } from '../src/logging.js';
 
 function testDb(): FluxmailDb {
   const db = openDb(':memory:');
@@ -30,13 +31,23 @@ describe('SendScheduler', () => {
   let send: ReturnType<typeof vi.fn>;
   let enforceQuota: ReturnType<typeof vi.fn>;
   let scheduler: SendScheduler;
+  let logWarn: ReturnType<typeof vi.fn>;
+  let logger: Logger;
 
   beforeEach(() => {
     vi.useFakeTimers();
     db = testDb();
     send = vi.fn().mockResolvedValue({ id: 'sent_1', threadId: 'thread_1' });
     enforceQuota = vi.fn().mockReturnValue(undefined);
-    scheduler = new SendScheduler(db, { send, enforceQuota });
+    logWarn = vi.fn();
+    logger = {
+      info: vi.fn(),
+      warn: logWarn,
+      error: vi.fn(),
+      flush: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    scheduler = new SendScheduler(db, { send, enforceQuota }, logger);
   });
 
   afterEach(() => {
@@ -195,6 +206,12 @@ describe('SendScheduler', () => {
     });
     await vi.advanceTimersByTimeAsync(3_600_000);
     expect(send).toHaveBeenCalledTimes(1);
+    expect(logWarn).toHaveBeenCalledWith(
+      'scheduler.send_failed',
+      'Requested entity was not found',
+      expect.objectContaining({ code: 'not_found' }),
+      { details: { permanent: true } },
+    );
   });
 
   it('retries transient failures with backoff until they succeed', async () => {
@@ -204,6 +221,12 @@ describe('SendScheduler', () => {
     await settle();
 
     expect(getScheduledSend(db, row.id)).toMatchObject({ status: 'pending', attempts: 1, lastError: 'token expired' });
+    expect(logWarn).toHaveBeenCalledWith(
+      'scheduler.send_retry',
+      'token expired',
+      expect.objectContaining({ code: 'auth_expired' }),
+      { details: { attempt: 1, permanent: false } },
+    );
 
     await vi.advanceTimersByTimeAsync(31_000); // past the 30s first backoff
     expect(send).toHaveBeenCalledTimes(2);

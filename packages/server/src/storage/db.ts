@@ -5,9 +5,10 @@ import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { VERSION } from '../version.js';
+import { decryptString } from './crypto.js';
 import { withFileLock } from './fileLock.js';
 
-export const CURRENT_STORE_FORMAT = 1;
+export const CURRENT_STORE_FORMAT = 2;
 export const MIN_SUPPORTED_STORE_FORMAT = 1;
 export const MAX_SUPPORTED_STORE_FORMAT = CURRENT_STORE_FORMAT;
 export const LEGACY_STORE_FORMAT = 0;
@@ -494,6 +495,54 @@ function readStoreFormat(sqlite: Database.Database): number {
   return sqlite.pragma('user_version', { simple: true }) as number;
 }
 
+function sqliteTableExists(sqlite: Database.Database, table: string): boolean {
+  return Boolean(sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
+}
+
+export type StoreEncryptionKeyStatus = 'empty' | 'matches' | 'mismatch';
+
+export function inspectStoreEncryptionKey(dbPath: string, encryptionKey: Buffer): StoreEncryptionKeyStatus {
+  if (dbPath === ':memory:' || !existsSync(dbPath) || statSync(dbPath).size === 0) return 'empty';
+  const sqlite = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const encryptedValues: string[] = [];
+    if (sqliteTableExists(sqlite, 'account_credentials')) {
+      encryptedValues.push(
+        ...(
+          sqlite.prepare('SELECT encrypted_credentials AS value FROM account_credentials').all() as Array<{
+            value: string;
+          }>
+        ).map((row) => row.value),
+      );
+    }
+    if (sqliteTableExists(sqlite, 'oauth_tokens')) {
+      encryptedValues.push(
+        ...(sqlite.prepare('SELECT encrypted_tokens AS value FROM oauth_tokens').all() as Array<{ value: string }>).map(
+          (row) => row.value,
+        ),
+      );
+    }
+    if (sqliteTableExists(sqlite, 'instance_settings')) {
+      encryptedValues.push(
+        ...(
+          sqlite.prepare("SELECT value FROM instance_settings WHERE value LIKE 'v1:%'").all() as Array<{
+            value: string;
+          }>
+        ).map((row) => row.value.slice('v1:'.length)),
+      );
+    }
+    if (!encryptedValues.length) return 'empty';
+    try {
+      for (const value of encryptedValues) decryptString(encryptionKey, value);
+      return 'matches';
+    } catch {
+      return 'mismatch';
+    }
+  } finally {
+    sqlite.close();
+  }
+}
+
 function compatibilityFor(dbPath: string, dataDir: string, storeFormat: number): StoreCompatibility {
   return {
     engineVersion: VERSION,
@@ -741,7 +790,15 @@ function migrateToFormatOne(sqlite: Database.Database): void {
   `);
 }
 
-const MIGRATIONS = [{ format: 1, run: migrateToFormatOne }] as const;
+function migrateToFormatTwo(_sqlite: Database.Database): void {
+  // Format 2 reserves encrypted instance settings for OAuth applications and
+  // license state. The instance_settings table was created by format 1.
+}
+
+const MIGRATIONS = [
+  { format: 1, run: migrateToFormatOne },
+  { format: 2, run: migrateToFormatTwo },
+] as const;
 
 function openCompatibleDb(dbPath: string, dataDir: string, options: { backupBeforeMigration?: boolean }): FluxmailDb {
   const sqlite = new Database(dbPath);
@@ -799,4 +856,16 @@ export function openDb(
     },
     () => openCompatibleDb(dbPath, dataDir, options),
   );
+}
+
+export function openReadonlyDb(dbPath: string): FluxmailDb {
+  const sqlite = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    sqlite.pragma('query_only = ON');
+    sqlite.pragma('foreign_keys = ON');
+    return drizzle(sqlite);
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
 }

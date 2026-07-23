@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createCliProgram } from '../packages/server/src/cli.js';
-import { CONFIG_REFERENCE } from '../packages/server/src/config.js';
+import { SETTING_REGISTRY } from '../packages/server/src/config.js';
 import { buildMcpServer } from '../packages/server/src/mcp/buildServer.js';
 import { createRestApi, REST_OPENAPI_DOCUMENT } from '../packages/server/src/http/rest.js';
 import {
@@ -80,13 +80,23 @@ function capabilityCombinations(size: number): string[][] {
 }
 
 function configurationSection(): string {
-  const rows = Object.entries(CONFIG_REFERENCE)
-    .filter(([, entry]) => !('documented' in entry) || entry.documented !== false)
-    .map(
-      ([name, entry]) =>
-        `| \`${name}\` | \`${markdownCell(entry.defaultValue)}\` | ${markdownCell(entry.description)} |`,
-    );
-  return ['| Environment variable | Default | Purpose |', '| --- | --- | --- |', ...rows].join('\n');
+  const rows = Object.values(SETTING_REGISTRY)
+    .filter((entry) => entry.documented !== false)
+    .map((entry) => {
+      const environment = `\`${entry.env}\`${entry.envFile ? `<br>\`${entry.env}_FILE\`` : ''}`;
+      const location =
+        entry.primaryStorage ??
+        (entry.toml ? `\`${entry.toml}\`` : entry.category === 'instance' ? 'Encrypted SQLite' : 'External');
+      const application =
+        entry.mutability === 'restart' ? 'Restart' : entry.mutability === 'immediate' ? 'Immediate' : 'Before startup';
+      const applies = entry.environmentRequiresRestart ? `${application}; env: restart` : application;
+      return `| \`${entry.canonicalName}\` | ${location} | ${environment} | \`${markdownCell(entry.defaultValue)}\` | ${applies} | ${markdownCell(entry.description)} |`;
+    });
+  return [
+    '| Setting | Primary storage | Environment override | Default | Applies | Purpose |',
+    '| --- | --- | --- | --- | --- | --- |',
+    ...rows,
+  ].join('\n');
 }
 
 function permissionProfilesSection(): string {

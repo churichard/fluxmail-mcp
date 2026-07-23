@@ -12,6 +12,8 @@ import {
   publishTelemetryId,
   setTelemetryEnabled,
   telemetryDisabled,
+  telemetryDisabledInAnyEnvironment,
+  telemetryOptedOut,
 } from '../src/telemetry.js';
 
 describe('telemetry', () => {
@@ -116,10 +118,23 @@ describe('telemetry', () => {
     [{ FLUXMAIL_TELEMETRY: 'false' }, true],
     [{ DO_NOT_TRACK: '1' }, true],
     [{ DO_NOT_TRACK: 'true' }, true],
+    [{ DO_NOT_TRACK: 'no' }, false],
+    [{ DO_NOT_TRACK: 'off' }, false],
     [{ FLUXMAIL_TELEMETRY: '1' }, false],
     [{}, false],
   ] as const)('reads opt-out settings from the environment', (env, expected) => {
     expect(telemetryDisabled(env)).toBe(expected);
+  });
+
+  it('separates explicit preferences from test-environment suppression', () => {
+    expect(telemetryOptedOut({ NODE_ENV: 'test' })).toBe(false);
+    expect(telemetryDisabled({ NODE_ENV: 'test' })).toBe(true);
+  });
+
+  it('keeps an opt-out when configuration sources disagree', () => {
+    expect(telemetryDisabledInAnyEnvironment({ FLUXMAIL_TELEMETRY: '0' }, { FLUXMAIL_TELEMETRY: '1' })).toBe(true);
+    expect(telemetryDisabledInAnyEnvironment({ DO_NOT_TRACK: '1' }, { DO_NOT_TRACK: '0' })).toBe(true);
+    expect(telemetryDisabledInAnyEnvironment({ FLUXMAIL_TELEMETRY: '1' }, { DO_NOT_TRACK: '0' })).toBe(false);
   });
 
   it('does not initialize a client after opt-out', async () => {
@@ -318,5 +333,12 @@ describe('telemetry', () => {
 
     setTelemetryEnabled(dataDir, true);
     expect(isTelemetryEnabled(dataDir, {})).toBe(true);
+  });
+
+  it('does not read telemetry settings from legacy config.env files', () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fluxmail-telemetry-'));
+    writeFileSync(path.join(dataDir, 'config.env'), 'FLUXMAIL_TELEMETRY=0\n', { mode: 0o600 });
+
+    expect(isTelemetryEnabled(dataDir, { FLUXMAIL_TELEMETRY: '1' })).toBe(true);
   });
 });
