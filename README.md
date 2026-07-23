@@ -6,6 +6,17 @@
 
 Fluxmail is self-hosted email infrastructure for agents and apps. It connects to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes. Agents use MCP, apps and backend workflows use the versioned REST API, and operators use the CLI to connect mailboxes, manage access, and run the service.
 
+## Features
+
+- 📬 Connect Gmail, Google Workspace, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes to one instance.
+- 🤖 Give agents MCP tools to list, search, read, draft, reply, forward, send, schedule, and organize email.
+- 🔌 Use the same mailbox operations from the versioned REST API and CLI.
+- 🧵 Fetch complete messages and threads, work across several mailboxes, and download attachments.
+- 🗂️ Mark mail as read, star or archive it, move it between folders, send it to Trash, and manage Gmail labels or Outlook categories.
+- 🔐 Limit each client to selected mailboxes and actions with permission profiles or custom policies.
+- 👥 Add members and share selected mailboxes on Team and Enterprise plans.
+- 🏠 Run Fluxmail locally or in Docker while keeping its database and encrypted provider credentials on your infrastructure.
+
 ## Get started
 
 Fluxmail requires Node.js 20.20.x, or Node.js 22.22 or later.

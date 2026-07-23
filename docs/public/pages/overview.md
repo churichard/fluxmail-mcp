@@ -1,12 +1,21 @@
 ---
 title: 'Overview'
 description: 'How Fluxmail connects agents and apps to Gmail, Outlook, and IMAP through MCP, REST API, and CLI.'
-updated: '2026-07-17'
+updated: '2026-07-23'
 ---
 
 Fluxmail is self-hosted email infrastructure for agents and apps. It connects to Gmail, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes, then provides one service for working with them.
 
-These guides use **mailbox** for a connected email address. The CLI and API call the same resource an **account**, so commands such as `fluxmail accounts list` and fields such as `accountId` keep that name.
+## Features
+
+- 📬 Connect Gmail, Google Workspace, Microsoft 365, Outlook.com, and IMAP/SMTP mailboxes to one instance.
+- 🤖 Give agents MCP tools to list, search, read, draft, reply, forward, send, schedule, and organize email.
+- 🔌 Use the same mailbox operations from the versioned REST API and CLI.
+- 🧵 Fetch complete messages and threads, work across several mailboxes, and download attachments.
+- 🗂️ Mark mail as read, star or archive it, move it between folders, send it to Trash, and manage Gmail labels or Outlook categories.
+- 🔐 Limit each client to selected mailboxes and actions with permission profiles or custom policies.
+- 👥 Add members and share selected mailboxes on Team and Enterprise plans.
+- 🏠 Run Fluxmail locally or in Docker while keeping its database and encrypted provider credentials on your infrastructure.
 
 ## Choose an interface
 
@@ -38,6 +47,8 @@ Fluxmail stores its SQLite database and encrypted provider credentials on the ma
 | Gmail and Google Workspace | Gmail API with OAuth | Fluxmail includes an OAuth app for local connections. Hosted connections need your own Google Cloud app. |
 | Microsoft 365 and Outlook.com | Microsoft Graph with OAuth | You create and control the Microsoft Entra app registration. |
 | Other email providers | IMAP for reading and SMTP for sending | The provider must allow IMAP and SMTP access. Some providers require an app password. |
+
+These guides use **mailbox** for a connected email address. The CLI and API call the same resource an **account**, so commands such as `fluxmail accounts list` and fields such as `accountId` keep that name.
 
 You can connect several mailboxes to one Fluxmail instance. Members and mailbox access rules decide which mailboxes each person can reach. Permission profiles separately control whether a client can only read mail, manage drafts and folders, or send and permanently delete messages.
 
