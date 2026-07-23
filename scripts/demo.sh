@@ -84,9 +84,11 @@ mailbox_domain="${demo_address#*@}"
 
 if [[ -n "$version" ]]; then
   data_dir="$repo_root/.context/demo-fluxmail/npm-$version"
-  fluxmail_command=(npx -y "fluxmail@$version")
+  fluxmail_launcher=(npx -y --package "fluxmail@$version" --)
+  fluxmail_command=(fluxmail)
 else
   data_dir="$repo_root/.context/demo-fluxmail/workspace"
+  fluxmail_launcher=()
   fluxmail_command=(node "$repo_root/packages/server/dist/cli.js")
 fi
 
@@ -104,7 +106,8 @@ compose() {
 }
 
 run_fluxmail() {
-  FLUXMAIL_DATA_DIR="$data_dir" \
+  "${fluxmail_launcher[@]}" env \
+    FLUXMAIL_DATA_DIR="$data_dir" \
     FLUXMAIL_PASSWORD="$fluxmail_password" \
     FLUXMAIL_TELEMETRY=0 \
     DEMO_MAILBOX_PASSWORD="$mailbox_password" \
