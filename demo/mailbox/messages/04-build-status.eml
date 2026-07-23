@@ -1,0 +1,17 @@
+Message-ID: <build-status@build.local>
+Date: Tue, 21 Jul 2026 09:31:00 -0400
+From: Build Bot <builds@build.local>
+To: {{DEMO_NAME}} <{{DEMO_ADDRESS}}>
+Subject: Staging checks passed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+All staging checks passed for the presentation site.
+
+Preview: available
+Links: verified
+Accessibility: passed
+Performance: passed
+
+No action is required.

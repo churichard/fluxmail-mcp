@@ -1,0 +1,29 @@
+Message-ID: <pilot-mailboxes@northstar.local>
+Date: Tue, 21 Jul 2026 12:18:00 -0400
+From: Elena Torres <elena@northstar.local>
+To: {{DEMO_NAME}} <{{DEMO_ADDRESS}}>
+Subject: Mailbox list for Thursday's pilot
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="fluxmail-demo-boundary"
+
+--fluxmail-demo-boundary
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+I attached the first batch for Thursday. Support is the best mailbox to start with because four people share it and they switch between providers all day.
+
+Could you confirm that the pilot can include Google Workspace, Microsoft 365, and our old IMAP mailbox in the same instance?
+
+Thanks,
+Elena
+
+--fluxmail-demo-boundary
+Content-Type: text/csv; name="pilot-mailboxes.csv"
+Content-Disposition: attachment; filename="pilot-mailboxes.csv"
+Content-Transfer-Encoding: base64
+
+bWFpbGJveCxwcm92aWRlcixvd25lcgpzdXBwb3J0QG5vcnRoc3Rhci5sb2NhbCxHb29nbGUgV29ya3NwYWNlLFN1cHBvcnQKb3BzQG5vcnRoc3Rhci5sb2NhbCxNaWNyb3NvZnQgMzY1LE9wZXJhdGlvbnMKYXJjaGl2ZUBub3J0aHN0YXIubG9jYWwsSU1BUCxPcGVyYXRpb25zCg==
+
+--fluxmail-demo-boundary--

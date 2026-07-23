@@ -1,0 +1,18 @@
+services:
+  mailbox:
+    image: greenmail/standalone:2.1.9
+    environment:
+      GREENMAIL_OPTS: >-
+        -Dgreenmail.setup.test.all
+        -Dgreenmail.hostname=0.0.0.0
+        -Dgreenmail.users=${FLUXMAIL_DEMO_MAILBOX_USER:-demo}:${FLUXMAIL_DEMO_MAILBOX_PASSWORD:-fluxmail-demo}@${FLUXMAIL_DEMO_MAILBOX_DOMAIN:-example.com}
+        -Dgreenmail.users.login=local_part
+        -Dgreenmail.preload.dir=/demo-mailbox
+    ports:
+      - '127.0.0.1:${FLUXMAIL_DEMO_SMTP_PORT:-3025}:3025'
+      - '127.0.0.1:${FLUXMAIL_DEMO_SMTPS_PORT:-3465}:3465'
+      - '127.0.0.1:${FLUXMAIL_DEMO_IMAPS_PORT:-3993}:3993'
+      - '127.0.0.1:${FLUXMAIL_DEMO_WEB_PORT:-8080}:8080'
+    volumes:
+      - '${FLUXMAIL_DEMO_PRELOAD_DIR:-./preload}:/demo-mailbox:ro'
+    restart: unless-stopped
