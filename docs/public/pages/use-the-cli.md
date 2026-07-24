@@ -34,13 +34,13 @@ Fluxmail returns an error when it cannot choose one mailbox safely.
 List inbox messages, search across mail, or fetch a complete message or thread:
 
 ```bash
-fluxmail emails list --folder inbox --unread-only --page-size 20
-fluxmail emails search "quarterly report" --from ann@example.com
+fluxmail emails list --folder inbox --read false --page-size 20
+fluxmail emails search "from:ann@example.com is:unread quarterly report"
 fluxmail emails get <message-id>
 fluxmail threads get <thread-id>
 ```
 
-List responses include `meta.nextPageToken` when another page is available. Pass it back with `--page-token`. New mail commands print the complete REST JSON envelope, including `data`, pagination metadata, and warnings.
+The search string uses Fluxmail's [portable search syntax](/docs/email-search). List responses include `meta.nextPageToken` when another page is available. Pass it back with `--page-token` and the same query and page size. Mail commands print the complete REST JSON envelope, including `data`, pagination metadata, and warnings.
 
 Folders are navigable mailbox locations. Labels are Gmail user labels or Outlook categories:
 

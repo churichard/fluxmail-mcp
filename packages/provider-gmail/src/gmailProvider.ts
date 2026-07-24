@@ -3,6 +3,7 @@ import type { OAuth2Client } from 'googleapis-common';
 import {
   EmailError,
   isEmailError,
+  normalizeEmailQuery,
   replySubject,
   type AttachmentMeta,
   type Capabilities,
@@ -60,8 +61,54 @@ const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
 const NON_IDEMPOTENT_MAX_RETRIES = 3;
 const BATCH_MODIFY_MAX_IDS = 1_000;
+const FILTERED_PAGE_TOKEN_VERSION = 1;
 const GOOGLE_USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
 const IMMUTABLE_SYSTEM_LABELS = new Set(['sent', 'draft', 'drafts', 'trash']);
+
+interface FilteredPageToken {
+  v: typeof FILTERED_PAGE_TOKEN_VERSION;
+  pendingIds: string[];
+  providerToken?: string;
+}
+
+function invalidFilteredPageToken(): EmailError {
+  return new EmailError('invalid_request', 'Invalid Gmail page token');
+}
+
+function decodeFilteredPageToken(token: string | undefined): FilteredPageToken {
+  if (!token) return { v: FILTERED_PAGE_TOKEN_VERSION, pendingIds: [] };
+  try {
+    const bytes = Buffer.from(token, 'base64url');
+    if (bytes.toString('base64url') !== token) throw new Error();
+    const parsed = JSON.parse(bytes.toString('utf8')) as Partial<FilteredPageToken>;
+    if (
+      parsed.v !== FILTERED_PAGE_TOKEN_VERSION ||
+      !Array.isArray(parsed.pendingIds) ||
+      parsed.pendingIds.length > MAX_PAGE_SIZE ||
+      parsed.pendingIds.some((id) => typeof id !== 'string' || !id) ||
+      (parsed.providerToken !== undefined && (typeof parsed.providerToken !== 'string' || !parsed.providerToken))
+    ) {
+      throw new Error();
+    }
+    return {
+      v: FILTERED_PAGE_TOKEN_VERSION,
+      pendingIds: parsed.pendingIds,
+      ...(parsed.providerToken ? { providerToken: parsed.providerToken } : {}),
+    };
+  } catch {
+    throw invalidFilteredPageToken();
+  }
+}
+
+function encodeFilteredPageToken(pendingIds: string[], providerToken: string | undefined): string {
+  return Buffer.from(
+    JSON.stringify({
+      v: FILTERED_PAGE_TOKEN_VERSION,
+      pendingIds,
+      ...(providerToken ? { providerToken } : {}),
+    } satisfies FilteredPageToken),
+  ).toString('base64url');
+}
 
 function assertAttachmentSize(sizeBytes: number, maxBytes: number | undefined): void {
   if (maxBytes !== undefined && sizeBytes > maxBytes) {
@@ -84,6 +131,19 @@ export const GMAIL_CAPABILITIES: Capabilities = {
   labels: true,
   serverThreads: true,
   serverSearch: 'rich',
+  search: {
+    filters: ['folder', 'text', 'from', 'to', 'subject', 'read', 'starred', 'hasAttachment', 'after', 'before'],
+    folderRoles: {
+      inbox: 'available',
+      sent: 'available',
+      drafts: 'available',
+      archive: 'available',
+      spam: 'available',
+      trash: 'available',
+      all: 'available',
+    },
+    nativeQuery: { syntax: 'gmail', availability: 'available' },
+  },
   snippets: true,
 };
 
@@ -224,58 +284,108 @@ export class GmailProvider implements EmailProvider {
     return created.data.id;
   }
 
-  async listMessages(q: EmailQuery, page?: PageOpts): Promise<Page<Message>> {
+  async listMessages(input: EmailQuery, page?: PageOpts): Promise<Page<Message>> {
+    const normalized = normalizeEmailQuery(input);
+    if (!normalized.success) {
+      throw new EmailError('invalid_request', normalized.diagnostics.map((item) => item.message).join(' '), {
+        diagnostics: normalized.diagnostics,
+      });
+    }
+    const q = normalized.query;
     const labels = await this.labels();
     const gq = toGmailQuery(q, (folder) => {
       const match = labels.find((l) => l.id === folder || l.name?.toLowerCase() === folder.toLowerCase());
       return match?.id ?? null;
     });
-    const pageSize = Math.min(page?.pageSize ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
-    const res = await withRetry(() =>
-      this.gmail.users.messages.list({
-        userId: 'me',
-        maxResults: pageSize,
-        ...(page?.pageToken ? { pageToken: page.pageToken } : {}),
-        ...(gq.q ? { q: gq.q } : {}),
-        ...(gq.labelIds ? { labelIds: gq.labelIds } : {}),
-        ...(gq.includeSpamTrash ? { includeSpamTrash: true } : {}),
-      }),
-    );
-
-    const ids = (res.data.messages ?? []).map((m) => m.id!).filter(Boolean);
+    const pageSize = Math.min(Math.max(page?.pageSize ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE);
     const labelNames = await this.labelNameMap();
     const items: Message[] = [];
-    for (let i = 0; i < ids.length; i += HYDRATE_CONCURRENCY) {
-      const chunk = ids.slice(i, i + HYDRATE_CONCURRENCY);
-      const fetched = await Promise.allSettled(
-        chunk.map((id) =>
-          withRetry(() =>
-            this.gmail.users.messages.get({
-              userId: 'me',
-              id,
-              format: 'metadata',
-              metadataHeaders: METADATA_HEADERS,
-            }),
+    const localFilter = q.hasAttachment !== undefined || q.after !== undefined || q.before !== undefined;
+    let inspectedCandidates = 0;
+    const decodedToken = localFilter ? decodeFilteredPageToken(page?.pageToken) : undefined;
+    let pendingIds = decodedToken?.pendingIds ?? [];
+    let providerToken = localFilter ? decodedToken?.providerToken : page?.pageToken;
+    let remainingIds: string[] = [];
+    do {
+      let ids: string[];
+      if (pendingIds.length) {
+        ids = pendingIds;
+        pendingIds = [];
+      } else {
+        const batchSize = Math.min(localFilter ? MAX_PAGE_SIZE : pageSize - items.length, 1_000 - inspectedCandidates);
+        const res = await withRetry(() =>
+          this.gmail.users.messages.list({
+            userId: 'me',
+            maxResults: batchSize,
+            ...(providerToken ? { pageToken: providerToken } : {}),
+            ...(gq.q ? { q: gq.q } : {}),
+            ...(gq.labelIds ? { labelIds: gq.labelIds } : {}),
+            ...(gq.includeSpamTrash ? { includeSpamTrash: true } : {}),
+          }),
+        );
+        ids = (res.data.messages ?? []).map((message) => message.id!).filter(Boolean);
+        providerToken = res.data.nextPageToken ?? undefined;
+      }
+      let processedIds = 0;
+      for (let i = 0; i < ids.length; i += HYDRATE_CONCURRENCY) {
+        const chunk = ids.slice(i, i + HYDRATE_CONCURRENCY);
+        const fetched = await Promise.allSettled(
+          chunk.map((id) =>
+            withRetry(() =>
+              this.gmail.users.messages.get({
+                userId: 'me',
+                id,
+                format: q.hasAttachment !== undefined ? 'full' : 'metadata',
+                metadataHeaders: METADATA_HEADERS,
+              }),
+            ),
           ),
-        ),
-      );
-      for (const result of fetched) {
-        if (result.status === 'rejected') {
-          if (isEmailError(result.reason) && result.reason.code === 'not_found') continue;
-          throw result.reason;
-        }
-        items.push(
-          parseGmailMessage(result.value.data, {
+        );
+        for (const result of fetched) {
+          inspectedCandidates += 1;
+          processedIds += 1;
+          if (result.status === 'rejected') {
+            if (isEmailError(result.reason) && result.reason.code === 'not_found') continue;
+            throw result.reason;
+          }
+          const message = parseGmailMessage(result.value.data, {
             accountId: this.accountId,
             labelNames,
             includeBody: false,
-          }),
-        );
+            includeAttachments: q.hasAttachment !== undefined,
+          });
+          if (q.after && message.date < `${q.after}T00:00:00.000Z`) continue;
+          if (q.before && message.date >= `${q.before}T00:00:00.000Z`) continue;
+          if (q.hasAttachment !== undefined) {
+            const hasAttachment =
+              message.attachments?.some((attachment) => attachment.disposition !== 'inline') ?? false;
+            if (hasAttachment !== q.hasAttachment) continue;
+          }
+          items.push(message);
+          if (items.length === pageSize) break;
+        }
+        if (items.length === pageSize || inspectedCandidates >= 1_000) break;
       }
-    }
+      remainingIds = ids.slice(processedIds);
+      if (items.length === pageSize || inspectedCandidates >= 1_000) break;
+      if (!providerToken) break;
+    } while (items.length < pageSize && inspectedCandidates < 1_000);
+
     await this.attachDraftIds(items);
-    const out: Page<Message> = { items };
-    if (res.data.nextPageToken) out.nextPageToken = res.data.nextPageToken;
+    const out: Page<Message> = {
+      items,
+      ...(localFilter ? { inspectedCandidates } : {}),
+    };
+    const nextPageToken = localFilter
+      ? remainingIds.length || providerToken
+        ? encodeFilteredPageToken(remainingIds, providerToken)
+        : undefined
+      : providerToken;
+    if (nextPageToken) out.nextPageToken = nextPageToken;
+    if (items.length < pageSize && inspectedCandidates >= 1_000 && nextPageToken) {
+      out.incomplete = true;
+      out.incompleteReason = 'scan_limit';
+    }
     return out;
   }
 

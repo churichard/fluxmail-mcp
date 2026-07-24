@@ -101,12 +101,12 @@ describe('CLI email commands', () => {
     );
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await run(['emails', 'list', '--folder', 'inbox', '--unread-only', '--page-size', '10']);
+    await run(['emails', 'list', '--folder', 'inbox', '--read', 'false', '--page-size', '10']);
 
     const request = requests.at(-1)!;
     expect(request.url.pathname).toBe('/api/v1/accounts/acct_1/messages');
     expect(request.url.searchParams.get('folder')).toBe('inbox');
-    expect(request.url.searchParams.get('unreadOnly')).toBe('true');
+    expect(request.url.searchParams.get('read')).toBe('false');
     expect(request.url.searchParams.get('pageSize')).toBe('10');
     expect(request.headers.get('authorization')).toBe('Bearer fms_private_session');
     expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toEqual({
@@ -129,9 +129,12 @@ describe('CLI email commands', () => {
       'team@example.com',
       '--subject',
       'Quarterly & annual',
-      '--unread-only',
-      '--starred-only',
+      '--read',
+      'false',
+      '--starred',
+      'true',
       '--has-attachment',
+      'true',
       '--after',
       '2026-01-02',
       '--before',
@@ -144,7 +147,7 @@ describe('CLI email commands', () => {
       'opaque+/=token',
     ];
     await run(['emails', 'list', '--text', 'customer invoice', ...filters]);
-    await run(['emails', 'search', 'exact search text', ...filters]);
+    await run(['emails', 'search', 'exact search text', ...filters.slice(0, 18), ...filters.slice(20)]);
 
     const [listed, searched] = requests.filter((request) => request.url.pathname.endsWith('/messages'));
     expect(Object.fromEntries(listed!.url.searchParams)).toEqual({
@@ -158,14 +161,57 @@ describe('CLI email commands', () => {
       rawProviderQuery: 'has:yellow-star',
       pageSize: '73',
       pageToken: 'opaque+/=token',
-      unreadOnly: 'true',
-      starredOnly: 'true',
+      read: 'false',
+      starred: 'true',
       hasAttachment: 'true',
     });
     expect(Object.fromEntries(searched!.url.searchParams)).toEqual({
-      ...Object.fromEntries(listed!.url.searchParams),
-      text: 'exact search text',
+      folder: 'Projects & Reports',
+      from: 'ann+filter@example.com',
+      to: 'team@example.com',
+      subject: 'Quarterly & annual',
+      after: '2026-01-02',
+      before: '2026-07-18',
+      pageSize: '73',
+      pageToken: 'opaque+/=token',
+      read: 'false',
+      starred: 'true',
+      hasAttachment: 'true',
+      query: 'exact search text',
     });
+  });
+
+  it('prints typed search warnings to stderr while preserving the query for REST', async () => {
+    const { requests } = setupRemote(() =>
+      envelope([], {
+        meta: {
+          diagnostics: [
+            {
+              code: 'possible_operator_typo',
+              severity: 'warning',
+              message: 'Did you mean from:?',
+              suggestion: 'from',
+            },
+          ],
+        },
+      }),
+    );
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await run(['emails', 'search', 'form:ann@example.com']);
+
+    expect(error).toHaveBeenCalledWith('Search warning: Did you mean from:?');
+    expect(requests.at(-1)?.url.searchParams.get('query')).toBe('form:ann@example.com');
+  });
+
+  it('accepts a typed query that begins with the negative attachment operator', async () => {
+    const { requests } = setupRemote();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await run(['emails', 'search', '-has:attachment quarterly']);
+
+    expect(requests.at(-1)?.url.searchParams.get('query')).toBe('-has:attachment quarterly');
   });
 
   it('resolves a global account selector by email', async () => {
@@ -569,7 +615,7 @@ describe('CLI email commands', () => {
       });
     }
 
-    const searchRequest = requests.find((request) => request.url.searchParams.get('text') === 'quarterly report');
+    const searchRequest = requests.find((request) => request.url.searchParams.get('query') === 'quarterly report');
     expect(searchRequest).toBeTruthy();
     expect(readFileSync(outputPath, 'utf8')).toBe('downloaded');
   });
@@ -648,7 +694,7 @@ describe('CLI email commands', () => {
   it('records safe success and REST error telemetry without private input', async () => {
     const privateQuery = 'customer-secret-query';
     const { requests } = setupRemote((request) => {
-      if (request.url.searchParams.get('text') === privateQuery) {
+      if (request.url.searchParams.get('query') === privateQuery) {
         return new Response(
           JSON.stringify({ error: { code: `private-${privateQuery}`, message: 'private provider response' } }),
           { status: 503, headers: { 'content-type': 'application/json' } },
@@ -680,6 +726,6 @@ describe('CLI email commands', () => {
     expect(JSON.stringify(capture.mock.calls)).not.toContain(privateQuery);
     expect(JSON.stringify(capture.mock.calls)).not.toContain('private provider response');
     expect(JSON.stringify(capture.mock.calls)).not.toContain('acct_1');
-    expect(requests.some((request) => request.url.searchParams.get('text') === privateQuery)).toBe(true);
+    expect(requests.some((request) => request.url.searchParams.get('query') === privateQuery)).toBe(true);
   });
 });

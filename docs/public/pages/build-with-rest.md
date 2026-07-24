@@ -56,7 +56,9 @@ curl "$FLUXMAIL_API_URL/accounts/<account-id>/messages?folder=inbox&pageSize=10"
   -H "Authorization: Bearer $FLUXMAIL_API_KEY"
 ```
 
-List responses contain message metadata and snippets. Add filters such as `unreadOnly=true`, `from=person@example.com`, or `text=invoice` when needed. If the response includes `meta.nextPageToken`, pass it as `pageToken` to fetch the next page. See [List messages](/docs/rest-api/list-messages) for all filters.
+List responses contain message metadata and snippets. Add filters such as `read=false`, `from=person@example.com`, or `text=invoice` when needed. The `query` parameter accepts [portable search syntax](/docs/email-search).
+
+If the response includes `meta.nextPageToken`, pass it as `pageToken` with the same account, query, and page size. Check `meta.incomplete` before treating an empty page as no matches. See [List messages](/docs/rest-api/list-messages) for all filters.
 
 ## Get the complete message
 

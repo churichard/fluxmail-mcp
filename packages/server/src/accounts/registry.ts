@@ -78,11 +78,12 @@ export class AccountRegistry {
           ...(row.displayName ? { displayName: row.displayName } : {}),
           status: row.status as Account['status'],
           capabilities:
-            row.provider === 'imap'
+            this.providers.get(row.id)?.provider.capabilities ??
+            (row.provider === 'imap'
               ? IMAP_CAPABILITIES
               : row.provider === 'outlook'
                 ? OUTLOOK_CAPABILITIES
-                : GMAIL_CAPABILITIES,
+                : GMAIL_CAPABILITIES),
           ownerMemberId: row.ownerMemberId,
           sharedWithAll: row.sharedWithAll,
           grantedMemberIds: grants.get(row.id) ?? [],

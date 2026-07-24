@@ -1,6 +1,14 @@
 import { OAuth2Client } from 'googleapis-common';
 import { describe, expect, it, vi } from 'vitest';
-import { GmailProvider } from '../src/gmailProvider.js';
+import { GMAIL_CAPABILITIES, GmailProvider } from '../src/gmailProvider.js';
+
+it('advertises portable Gmail search and archive support', () => {
+  expect(GMAIL_CAPABILITIES.search).toMatchObject({
+    folderRoles: { archive: 'available' },
+    nativeQuery: { syntax: 'gmail', availability: 'available' },
+  });
+  expect(GMAIL_CAPABILITIES.search.filters).toEqual(expect.arrayContaining(['read', 'starred', 'hasAttachment']));
+});
 
 interface ProviderInternals {
   gmail: {
@@ -95,6 +103,135 @@ describe('GmailProvider list hydration', () => {
     const provider = providerWithMessages(getMessage);
 
     await expect(provider.listMessages({})).rejects.toMatchObject({ code: 'invalid_request' });
+  });
+
+  it('filters canonical attachments locally and fills from later Gmail pages', async () => {
+    const provider = new GmailProvider({
+      accountId: 'acct_1',
+      email: 'me@example.com',
+      auth: new OAuth2Client(),
+    });
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce({ data: { messages: [{ id: 'inline' }], nextPageToken: 'page-2' } })
+      .mockResolvedValueOnce({ data: { messages: [{ id: 'file' }] } });
+    const get = vi.fn(async ({ id, format }: { id: string; format: string }) => ({
+      data: {
+        id,
+        threadId: id,
+        internalDate: '1767225600000',
+        payload: {
+          mimeType: 'multipart/mixed',
+          headers: [{ name: 'Subject', value: id }],
+          parts: [
+            {
+              partId: '1',
+              filename: `${id}.png`,
+              mimeType: 'image/png',
+              headers: [
+                {
+                  name: 'Content-Disposition',
+                  value: id === 'inline' ? 'inline' : 'attachment',
+                },
+              ],
+              body: { attachmentId: `attachment-${id}`, size: 12 },
+            },
+          ],
+        },
+      },
+      format,
+    }));
+    const internals = provider as unknown as {
+      gmail: {
+        users: {
+          labels: { list: ReturnType<typeof vi.fn> };
+          messages: { list: typeof list; get: typeof get };
+        };
+      };
+    };
+    internals.gmail = {
+      users: {
+        labels: { list: vi.fn().mockResolvedValue({ data: { labels: [] } }) },
+        messages: { list, get },
+      },
+    };
+
+    const result = await provider.listMessages({ hasAttachment: true }, { pageSize: 1 });
+    expect(result.items.map((message) => message.id)).toEqual(['file']);
+    expect(result.inspectedCandidates).toBe(2);
+    expect(get).toHaveBeenCalledWith(expect.objectContaining({ format: 'full' }));
+    expect(list.mock.calls[0]?.[0].q).toBeUndefined();
+  });
+
+  it('keeps filtered candidate batches large and carries unconsumed ids into the next page', async () => {
+    const provider = new GmailProvider({
+      accountId: 'acct_1',
+      email: 'me@example.com',
+      auth: new OAuth2Client(),
+    });
+    const ids = Array.from({ length: 100 }, (_, index) => `message-${index}`);
+    const list = vi.fn().mockResolvedValue({
+      data: { messages: ids.map((id) => ({ id })) },
+    });
+    const get = vi.fn(async ({ id }: { id: string }) => ({
+      data: {
+        id,
+        threadId: id,
+        internalDate: '1767225600000',
+        payload: {
+          mimeType: 'multipart/mixed',
+          headers: [{ name: 'Subject', value: id }],
+          parts: [
+            {
+              partId: '1',
+              filename: `${id}.txt`,
+              mimeType: 'text/plain',
+              headers: [{ name: 'Content-Disposition', value: 'attachment' }],
+              body: { attachmentId: `attachment-${id}`, size: 12 },
+            },
+          ],
+        },
+      },
+    }));
+    const internals = provider as unknown as {
+      gmail: {
+        users: {
+          labels: { list: ReturnType<typeof vi.fn> };
+          messages: { list: typeof list; get: typeof get };
+        };
+      };
+    };
+    internals.gmail = {
+      users: {
+        labels: { list: vi.fn().mockResolvedValue({ data: { labels: [] } }) },
+        messages: { list, get },
+      },
+    };
+
+    const first = await provider.listMessages({ hasAttachment: true }, { pageSize: 25 });
+    const second = await provider.listMessages(
+      { hasAttachment: true },
+      { pageSize: 25, pageToken: first.nextPageToken },
+    );
+    const third = await provider.listMessages(
+      { hasAttachment: true },
+      { pageSize: 25, pageToken: second.nextPageToken },
+    );
+    const fourth = await provider.listMessages(
+      { hasAttachment: true },
+      { pageSize: 25, pageToken: third.nextPageToken },
+    );
+
+    expect(first.items.map((message) => message.id)).toEqual(ids.slice(0, 25));
+    expect(second.items.map((message) => message.id)).toEqual(ids.slice(25, 50));
+    expect(third.items.map((message) => message.id)).toEqual(ids.slice(50, 75));
+    expect(fourth.items.map((message) => message.id)).toEqual(ids.slice(75));
+    expect(list).toHaveBeenCalledOnce();
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ maxResults: 100 }));
+    expect(first.nextPageToken).toBeTruthy();
+    expect(second.nextPageToken).toBeTruthy();
+    expect(third.nextPageToken).toBeTruthy();
+    expect(fourth.nextPageToken).toBeUndefined();
   });
 });
 

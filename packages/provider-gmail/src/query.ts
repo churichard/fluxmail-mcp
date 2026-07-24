@@ -1,4 +1,4 @@
-import { EmailError, type EmailQuery } from '@fluxmail/core';
+import { EmailError, normalizeEmailQuery, type EmailQuery } from '@fluxmail/core';
 
 export const ROLE_TO_LABEL: Record<string, string> = {
   inbox: 'INBOX',
@@ -16,22 +16,29 @@ export interface GmailQuery {
 }
 
 function quote(value: string): string {
-  return /[\s"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
-function epochSeconds(iso: string, field: 'after' | 'before'): number {
-  const millis = new Date(iso).getTime();
-  if (!Number.isFinite(millis)) {
-    throw new EmailError('invalid_request', `${field} must be a valid ISO date, got "${iso}"`);
+function epochSeconds(date: string): number {
+  return Math.floor(new Date(`${date}T00:00:00.000Z`).getTime() / 1000);
+}
+
+function requireNormalized(query: EmailQuery): EmailQuery {
+  const normalized = normalizeEmailQuery(query);
+  if (!normalized.success) {
+    throw new EmailError('invalid_request', normalized.diagnostics.map((item) => item.message).join(' '), {
+      diagnostics: normalized.diagnostics,
+    });
   }
-  return Math.floor(millis / 1000);
+  return normalized.query;
 }
 
 /**
  * Translate the unified EmailQuery into Gmail's q= syntax + labelIds.
  * `resolveLabelId` maps a user folder name/id to a Gmail label id (null if unknown).
  */
-export function toGmailQuery(q: EmailQuery, resolveLabelId: (folder: string) => string | null): GmailQuery {
+export function toGmailQuery(input: EmailQuery, resolveLabelId: (folder: string) => string | null): GmailQuery {
+  const q = requireNormalized(input);
   const parts: string[] = [];
   const out: GmailQuery = {};
 
@@ -51,15 +58,16 @@ export function toGmailQuery(q: EmailQuery, resolveLabelId: (folder: string) => 
     }
   }
 
-  if (q.text) parts.push(q.text);
+  if (q.text) parts.push(...q.text.split(' ').map(quote));
   if (q.from) parts.push(`from:${quote(q.from)}`);
   if (q.to) parts.push(`to:${quote(q.to)}`);
   if (q.subject) parts.push(`subject:${quote(q.subject)}`);
-  if (q.unreadOnly) parts.push('is:unread');
-  if (q.starredOnly) parts.push('is:starred');
-  if (q.hasAttachment) parts.push('has:attachment');
-  if (q.after) parts.push(`after:${epochSeconds(q.after, 'after')}`);
-  if (q.before) parts.push(`before:${epochSeconds(q.before, 'before')}`);
+  if (q.read !== undefined) parts.push(q.read ? 'is:read' : 'is:unread');
+  if (q.starred !== undefined) parts.push(q.starred ? 'is:starred' : '-is:starred');
+  // Gmail's has:attachment predicate is not the same as Fluxmail's canonical
+  // non-inline attachment predicate. Attachment filtering happens after hydration.
+  if (q.after) parts.push(`after:${epochSeconds(q.after)}`);
+  if (q.before) parts.push(`before:${epochSeconds(q.before)}`);
   if (q.rawProviderQuery) parts.push(q.rawProviderQuery);
 
   if (parts.length) out.q = parts.join(' ');

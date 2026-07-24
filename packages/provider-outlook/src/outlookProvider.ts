@@ -1,5 +1,6 @@
 import {
   EmailError,
+  normalizeEmailQuery,
   replySubject,
   type AttachmentInput,
   type AttachmentMeta,
@@ -80,6 +81,19 @@ export const OUTLOOK_CAPABILITIES: Capabilities = {
   labels: true,
   serverThreads: true,
   serverSearch: 'rich',
+  search: {
+    filters: ['folder', 'text', 'from', 'to', 'subject', 'read', 'starred', 'hasAttachment', 'after', 'before'],
+    folderRoles: {
+      inbox: 'available',
+      sent: 'available',
+      drafts: 'available',
+      archive: 'unknown',
+      spam: 'available',
+      trash: 'available',
+      all: 'available',
+    },
+    nativeQuery: { syntax: 'outlook-kql', availability: 'available' },
+  },
   snippets: true,
 };
 
@@ -98,15 +112,18 @@ interface RequestOptions {
 }
 
 interface LocalMessageFilter {
-  unreadOnly?: true;
-  starredOnly?: true;
-  hasAttachment?: true;
+  read?: boolean;
+  starred?: boolean;
+  hasAttachment?: boolean;
+  after?: string;
+  before?: string;
   allMailScope?: true;
 }
 
 interface PageTokenPayload {
   url: string;
   localFilter?: LocalMessageFilter;
+  offset?: number;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -127,8 +144,12 @@ function bodyFor(draft: DraftInput): { contentType: 'HTML' | 'Text'; content: st
   return { contentType: 'Text', content: draft.body.text ?? '' };
 }
 
-function encodePageToken(url: string, localFilter?: LocalMessageFilter): string {
-  const payload: PageTokenPayload = { url, ...(localFilter ? { localFilter } : {}) };
+function encodePageToken(url: string, localFilter?: LocalMessageFilter, offset = 0): string {
+  const payload: PageTokenPayload = {
+    url,
+    ...(localFilter ? { localFilter } : {}),
+    ...(offset ? { offset } : {}),
+  };
   return Buffer.from(JSON.stringify(payload)).toString('base64url');
 }
 
@@ -145,22 +166,34 @@ function decodePageToken(token: string): PageTokenPayload {
     if (!parsed || typeof parsed !== 'object' || typeof (parsed as { url?: unknown }).url !== 'string') {
       throw new Error();
     }
-    const payload = parsed as { url: string; localFilter?: unknown };
+    const payload = parsed as { url: string; localFilter?: unknown; offset?: unknown };
     const url = new URL(payload.url);
     if (url.origin !== 'https://graph.microsoft.com' || !url.pathname.startsWith('/v1.0/')) throw new Error();
+    const offset = payload.offset;
+    if (offset !== undefined && (!Number.isInteger(offset) || (offset as number) < 0)) throw new Error();
     let localFilter: LocalMessageFilter | undefined;
     if (payload.localFilter !== undefined) {
       if (!payload.localFilter || typeof payload.localFilter !== 'object' || Array.isArray(payload.localFilter)) {
         throw new Error();
       }
       const entries = Object.entries(payload.localFilter);
-      const booleanKeys = new Set(['unreadOnly', 'starredOnly', 'hasAttachment', 'allMailScope']);
-      if (entries.some(([key, value]) => !booleanKeys.has(key) || value !== true)) {
+      const booleanKeys = new Set(['read', 'starred', 'hasAttachment', 'allMailScope']);
+      const dateKeys = new Set(['after', 'before']);
+      if (
+        entries.some(
+          ([key, value]) =>
+            (!booleanKeys.has(key) || typeof value !== 'boolean') && (!dateKeys.has(key) || typeof value !== 'string'),
+        )
+      ) {
         throw new Error();
       }
       localFilter = payload.localFilter as LocalMessageFilter;
     }
-    return { url: url.toString(), ...(localFilter ? { localFilter } : {}) };
+    return {
+      url: payload.url,
+      ...(localFilter ? { localFilter } : {}),
+      ...(typeof offset === 'number' && offset > 0 ? { offset } : {}),
+    };
   } catch {
     throw new EmailError('invalid_request', 'Invalid Microsoft Graph page token');
   }
@@ -168,9 +201,11 @@ function decodePageToken(token: string): PageTokenPayload {
 
 function localMessageFilter(query: EmailQuery, allMailScope = false): LocalMessageFilter | undefined {
   const filter: LocalMessageFilter = {
-    ...(query.unreadOnly ? { unreadOnly: true } : {}),
-    ...(query.starredOnly ? { starredOnly: true } : {}),
-    ...(query.hasAttachment ? { hasAttachment: true } : {}),
+    ...(query.read !== undefined ? { read: query.read } : {}),
+    ...(query.starred !== undefined ? { starred: query.starred } : {}),
+    ...(query.hasAttachment !== undefined ? { hasAttachment: query.hasAttachment } : {}),
+    ...(query.after ? { after: query.after } : {}),
+    ...(query.before ? { before: query.before } : {}),
     ...(allMailScope ? { allMailScope: true } : {}),
   };
   return Object.keys(filter).length ? filter : undefined;
@@ -182,9 +217,11 @@ function matchesLocalMessageFilter(
   allMailExcludedFolderIds: ReadonlySet<string>,
 ): boolean {
   if (!filter) return true;
-  if (filter.unreadOnly && message.isRead !== false) return false;
-  if (filter.starredOnly && message.flag?.flagStatus !== 'flagged') return false;
-  if (filter.hasAttachment && message.hasAttachments !== true) return false;
+  if (filter.read !== undefined && message.isRead !== filter.read) return false;
+  if (filter.starred !== undefined && (message.flag?.flagStatus === 'flagged') !== filter.starred) return false;
+  const receivedAt = message.receivedDateTime ?? message.sentDateTime ?? message.createdDateTime;
+  if (filter.after && (!receivedAt || receivedAt < `${filter.after}T00:00:00.000Z`)) return false;
+  if (filter.before && (!receivedAt || receivedAt >= `${filter.before}T00:00:00.000Z`)) return false;
   if (filter.allMailScope && message.parentFolderId && allMailExcludedFolderIds.has(message.parentFolderId))
     return false;
   return true;
@@ -206,8 +243,6 @@ function graphAttachment(input: AttachmentInput): Record<string, unknown> {
 }
 
 export class OutlookProvider implements EmailProvider {
-  readonly capabilities = OUTLOOK_CAPABILITIES;
-
   private readonly accountId: string;
   private readonly tokenProvider: MicrosoftAccessTokenProvider;
   private readonly fetchImpl: typeof globalThis.fetch;
@@ -219,13 +254,34 @@ export class OutlookProvider implements EmailProvider {
     this.fetchImpl = options.fetch ?? globalThis.fetch;
   }
 
+  get capabilities(): Capabilities {
+    const snapshot = this.folderCache?.snapshot;
+    return {
+      ...OUTLOOK_CAPABILITIES,
+      search: {
+        ...OUTLOOK_CAPABILITIES.search,
+        folderRoles: snapshot
+          ? {
+              inbox: snapshot.byRole.has('inbox') ? 'available' : 'unavailable',
+              sent: snapshot.byRole.has('sent') ? 'available' : 'unavailable',
+              drafts: snapshot.byRole.has('drafts') ? 'available' : 'unavailable',
+              archive: snapshot.byRole.has('archive') ? 'available' : 'unavailable',
+              spam: snapshot.byRole.has('spam') ? 'available' : 'unavailable',
+              trash: snapshot.byRole.has('trash') ? 'available' : 'unavailable',
+              all: 'available',
+            }
+          : OUTLOOK_CAPABILITIES.search.folderRoles,
+      },
+    };
+  }
+
   private url(pathOrUrl: string): string {
     if (!/^https?:/i.test(pathOrUrl)) return `${GRAPH_ROOT}${pathOrUrl.startsWith('/') ? '' : '/'}${pathOrUrl}`;
     const url = new URL(pathOrUrl);
     if (url.origin !== 'https://graph.microsoft.com' || !url.pathname.startsWith('/v1.0/')) {
       throw new EmailError('invalid_request', 'Microsoft Graph returned an invalid continuation URL');
     }
-    return url.toString();
+    return pathOrUrl;
   }
 
   private async request<T = void>(pathOrUrl: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<T> {
@@ -428,11 +484,18 @@ export class OutlookProvider implements EmailProvider {
     return match;
   }
 
-  async listMessages(query: EmailQuery, page: PageOpts = {}): Promise<Page<Message>> {
+  async listMessages(input: EmailQuery, page: PageOpts = {}): Promise<Page<Message>> {
+    const normalized = normalizeEmailQuery(input);
+    if (!normalized.success) {
+      throw new EmailError('invalid_request', normalized.diagnostics.map((item) => item.message).join(' '), {
+        diagnostics: normalized.diagnostics,
+      });
+    }
+    const query = normalized.query;
     const resolvedFolder = query.folder ? await this.resolveFolder(query.folder) : undefined;
     const starredFolder = resolvedFolder?.role === 'starred';
     const folder = resolvedFolder?.role === 'all' || starredFolder ? undefined : resolvedFolder;
-    const normalizedQuery = { ...query, ...(starredFolder ? { starredOnly: true } : {}), folder: undefined };
+    const normalizedQuery = { ...query, ...(starredFolder ? { starred: true } : {}), folder: undefined };
     const graphQuery = toGraphQuery(normalizedQuery);
     const folders = await this.folderSnapshot();
     const allMailScope = !folder;
@@ -440,10 +503,12 @@ export class OutlookProvider implements EmailProvider {
     const allMailFilter = excludedRootFolderIds.map((id) => `parentFolderId ne '${escapeOData(id)}'`).join(' and ');
     let requestUrl: string;
     let localFilter: LocalMessageFilter | undefined;
+    let candidateOffset = 0;
     if (page.pageToken) {
       const decoded = decodePageToken(page.pageToken);
       requestUrl = decoded.url;
       localFilter = decoded.localFilter;
+      candidateOffset = decoded.offset ?? 0;
     } else {
       const base = folder ? `/me/mailFolders/${encodeURIComponent(folder.id)}/messages` : '/me/messages';
       const params = new URLSearchParams({
@@ -451,31 +516,74 @@ export class OutlookProvider implements EmailProvider {
         $select: MESSAGE_LIST_FIELDS,
       });
       if (graphQuery.search) params.set('$search', graphQuery.search);
-      if (graphQuery.search) {
-        localFilter = localMessageFilter(normalizedQuery, allMailScope);
-      } else {
+      if (!graphQuery.search) {
         const filter = [graphQuery.filter, allMailFilter].filter(Boolean).join(' and ');
         if (filter) params.set('$filter', filter);
-        if (allMailScope) localFilter = { allMailScope: true };
       }
+      localFilter = localMessageFilter(normalizedQuery, allMailScope);
       requestUrl = `${base}?${params}`;
     }
-    const response = await this.request<GraphCollection<GraphMessage>>(requestUrl);
-    const items = (response.value ?? [])
-      .filter((raw) => matchesLocalMessageFilter(raw, localFilter, folders.allMailExcludedFolderIds))
-      .map((raw) =>
-        parseGraphMessage(raw, {
-          accountId: this.accountId,
-          ...(raw.parentFolderId && folders.byId.get(raw.parentFolderId)
-            ? { folder: folders.byId.get(raw.parentFolderId) }
-            : {}),
-        }),
-      );
+    const pageSize = Math.min(Math.max(page.pageSize ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE);
+    const items: Message[] = [];
+    let inspectedCandidates = 0;
+    let nextPageToken: string | undefined;
+    do {
+      const response = await this.request<GraphCollection<GraphMessage>>(requestUrl);
+      const candidates = response.value ?? [];
+      if (candidateOffset > candidates.length) {
+        throw new EmailError('invalid_request', 'Invalid Microsoft Graph page token');
+      }
+      let processedCandidates = 0;
+      for (const raw of candidates.slice(candidateOffset)) {
+        if (inspectedCandidates >= 1_000) break;
+        inspectedCandidates += 1;
+        processedCandidates += 1;
+        if (!matchesLocalMessageFilter(raw, localFilter, folders.allMailExcludedFolderIds)) continue;
+        if (localFilter?.hasAttachment !== undefined) {
+          if (!raw.id) continue;
+          const attachments = await this.collection<GraphAttachment>(
+            `/me/messages/${encodeURIComponent(raw.id)}/attachments?$select=${ATTACHMENT_METADATA_SELECT}`,
+          );
+          const hasAttachment = attachments.some((attachment) => attachment.isInline !== true);
+          if (hasAttachment !== localFilter.hasAttachment) continue;
+        }
+        items.push(
+          parseGraphMessage(raw, {
+            accountId: this.accountId,
+            ...(raw.parentFolderId && folders.byId.get(raw.parentFolderId)
+              ? { folder: folders.byId.get(raw.parentFolderId) }
+              : {}),
+          }),
+        );
+        if (items.length === pageSize) break;
+      }
+      const next = response['@odata.nextLink'];
+      const consumedOffset = candidateOffset + processedCandidates;
+      if (items.length === pageSize || inspectedCandidates >= 1_000) {
+        nextPageToken =
+          consumedOffset < candidates.length
+            ? encodePageToken(this.url(requestUrl), localFilter, consumedOffset)
+            : next
+              ? encodePageToken(next, localFilter)
+              : undefined;
+        break;
+      }
+      if (!next) break;
+      requestUrl = next;
+      candidateOffset = 0;
+    } while (inspectedCandidates < 1_000);
+
+    const providerLimited =
+      Boolean(graphQuery.search) && items.length < pageSize && inspectedCandidates >= 1_000 && !nextPageToken;
     return {
       items,
-      ...(response['@odata.nextLink']
-        ? { nextPageToken: encodePageToken(response['@odata.nextLink'], localFilter) }
-        : {}),
+      ...(nextPageToken ? { nextPageToken } : {}),
+      ...(localFilter ? { inspectedCandidates } : {}),
+      ...(items.length < pageSize && inspectedCandidates >= 1_000 && nextPageToken
+        ? { incomplete: true as const, incompleteReason: 'scan_limit' as const }
+        : providerLimited
+          ? { incomplete: true as const, incompleteReason: 'provider_limit' as const }
+          : {}),
     };
   }
 

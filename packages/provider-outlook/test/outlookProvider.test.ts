@@ -91,11 +91,18 @@ describe('OutlookProvider', () => {
       return response ?? json({ error: { code: 'ErrorItemNotFound', message: 'missing' } }, 404);
     }) as unknown as typeof fetch;
 
-    const result = await provider(fetchMock).listFolders();
+    const outlook = provider(fetchMock);
+    expect(outlook.capabilities.search.folderRoles.archive).toBe('unknown');
+    const result = await outlook.listFolders();
 
     expect(result).toContainEqual({ id: 'folder-inbox', name: 'Inbox', role: 'inbox', unreadCount: 2 });
     expect(result).toContainEqual({ id: 'folder-projects', name: 'Inbox/Projects', unreadCount: 1 });
     expect(result).toContainEqual({ id: 'starred', name: 'Flagged', role: 'starred' });
+    expect(outlook.capabilities.search.folderRoles).toMatchObject({
+      inbox: 'available',
+      archive: 'available',
+      all: 'available',
+    });
     for (const call of vi.mocked(fetchMock).mock.calls) {
       const headers = new Headers(call[1]?.headers);
       expect(headers.get('authorization')).toBe('Bearer access-token');
@@ -165,7 +172,7 @@ describe('OutlookProvider', () => {
     const outlook = provider(fetchMock);
 
     const first = await outlook.listMessages(
-      { folder: 'inbox', text: 'quarterly report', from: 'alex@example.com', unreadOnly: true },
+      { folder: 'inbox', text: 'quarterly report', from: 'alex@example.com', read: false },
       { pageSize: 25 },
     );
     expect(first.items[0]).toMatchObject({
@@ -175,19 +182,90 @@ describe('OutlookProvider', () => {
       flags: { read: false },
       labels: ['Customer'],
     });
-    expect(first.nextPageToken).toBeTruthy();
+    expect(first.items.map((item) => item.id)).toEqual(['message-1', 'message-3']);
+    expect(first.nextPageToken).toBeUndefined();
 
     const listCall = vi
       .mocked(fetchMock)
       .mock.calls.map(([input]) => new URL(String(input)))
       .find((url) => url.pathname.endsWith('/messages'))!;
-    expect(listCall.searchParams.get('$search')).toContain('quarterly report');
+    expect(listCall.searchParams.get('$search')).toContain('\\"quarterly\\" AND \\"report\\"');
     expect(listCall.searchParams.get('$search')).toContain('from:');
     expect(listCall.searchParams.get('$filter')).toBeNull();
 
-    const second = await outlook.listMessages({}, { pageToken: first.nextPageToken });
-    expect(second.items.map((item) => item.id)).toEqual(['message-3']);
     expect(vi.mocked(fetchMock).mock.calls.some(([input]) => String(input) === nextLink)).toBe(true);
+  });
+
+  it('replays an opaque Graph page when a Fluxmail page stops partway through it', async () => {
+    const nextLink =
+      'https://graph.microsoft.com/v1.0/me/mailFolders/folder-inbox/messages?$skip=2&$top=2&opaque=a%2Bb';
+    const messageRequests: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const requestUrl = String(input);
+      const url = new URL(requestUrl);
+      const folder = folderResponse(url);
+      if (folder) return folder;
+      if (url.pathname === '/v1.0/me/mailFolders/folder-inbox/messages') {
+        messageRequests.push(requestUrl);
+        if (url.searchParams.get('$skip') === '2') {
+          return json({
+            value: [
+              {
+                id: 'message-2',
+                conversationId: 'thread-2',
+                parentFolderId: 'folder-inbox',
+                subject: 'Second match',
+                receivedDateTime: '2026-07-14T13:00:00Z',
+                isRead: false,
+              },
+              {
+                id: 'message-3',
+                conversationId: 'thread-3',
+                parentFolderId: 'folder-inbox',
+                subject: 'Third match',
+                receivedDateTime: '2026-07-14T14:00:00Z',
+                isRead: false,
+              },
+            ],
+          });
+        }
+        return json({
+          value: [
+            {
+              id: 'message-1',
+              conversationId: 'thread-1',
+              parentFolderId: 'folder-inbox',
+              subject: 'First match',
+              receivedDateTime: '2026-07-14T11:00:00Z',
+              isRead: false,
+            },
+            {
+              id: 'message-read',
+              conversationId: 'thread-read',
+              parentFolderId: 'folder-inbox',
+              subject: 'Filtered',
+              receivedDateTime: '2026-07-14T12:00:00Z',
+              isRead: true,
+            },
+          ],
+          '@odata.nextLink': nextLink,
+        });
+      }
+      return json({ error: { code: 'ErrorItemNotFound', message: 'missing' } }, 404);
+    }) as unknown as typeof fetch;
+    const outlook = provider(fetchMock);
+
+    const first = await outlook.listMessages({ folder: 'inbox', read: false }, { pageSize: 2 });
+    const second = await outlook.listMessages(
+      { folder: 'inbox', read: false },
+      { pageSize: 2, pageToken: first.nextPageToken },
+    );
+
+    expect(first.items.map((message) => message.id)).toEqual(['message-1', 'message-2']);
+    expect(first.nextPageToken).toBeTruthy();
+    expect(second.items.map((message) => message.id)).toEqual(['message-3']);
+    expect(second.nextPageToken).toBeUndefined();
+    expect(messageRequests.filter((request) => request === nextLink)).toHaveLength(2);
   });
 
   it('accepts virtual folder display names without treating them as Graph folder ids', async () => {
@@ -291,16 +369,10 @@ describe('OutlookProvider', () => {
     }) as unknown as typeof fetch;
     const outlook = provider(fetchMock);
 
-    const first = await outlook.listMessages({ text: 'report', unreadOnly: true });
+    const first = await outlook.listMessages({ text: 'report', read: false });
     expect(first.items.map((message) => message.id)).toEqual(['message-inbox']);
-    expect(first.nextPageToken).toBeTruthy();
-    expect(JSON.parse(Buffer.from(first.nextPageToken!, 'base64url').toString('utf8'))).toMatchObject({
-      localFilter: { unreadOnly: true, allMailScope: true },
-    });
-    expect(Buffer.from(first.nextPageToken!, 'base64url').toString('utf8')).not.toContain('folder-trash');
-
-    const second = await outlook.listMessages({}, { pageToken: first.nextPageToken });
-    expect(second.items).toEqual([]);
+    expect(first.nextPageToken).toBeUndefined();
+    expect(first.inspectedCandidates).toBe(3);
   });
 
   it('refreshes once after a 401 response', async () => {

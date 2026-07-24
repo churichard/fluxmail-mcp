@@ -26,17 +26,18 @@ curl 'http://localhost:8977/api/v1/accounts/acct_123/messages' \
 | Name | Location | Required | Type | Details |
 | --- | --- | --- | --- | --- |
 | `accountId` | path | Yes | `string` | Minimum length: 1. |
+| `query` | query | No | `string` | Typed portable search syntax Minimum length: 1. |
 | `folder` | query | No | `string` | Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name. Use all or omit this field to search all mail except Spam and Trash. An IMAP server's \All mailbox may use different rules. Minimum length: 1. |
-| `text` | query | No | `string` | None |
+| `text` | query | No | `string` | Literal full-text search terms |
 | `from` | query | No | `string` | None |
 | `to` | query | No | `string` | None |
 | `subject` | query | No | `string` | None |
-| `unreadOnly` | query | No | `true` or `false` | None |
-| `starredOnly` | query | No | `true` or `false` | None |
+| `read` | query | No | `true` or `false` | None |
+| `starred` | query | No | `true` or `false` | None |
 | `hasAttachment` | query | No | `true` or `false` | None |
 | `after` | query | No | `string` | Format: `date`. Pattern: `^\d{4}-\d{2}-\d{2}$`. |
 | `before` | query | No | `string` | Format: `date`. Pattern: `^\d{4}-\d{2}-\d{2}$`. |
-| `rawProviderQuery` | query | No | `string` | None |
+| `rawProviderQuery` | query | No | `string` | Provider-native Gmail syntax or Outlook KQL |
 | `pageSize` | query | No | `string` | Pattern: `^(?:[1-9]\|[1-9][0-9]\|100)$`. |
 | `pageToken` | query | No | `string` | Minimum length: 1. |
 
@@ -328,6 +329,61 @@ curl 'http://localhost:8977/api/v1/accounts/acct_123/messages' \
       "properties": {
         "nextPageToken": {
           "type": "string"
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "error",
+                  "warning"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "suggestion": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "severity",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "incomplete": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        },
+        "incompleteReason": {
+          "type": "string",
+          "enum": [
+            "scan_limit",
+            "provider_limit"
+          ]
+        },
+        "inspectedCandidates": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false

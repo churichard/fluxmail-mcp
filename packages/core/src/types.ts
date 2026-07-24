@@ -1,12 +1,40 @@
 export type Provider = 'gmail' | 'outlook' | 'imap';
 
+export type PortableFolderRole = 'inbox' | 'sent' | 'drafts' | 'archive' | 'spam' | 'trash' | 'all';
+
+export type SearchAvailability = 'available' | 'unavailable' | 'unknown';
+
+export type SearchFilter =
+  | 'folder'
+  | 'text'
+  | 'from'
+  | 'to'
+  | 'subject'
+  | 'read'
+  | 'starred'
+  | 'hasAttachment'
+  | 'after'
+  | 'before';
+
+export interface SearchCapabilities {
+  filters: SearchFilter[];
+  folderRoles: Record<PortableFolderRole, SearchAvailability>;
+  nativeQuery: null | {
+    syntax: 'gmail' | 'outlook-kql';
+    availability: SearchAvailability;
+    unavailableReason?: string;
+  };
+}
+
 export interface Capabilities {
   /** Gmail labels and Outlook categories. */
   labels: boolean;
   /** Gmail/Outlook thread server-side; IMAP threads are synthesized from References headers. */
   serverThreads: boolean;
-  /** Gmail q= / Graph $search vs IMAP SEARCH. */
+  /** @deprecated Use search capabilities instead. */
   serverSearch: 'rich' | 'basic';
+  /** Search behavior available for this account. */
+  search: SearchCapabilities;
   /** Whether list results include snippets without fetching bodies. */
   snippets: boolean;
 }
@@ -160,20 +188,24 @@ export type ModifyAction =
 export interface EmailQuery {
   /** Folder id or role. An omitted folder uses All Mail, excluding Spam and Trash. */
   folder?: string;
-  /** Full-text search. */
+  /** Literal full-text search. Provider operators are escaped. */
   text?: string;
   from?: string;
   to?: string;
   subject?: string;
-  unreadOnly?: boolean;
-  starredOnly?: boolean;
+  read?: boolean;
+  starred?: boolean;
   hasAttachment?: boolean;
-  /** ISO date (inclusive). */
+  /** YYYY-MM-DD received/internal date (inclusive, UTC). */
   after?: string;
-  /** ISO date (exclusive). */
+  /** YYYY-MM-DD received/internal date (exclusive, UTC). */
   before?: string;
   /** Escape hatch: passed to the provider verbatim (e.g. Gmail q=). */
   rawProviderQuery?: string;
+}
+
+export interface PortableEmailQuery extends Omit<EmailQuery, 'folder' | 'rawProviderQuery'> {
+  folder?: PortableFolderRole;
 }
 
 export interface PageOpts {
@@ -181,7 +213,22 @@ export interface PageOpts {
   pageToken?: string;
 }
 
+export type SearchDiagnosticSeverity = 'error' | 'warning';
+
+export interface SearchDiagnostic {
+  code: string;
+  severity: SearchDiagnosticSeverity;
+  message: string;
+  start?: number;
+  end?: number;
+  suggestion?: string;
+}
+
 export interface Page<T> {
   items: T[];
   nextPageToken?: string;
+  diagnostics?: SearchDiagnostic[];
+  incomplete?: true;
+  incompleteReason?: 'scan_limit' | 'provider_limit';
+  inspectedCandidates?: number;
 }
