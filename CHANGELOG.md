@@ -11,6 +11,7 @@ Fluxmail records user-facing changes in this file. The format follows [Common Ch
 - **Breaking:** parse CLI and MCP search strings as typed portable syntax, add the REST `query` parameter, and return parser diagnostics with search results
 - **Breaking:** require the `search` capability on custom providers and require both values for every advertised boolean filter
 - **Breaking:** invalidate existing page tokens and replace them with signed, query-bound tokens that expire after one hour
+- Reject search filters and provider-native queries when an account reports that it cannot support them
 
 ### Added
 

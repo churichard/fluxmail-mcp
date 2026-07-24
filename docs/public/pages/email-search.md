@@ -1,7 +1,7 @@
 ---
 title: 'Email search'
 description: 'Use the same portable search syntax with Fluxmail CLI, MCP, and REST clients.'
-updated: '2026-07-23'
+updated: '2026-07-24'
 ---
 
 Fluxmail has one portable search syntax for Gmail, Outlook, and IMAP mailboxes. You can use it with `fluxmail emails search`, the `search_emails` MCP tool, or the REST `query` parameter.
@@ -51,6 +51,8 @@ Use `rawProviderQuery` when you need Gmail search syntax or Outlook KQL. Native 
 Structured `text` is literal and cannot be combined with `rawProviderQuery`. Other structured filters combine with a native query using AND.
 
 IMAP supports Gmail native syntax only when the server advertises `X-GM-EXT-1`. Account capabilities report whether native syntax and portable folder roles are available, unavailable, or still unknown.
+
+Fluxmail rejects filters and native queries that the selected account reports as unavailable. Capabilities marked `unknown` are passed to the provider so it can discover support when the request runs.
 
 ## Attachments
 

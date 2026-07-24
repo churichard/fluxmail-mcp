@@ -233,6 +233,68 @@ describe('GmailProvider list hydration', () => {
     expect(third.nextPageToken).toBeTruthy();
     expect(fourth.nextPageToken).toBeUndefined();
   });
+
+  it('continues after date filtering reaches the Gmail scan limit', async () => {
+    const provider = new GmailProvider({
+      accountId: 'acct_1',
+      email: 'me@example.com',
+      auth: new OAuth2Client(),
+    });
+    const ids = Array.from({ length: 1_001 }, (_, index) => `message-${index + 1}`);
+    const list = vi.fn(async ({ maxResults, pageToken }: { maxResults: number; pageToken?: string }) => {
+      const offset = pageToken ? Number(pageToken.slice('page-'.length)) : 0;
+      const messages = ids.slice(offset, offset + maxResults).map((id) => ({ id }));
+      const nextOffset = offset + messages.length;
+      return {
+        data: {
+          messages,
+          ...(nextOffset < ids.length ? { nextPageToken: `page-${nextOffset}` } : {}),
+        },
+      };
+    });
+    const get = vi.fn(async ({ id }: { id: string }) => ({
+      data: {
+        id,
+        threadId: id,
+        internalDate: String(
+          Date.parse(id === 'message-1001' ? '2026-01-02T12:00:00.000Z' : '2026-01-03T00:00:00.000Z'),
+        ),
+        payload: { headers: [{ name: 'Subject', value: id }] },
+      },
+    }));
+    const internals = provider as unknown as {
+      gmail: {
+        users: {
+          labels: { list: ReturnType<typeof vi.fn> };
+          messages: { list: typeof list; get: typeof get };
+        };
+      };
+    };
+    internals.gmail = {
+      users: {
+        labels: { list: vi.fn().mockResolvedValue({ data: { labels: [] } }) },
+        messages: { list, get },
+      },
+    };
+    const query = { after: '2026-01-01', before: '2026-01-03' };
+
+    const first = await provider.listMessages(query, { pageSize: 1 });
+    const second = await provider.listMessages(query, { pageSize: 1, pageToken: first.nextPageToken });
+
+    expect(first).toMatchObject({
+      items: [],
+      incomplete: true,
+      incompleteReason: 'scan_limit',
+      inspectedCandidates: 1_000,
+    });
+    expect(first.nextPageToken).toBeTruthy();
+    expect(second.items.map((message) => message.id)).toEqual(['message-1001']);
+    expect(second.nextPageToken).toBeUndefined();
+    expect(second.incomplete).toBeUndefined();
+    expect(second.inspectedCandidates).toBe(1);
+    expect(list).toHaveBeenCalledTimes(11);
+    expect(get).toHaveBeenCalledTimes(1_001);
+  });
 });
 
 describe('GmailProvider labels', () => {

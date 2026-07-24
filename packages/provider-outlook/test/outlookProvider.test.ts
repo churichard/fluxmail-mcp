@@ -268,6 +268,143 @@ describe('OutlookProvider', () => {
     expect(messageRequests.filter((request) => request === nextLink)).toHaveLength(2);
   });
 
+  it('applies attachment and UTC date filters locally when Graph search is active', async () => {
+    const attachmentRequests: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const folder = folderResponse(url);
+      if (folder) return folder;
+      if (url.pathname === '/v1.0/me/messages') {
+        return json({
+          value: [
+            {
+              id: 'message-old',
+              conversationId: 'thread-old',
+              parentFolderId: 'folder-inbox',
+              subject: 'Old report',
+              receivedDateTime: '2025-12-31T23:59:59.999Z',
+            },
+            {
+              id: 'message-inline',
+              conversationId: 'thread-inline',
+              parentFolderId: 'folder-inbox',
+              subject: 'Inline report',
+              receivedDateTime: '2026-01-02T12:00:00.000Z',
+            },
+            {
+              id: 'message-boundary',
+              conversationId: 'thread-boundary',
+              parentFolderId: 'folder-inbox',
+              subject: 'Boundary report',
+              receivedDateTime: '2026-01-03T00:00:00.000Z',
+            },
+            {
+              id: 'message-file',
+              conversationId: 'thread-file',
+              parentFolderId: 'folder-inbox',
+              subject: 'File report',
+              receivedDateTime: '2026-01-02T13:00:00.000Z',
+            },
+          ],
+        });
+      }
+      const attachment = url.pathname.match(/^\/v1\.0\/me\/messages\/([^/]+)\/attachments$/)?.[1];
+      if (attachment) {
+        attachmentRequests.push(attachment);
+        return json({
+          value: [{ id: `attachment-${attachment}`, isInline: attachment === 'message-inline' }],
+        });
+      }
+      return json({ error: { code: 'ErrorItemNotFound', message: 'missing' } }, 404);
+    }) as unknown as typeof fetch;
+    const outlook = provider(fetchMock);
+
+    const page = await outlook.listMessages({
+      text: 'report',
+      hasAttachment: true,
+      after: '2026-01-01',
+      before: '2026-01-03',
+    });
+
+    expect(page.items.map((message) => message.id)).toEqual(['message-file']);
+    expect(page.inspectedCandidates).toBe(4);
+    expect(attachmentRequests).toEqual(['message-inline', 'message-file']);
+    const messageRequest = vi
+      .mocked(fetchMock)
+      .mock.calls.map(([input]) => new URL(String(input)))
+      .find((url) => url.pathname === '/v1.0/me/messages')!;
+    expect(messageRequest.searchParams.get('$search')).toBeTruthy();
+    expect(messageRequest.searchParams.get('$filter')).toBeNull();
+  });
+
+  it('continues after filtered Outlook results reach the scan limit', async () => {
+    const candidates = Array.from({ length: 1_001 }, (_, index) => ({
+      id: `message-${index + 1}`,
+      conversationId: `thread-${index + 1}`,
+      parentFolderId: 'folder-inbox',
+      subject: `Report ${index + 1}`,
+      receivedDateTime: '2026-01-02T12:00:00.000Z',
+      isRead: index < 1_000,
+    }));
+    let messageRequests = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const folder = folderResponse(url);
+      if (folder) return folder;
+      if (url.pathname === '/v1.0/me/messages') {
+        messageRequests += 1;
+        return json({ value: candidates });
+      }
+      return json({ error: { code: 'ErrorItemNotFound', message: 'missing' } }, 404);
+    }) as unknown as typeof fetch;
+    const outlook = provider(fetchMock);
+    const query = { text: 'report', read: false };
+
+    const first = await outlook.listMessages(query, { pageSize: 1 });
+    const second = await outlook.listMessages(query, { pageSize: 1, pageToken: first.nextPageToken });
+
+    expect(first).toMatchObject({
+      items: [],
+      incomplete: true,
+      incompleteReason: 'scan_limit',
+      inspectedCandidates: 1_000,
+    });
+    expect(first.nextPageToken).toBeTruthy();
+    expect(second.items.map((message) => message.id)).toEqual(['message-1001']);
+    expect(second.nextPageToken).toBeUndefined();
+    expect(second.incomplete).toBeUndefined();
+    expect(second.inspectedCandidates).toBe(1);
+    expect(messageRequests).toBe(2);
+  });
+
+  it('reports a terminal Outlook provider limit without a continuation token', async () => {
+    const candidates = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `message-${index + 1}`,
+      conversationId: `thread-${index + 1}`,
+      parentFolderId: 'folder-inbox',
+      subject: `Report ${index + 1}`,
+      receivedDateTime: '2026-01-02T12:00:00.000Z',
+      isRead: true,
+    }));
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const folder = folderResponse(url);
+      if (folder) return folder;
+      if (url.pathname === '/v1.0/me/messages') return json({ value: candidates });
+      return json({ error: { code: 'ErrorItemNotFound', message: 'missing' } }, 404);
+    }) as unknown as typeof fetch;
+
+    const page = await provider(fetchMock).listMessages({ text: 'report', read: false }, { pageSize: 1 });
+
+    expect(page).toMatchObject({
+      items: [],
+      incomplete: true,
+      incompleteReason: 'provider_limit',
+      inspectedCandidates: 1_000,
+    });
+    expect(page.nextPageToken).toBeUndefined();
+  });
+
   it('accepts virtual folder display names without treating them as Graph folder ids', async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = new URL(String(input));

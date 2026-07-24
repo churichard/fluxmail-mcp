@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatEmailSearch,
   intersectSearchCapabilities,
+  isPortableFolderRole,
   mergeEmailQueries,
   normalizeEmailQuery,
   normalizePortableEmailQuery,
@@ -221,6 +222,12 @@ describe('portable search capabilities', () => {
     },
     nativeQuery: null,
   };
+
+  it('distinguishes portable roles from provider-specific folders', () => {
+    expect(isPortableFolderRole('archive')).toBe(true);
+    expect(isPortableFolderRole('starred')).toBe(false);
+    expect(isPortableFolderRole('Projects/2026')).toBe(false);
+  });
 
   it('returns concrete folder requirements', () => {
     expect(requiredSearchFilters({ folder: 'archive', read: false, hasAttachment: false })).toEqual([

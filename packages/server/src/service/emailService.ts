@@ -4,7 +4,9 @@ import {
   formatAddressList,
   forwardSubject,
   isEmailError,
+  isPortableFolderRole,
   normalizeEmailQuery,
+  supportsPortableEmailQuery,
   type Account,
   type AttachmentInput,
   type AttachmentMeta,
@@ -17,6 +19,8 @@ import {
   type ModifyAction,
   type Page,
   type PageOpts,
+  type PortableEmailQuery,
+  type SearchCapabilities,
   type SendResult,
   type Thread,
 } from '@fluxmail/core';
@@ -87,6 +91,41 @@ export interface ScheduledSendInfo {
 
 const SCHEDULE_GRACE_MS = 60_000;
 const SCHEDULE_MAX_HORIZON_MS = 365 * 24 * 3_600_000;
+
+function assertSearchCapabilities(capabilities: SearchCapabilities, query: EmailQuery): void {
+  const portableQuery: PortableEmailQuery = {
+    ...(query.text !== undefined ? { text: query.text } : {}),
+    ...(query.from !== undefined ? { from: query.from } : {}),
+    ...(query.to !== undefined ? { to: query.to } : {}),
+    ...(query.subject !== undefined ? { subject: query.subject } : {}),
+    ...(query.read !== undefined ? { read: query.read } : {}),
+    ...(query.starred !== undefined ? { starred: query.starred } : {}),
+    ...(query.hasAttachment !== undefined ? { hasAttachment: query.hasAttachment } : {}),
+    ...(query.after !== undefined ? { after: query.after } : {}),
+    ...(query.before !== undefined ? { before: query.before } : {}),
+    ...(query.folder && isPortableFolderRole(query.folder) ? { folder: query.folder } : {}),
+  };
+  const support = supportsPortableEmailQuery(capabilities, portableQuery);
+  const unsupported = support.unsupported.map((requirement) =>
+    requirement.filter === 'folder' ? `folder:${requirement.role}` : requirement.filter,
+  );
+  if (query.folder && !isPortableFolderRole(query.folder) && !capabilities.filters.includes('folder')) {
+    unsupported.push('folder');
+  }
+  if (
+    query.rawProviderQuery !== undefined &&
+    (capabilities.nativeQuery === null || capabilities.nativeQuery.availability === 'unavailable')
+  ) {
+    unsupported.push('rawProviderQuery');
+  }
+  const unique = [...new Set(unsupported)];
+  if (!unique.length) return;
+  throw new EmailError(
+    'unsupported_capability',
+    `Unsupported search options for this provider: ${unique.join(', ')}.`,
+    { unsupportedSearchOptions: unique },
+  );
+}
 
 /** Parse and validate a sendAt timestamp; returns epoch ms. */
 export function resolveSendAt(sendAtIso: string, now = Date.now()): number {
@@ -351,6 +390,7 @@ export class EmailService {
     const query = normalized.query;
     const pageSize = Math.min(Math.max(page.pageSize ?? 25, 1), 100);
     return this.withProvider(accountId, async (provider, resolvedId, account) => {
+      assertSearchCapabilities(provider.capabilities.search, query);
       const providerToken = page.pageToken
         ? this.cursorCodec.decode(page.pageToken, {
             accountId: resolvedId,
