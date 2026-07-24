@@ -1,6 +1,6 @@
 ---
 title: 'Search emails'
-description: 'Full-text search across an account''s email. Same filters as list_emails; "query" is the search text.'
+description: 'Search one account with typed portable syntax. The query supports text, from:, to:, subject:, in:, read and starred states, attachments, and date filters.'
 updated: '2026-07-15'
 ---
 
@@ -8,7 +8,7 @@ updated: '2026-07-15'
 
 `search_emails`
 
-Full-text search across an account's email. Same filters as list_emails; "query" is the search text.
+Search one account with typed portable syntax. The query supports text, from:, to:, subject:, in:, read and starred states, attachments, and date filters.
 
 ## Permissions
 
@@ -19,17 +19,17 @@ Required capabilities: `mail.read`.
 | Name | Required | Type | Details |
 | --- | --- | --- | --- |
 | `accountId` | No | `string` | Account to operate on. Optional when exactly one account is connected. Minimum length: 1. |
-| `query` | Yes | `string` | Search text |
+| `query` | Yes | `string` | Typed portable search syntax Minimum length: 1. |
 | `folder` | No | `string` | Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name. Use all or omit this field to search all mail except Spam and Trash. An IMAP server's \All mailbox may use different rules. Minimum length: 1. |
 | `from` | No | `string` | None |
 | `to` | No | `string` | None |
 | `subject` | No | `string` | None |
-| `unreadOnly` | No | `boolean` | None |
-| `starredOnly` | No | `boolean` | None |
+| `read` | No | `boolean` | None |
+| `starred` | No | `boolean` | None |
 | `hasAttachment` | No | `boolean` | None |
-| `after` | No | `string` | ISO date, inclusive Minimum length: 1. |
-| `before` | No | `string` | ISO date, exclusive Minimum length: 1. |
-| `rawProviderQuery` | No | `string` | Escape hatch passed verbatim to the provider (e.g. Gmail q= syntax) |
+| `after` | No | `string` | YYYY-MM-DD received date, inclusive in UTC Minimum length: 1. |
+| `before` | No | `string` | YYYY-MM-DD received date, exclusive in UTC Minimum length: 1. |
+| `rawProviderQuery` | No | `string` | Provider-native Gmail syntax or Outlook KQL for one compatible account |
 | `pageSize` | No | `integer` | Defaults to 25 Minimum: 1. Maximum: 100. |
 | `pageToken` | No | `string` | nextPageToken from a previous call Minimum length: 1. |
 
@@ -47,7 +47,8 @@ Required capabilities: `mail.read`.
     },
     "query": {
       "type": "string",
-      "description": "Search text"
+      "minLength": 1,
+      "description": "Typed portable search syntax"
     },
     "folder": {
       "type": "string",
@@ -63,10 +64,10 @@ Required capabilities: `mail.read`.
     "subject": {
       "type": "string"
     },
-    "unreadOnly": {
+    "read": {
       "type": "boolean"
     },
-    "starredOnly": {
+    "starred": {
       "type": "boolean"
     },
     "hasAttachment": {
@@ -75,16 +76,16 @@ Required capabilities: `mail.read`.
     "after": {
       "type": "string",
       "minLength": 1,
-      "description": "ISO date, inclusive"
+      "description": "YYYY-MM-DD received date, inclusive in UTC"
     },
     "before": {
       "type": "string",
       "minLength": 1,
-      "description": "ISO date, exclusive"
+      "description": "YYYY-MM-DD received date, exclusive in UTC"
     },
     "rawProviderQuery": {
       "type": "string",
-      "description": "Escape hatch passed verbatim to the provider (e.g. Gmail q= syntax)"
+      "description": "Provider-native Gmail syntax or Outlook KQL for one compatible account"
     },
     "pageSize": {
       "type": "integer",

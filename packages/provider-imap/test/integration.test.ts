@@ -237,7 +237,7 @@ describe.skipIf(!host).sequential('GreenMail integration', () => {
     await provider.modify([message.id], 'star');
     expect((await provider.getMessage(message.id)).flags.starred).toBe(true);
     await expect(
-      provider.listMessages({ folder: 'inbox', subject, unreadOnly: true, starredOnly: true }),
+      provider.listMessages({ folder: 'inbox', subject, read: false, starred: true }),
     ).resolves.toMatchObject({ items: [expect.objectContaining({ id: message.id })] });
     await provider.modify([message.id], 'unstar');
     expect((await provider.getMessage(message.id)).flags.starred).toBe(false);

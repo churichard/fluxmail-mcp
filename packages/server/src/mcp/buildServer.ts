@@ -5,6 +5,8 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   EmailError,
   isEmailError,
+  mergeEmailQueries,
+  parseEmailSearch,
   parseSingleAddress,
   type EmailAddress,
   type EmailQuery,
@@ -44,19 +46,19 @@ const queryShape = {
     .describe(
       "Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name. Use all or omit this field to search all mail except Spam and Trash. An IMAP server's \\All mailbox may use different rules.",
     ),
-  text: z.string().optional().describe('Full-text search terms'),
+  text: z.string().optional().describe('Literal full-text search terms'),
   from: z.string().optional(),
   to: z.string().optional(),
   subject: z.string().optional(),
-  unreadOnly: z.boolean().optional(),
-  starredOnly: z.boolean().optional(),
+  read: z.boolean().optional(),
+  starred: z.boolean().optional(),
   hasAttachment: z.boolean().optional(),
-  after: z.string().min(1).optional().describe('ISO date, inclusive'),
-  before: z.string().min(1).optional().describe('ISO date, exclusive'),
+  after: z.string().min(1).optional().describe('YYYY-MM-DD received date, inclusive in UTC'),
+  before: z.string().min(1).optional().describe('YYYY-MM-DD received date, exclusive in UTC'),
   rawProviderQuery: z
     .string()
     .optional()
-    .describe('Escape hatch passed verbatim to the provider (e.g. Gmail q= syntax)'),
+    .describe('Provider-native Gmail syntax or Outlook KQL for one compatible account'),
   pageSize: z.number().int().min(1).max(100).optional().describe('Defaults to 25'),
   pageToken: z.string().min(1).optional().describe('nextPageToken from a previous call'),
 };
@@ -284,8 +286,8 @@ function emailQuery(args: Record<string, unknown>): EmailQuery {
     'from',
     'to',
     'subject',
-    'unreadOnly',
-    'starredOnly',
+    'read',
+    'starred',
     'hasAttachment',
     'after',
     'before',
@@ -460,10 +462,11 @@ export function buildMcpServer(service: EmailService, options: BuildMcpServerOpt
       'search_emails',
       {
         description:
-          'Full-text search across an account\'s email. Same filters as list_emails; "query" is the search text.',
+          'Search one account with typed portable syntax. The query supports text, from:, to:, subject:, in:, ' +
+          'read and starred states, attachments, and date filters.',
         inputSchema: {
           accountId: accountIdParam,
-          query: z.string().describe('Search text'),
+          query: z.string().min(1).describe('Typed portable search syntax'),
           ...searchFilterShape,
         },
         annotations: { readOnlyHint: true },
@@ -473,7 +476,27 @@ export function buildMcpServer(service: EmailService, options: BuildMcpServerOpt
         'mail.read',
         async (
           args: { accountId?: string; query: string; pageSize?: number; pageToken?: string } & Record<string, unknown>,
-        ) => service.listMessages(args.accountId, { ...emailQuery(args), text: args.query }, pageOpts(args)),
+        ) => {
+          const parsed = parseEmailSearch(args.query);
+          if (!parsed.valid) {
+            throw new EmailError('invalid_request', parsed.diagnostics.map((item) => item.message).join(' '), {
+              diagnostics: parsed.diagnostics,
+            });
+          }
+          const merged = mergeEmailQueries(parsed.query, emailQuery(args));
+          if (!merged.success) {
+            throw new EmailError('invalid_request', merged.diagnostics.map((item) => item.message).join(' '), {
+              diagnostics: merged.diagnostics,
+            });
+          }
+          const result = await service.listMessages(args.accountId, merged.query, pageOpts(args));
+          return {
+            ...result,
+            ...([...parsed.diagnostics, ...(result.diagnostics ?? [])].length
+              ? { diagnostics: [...parsed.diagnostics, ...(result.diagnostics ?? [])] }
+              : {}),
+          };
+        },
       ),
     );
 

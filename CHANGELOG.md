@@ -4,6 +4,19 @@ Fluxmail records user-facing changes in this file. The format follows [Common Ch
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** replace `unreadOnly` and `starredOnly` with tri-state `read` and `starred` filters, and make `hasAttachment` support both boolean values
+- **Breaking:** treat structured `text` as literal search text; use `rawProviderQuery` for Gmail syntax or Outlook KQL
+- **Breaking:** parse CLI and MCP search strings as typed portable syntax, add the REST `query` parameter, and return parser diagnostics with search results
+- **Breaking:** require the `search` capability on custom providers and require both values for every advertised boolean filter
+- **Breaking:** invalidate existing page tokens and replace them with signed, query-bound tokens that expire after one hour
+
+### Added
+
+- Add portable search normalization, parsing, formatting, capability checks, and capability intersection to `@fluxmail/core`
+- Add provider-aware filtered pagination with incomplete-page metadata and canonical attachment checks
+
 ## [0.6.1] - 2026-07-23
 
 ### Fixed

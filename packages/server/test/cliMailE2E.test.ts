@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import type { Account, DraftInput, EmailProvider, Message, ModifyAction } from '@fluxmail/core';
+import { GMAIL_CAPABILITIES } from '@fluxmail/provider-gmail';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { FluxmailConfig } from '../src/config.js';
 import type { AccountRegistry } from '../src/accounts/registry.js';
@@ -86,7 +87,7 @@ describe('CLI mail process integration', { timeout: 15_000 }, () => {
     provider: 'gmail',
     email: 'owner@example.com',
     status: 'active',
-    capabilities: { labels: true, serverThreads: true, serverSearch: 'rich', snippets: true },
+    capabilities: GMAIL_CAPABILITIES,
     ownerMemberId: member.id,
     sharedWithAll: false,
     grantedMemberIds: [],

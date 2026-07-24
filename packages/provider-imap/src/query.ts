@@ -1,27 +1,36 @@
-import { EmailError, type EmailQuery } from '@fluxmail/core';
+import { EmailError, normalizeEmailQuery, type EmailQuery } from '@fluxmail/core';
 import type { SearchObject } from 'imapflow';
 
-function date(value: string, field: string): Date {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) throw new EmailError('invalid_request', `${field} must be an ISO date`);
-  return parsed;
+function utcDate(value: string, offsetDays = 0): Date {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return date;
 }
 
-export function toImapSearch(query: EmailQuery, supportsGmailRaw: boolean): SearchObject {
+export function toImapSearches(input: EmailQuery, supportsGmailRaw: boolean): SearchObject[] {
+  const normalized = normalizeEmailQuery(input);
+  if (!normalized.success) {
+    throw new EmailError('invalid_request', normalized.diagnostics.map((item) => item.message).join(' '), {
+      diagnostics: normalized.diagnostics,
+    });
+  }
+  const query = normalized.query;
   const search: SearchObject = { all: true };
-  if (query.text) search.text = query.text;
   if (query.from) search.from = query.from;
   if (query.to) search.to = query.to;
   if (query.subject) search.subject = query.subject;
-  if (query.unreadOnly) search.seen = false;
-  if (query.starredOnly) search.flagged = true;
-  if (query.after) search.since = date(query.after, 'after');
-  if (query.before) search.before = date(query.before, 'before');
+  if (query.read !== undefined) search.seen = query.read;
+  if (query.starred !== undefined) search.flagged = query.starred;
+  // IMAP dates are mailbox-local calendar dates. Broaden the server search and
+  // apply the exact UTC boundary to each hydrated message.
+  if (query.after) search.since = utcDate(query.after, -1);
+  if (query.before) search.before = utcDate(query.before, 1);
   if (query.rawProviderQuery) {
     if (!supportsGmailRaw) {
       throw new EmailError('unsupported_capability', 'rawProviderQuery requires an IMAP server with Gmail raw search');
     }
     search.gmraw = query.rawProviderQuery;
   }
-  return search;
+  const textTerms = query.text?.split(' ') ?? [];
+  return textTerms.length ? textTerms.map((text) => ({ ...search, text })) : [search];
 }

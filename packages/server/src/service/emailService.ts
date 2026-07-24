@@ -4,6 +4,7 @@ import {
   formatAddressList,
   forwardSubject,
   isEmailError,
+  normalizeEmailQuery,
   type Account,
   type AttachmentInput,
   type AttachmentMeta,
@@ -19,6 +20,7 @@ import {
   type SendResult,
   type Thread,
 } from '@fluxmail/core';
+import { randomBytes } from 'node:crypto';
 import type { AccountRegistry } from '../accounts/registry.js';
 import { assertWithinQuota, checkLicenseState, type Entitlements } from '../licensing/entitlements.js';
 import type { FluxmailDb } from '../storage/db.js';
@@ -36,6 +38,7 @@ import {
   type ScheduledSendRow,
   type ScheduledSendStatus,
 } from '../storage/scheduledSends.js';
+import { SearchCursorCodec } from './searchCursor.js';
 
 export interface SendInput extends DraftInput {
   /** With replyToMessageId: compute recipients from the original (reply-all semantics). */
@@ -126,18 +129,25 @@ export class EmailService {
   /** Wired to SendScheduler.wake() in long-lived processes; a no-op for one-shot CLI commands. */
   onScheduleChanged: () => void = () => {};
 
+  private readonly cursorSecret: Buffer;
+  private readonly cursorCodec: SearchCursorCodec;
+
   constructor(
     private readonly registry: AccountRegistry,
     private readonly db: FluxmailDb,
     private readonly principal?: Principal,
-  ) {}
+    cursorSecret?: Buffer,
+  ) {
+    this.cursorSecret = cursorSecret ?? randomBytes(32);
+    this.cursorCodec = new SearchCursorCodec(this.cursorSecret);
+  }
 
   /**
    * A view restricted to a member's mailbox grants and optional connection
    * allowlist. Internal background workers use the default service instead.
    */
   withPrincipal(principal: Principal): EmailService {
-    const scoped = new EmailService(this.registry, this.db, principal);
+    const scoped = new EmailService(this.registry, this.db, principal, this.cursorSecret);
     scoped.onScheduleChanged = () => this.onScheduleChanged();
     return scoped;
   }
@@ -331,8 +341,43 @@ export class EmailService {
     return this.withProvider(accountId, (p) => p.listLabels());
   }
 
-  listMessages(accountId: string | undefined, q: EmailQuery, page?: PageOpts): Promise<Page<Message>> {
-    return this.withProvider(accountId, (p) => p.listMessages(q, page));
+  listMessages(accountId: string | undefined, q: EmailQuery, page: PageOpts = {}): Promise<Page<Message>> {
+    const normalized = normalizeEmailQuery(q);
+    if (!normalized.success) {
+      throw new EmailError('invalid_request', normalized.diagnostics.map((item) => item.message).join(' '), {
+        diagnostics: normalized.diagnostics,
+      });
+    }
+    const query = normalized.query;
+    const pageSize = Math.min(Math.max(page.pageSize ?? 25, 1), 100);
+    return this.withProvider(accountId, async (provider, resolvedId, account) => {
+      const providerToken = page.pageToken
+        ? this.cursorCodec.decode(page.pageToken, {
+            accountId: resolvedId,
+            provider: account.provider,
+            query,
+            pageSize,
+          })
+        : undefined;
+      const result = await provider.listMessages(query, {
+        pageSize,
+        ...(providerToken ? { pageToken: providerToken } : {}),
+      });
+      return {
+        ...result,
+        ...(result.nextPageToken
+          ? {
+              nextPageToken: this.cursorCodec.encode({
+                accountId: resolvedId,
+                provider: account.provider,
+                query,
+                pageSize,
+                providerToken: result.nextPageToken,
+              }),
+            }
+          : { nextPageToken: undefined }),
+      };
+    });
   }
 
   getMessage(accountId: string | undefined, id: string): Promise<Message> {

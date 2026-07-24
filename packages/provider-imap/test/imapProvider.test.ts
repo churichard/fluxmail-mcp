@@ -123,6 +123,43 @@ describe('ImapProvider attachment limits', () => {
 });
 
 describe('ImapProvider safe folder fallbacks', () => {
+  it('discovers search capabilities for one connection and clears them on close', async () => {
+    const archive = folder('Archive');
+    archive.specialUse = '\\Archive';
+    const fake = {
+      usable: true,
+      capabilities: new Map([['X-GM-EXT-1', true]]),
+      on: vi.fn(),
+      connect: vi.fn(),
+      close: vi.fn(),
+      list: vi.fn().mockResolvedValue([folder('INBOX'), archive]),
+    };
+    const provider = new ImapProvider({
+      accountId: 'a1',
+      email: 'me@example.com',
+      credentials: {
+        imap: { host: 'imap.example.com', port: 993, security: 'tls', user: 'me', password: 'secret' },
+        smtp: { host: 'smtp.example.com', port: 587, security: 'starttls', user: 'me', password: 'secret' },
+        saveSent: true,
+      },
+      store: new MemoryStore(),
+      imapFactory: () => fake as unknown as ImapFlow,
+    });
+
+    expect(provider.capabilities.search.nativeQuery?.availability).toBe('unknown');
+    await provider.listFolders();
+    expect(provider.capabilities.search).toMatchObject({
+      folderRoles: { inbox: 'available', archive: 'available', sent: 'unavailable' },
+      nativeQuery: { syntax: 'gmail', availability: 'available' },
+    });
+
+    await provider.close();
+    expect(provider.capabilities.search).toMatchObject({
+      folderRoles: { inbox: 'unknown', archive: 'unknown' },
+      nativeQuery: { availability: 'unknown' },
+    });
+  });
+
   it('does not permanently delete when Trash is unresolved', async () => {
     const store = new MemoryStore();
     await store.save({
@@ -640,7 +677,7 @@ describe('ImapProvider connection and pagination state', () => {
         fake.mailbox = { uidValidity: 1n } as never;
         return { release: vi.fn() };
       }),
-      search: vi.fn(async () => uids),
+      search: vi.fn(async (_query: unknown) => uids),
       fetchOne: vi.fn(async (uid: number) => ({
         uid,
         envelope: { subject: `${selected}-${uid}`, messageId: `<${selected}-${uid}@example.com>` },
@@ -660,6 +697,7 @@ describe('ImapProvider connection and pagination state', () => {
       setUids(next: number[]) {
         uids = next;
       },
+      search: fake.search,
     };
   }
 
@@ -686,6 +724,18 @@ describe('ImapProvider connection and pagination state', () => {
     const { provider } = paginationProvider([2, 1]);
     const page = await provider.listMessages({ folder: 'INBOX' }, { pageSize: 2 });
     expect(page.nextPageToken).toBeUndefined();
+  });
+
+  it('intersects IMAP results for every literal full-text term', async () => {
+    const { provider, search } = paginationProvider([3, 2, 1]);
+    search.mockImplementation(async (query: unknown) =>
+      (query as { text?: string }).text === 'quarterly' ? [3, 2] : [2, 1],
+    );
+
+    const page = await provider.listMessages({ folder: 'INBOX', text: 'quarterly report' });
+
+    expect(page.items.map((message) => message.subject)).toEqual(['INBOX-2']);
+    expect(search).toHaveBeenCalledTimes(2);
   });
 
   it('excludes resolved Spam and Trash folders when the server has no All mailbox', async () => {

@@ -12,6 +12,7 @@
     "connect-outlook-to-mcp",
     "connect-an-imap-mailbox",
     "connect-an-mcp-client",
+    "email-search",
     "build-with-rest",
     "use-the-cli",
     "tools",
@@ -175,6 +176,7 @@
     "logging",
     "teams-and-plans",
     "architecture",
+    "upgrades/0.7.0",
     "upgrades/0.6.0",
     "upgrades/0.5.0"
   ]

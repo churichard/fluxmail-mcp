@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { lookup as lookupMimeType } from 'mime-types';
-import { EmailError, parseSingleAddress, type AttachmentInput, type EmailAddress } from '@fluxmail/core';
+import {
+  EmailError,
+  parseEmailSearch,
+  parseSingleAddress,
+  type AttachmentInput,
+  type EmailAddress,
+} from '@fluxmail/core';
 import type { Command } from 'commander';
 import {
   apiErrorCode,
@@ -37,8 +43,8 @@ interface QueryOptions {
   from?: string;
   to?: string;
   subject?: string;
-  unreadOnly?: boolean;
-  starredOnly?: boolean;
+  read?: boolean;
+  starred?: boolean;
   hasAttachment?: boolean;
   after?: string;
   before?: string;
@@ -95,6 +101,12 @@ const MODIFY_ACTIONS: Record<string, string> = {
 
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function booleanOption(value: string): boolean {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new EmailError('invalid_request', 'Boolean search options accept true or false.');
 }
 
 function printJson(value: unknown): void {
@@ -224,23 +236,24 @@ function addQueryOptions(command: Command, includeText: boolean): Command {
     .option('--from <address>', 'Filter by sender')
     .option('--to <address>', 'Filter by recipient')
     .option('--subject <text>', 'Filter by subject')
-    .option('--unread-only', 'Return unread messages only')
-    .option('--starred-only', 'Return starred messages only')
-    .option('--has-attachment', 'Return messages with attachments only')
-    .option('--after <date>', 'Return messages on or after this ISO date')
-    .option('--before <date>', 'Return messages before this ISO date')
+    .option('--read <boolean>', 'Filter by read state', booleanOption)
+    .option('--starred <boolean>', 'Filter by starred state', booleanOption)
+    .option('--has-attachment <boolean>', 'Filter by attachment state', booleanOption)
+    .option('--after <date>', 'Return messages on or after this YYYY-MM-DD date')
+    .option('--before <date>', 'Return messages before this YYYY-MM-DD date')
     .option('--raw-provider-query <query>', 'Pass a provider-native query')
     .option('--page-size <number>', 'Return 1 to 100 messages')
     .option('--page-token <token>', 'Continue from a previous response');
-  if (includeText) command.option('--text <query>', 'Filter by full-text search');
+  if (includeText) command.option('--text <query>', 'Filter by literal full-text search');
   return command;
 }
 
-function queryString(options: QueryOptions, searchText?: string): string {
+function queryString(options: QueryOptions, typedQuery?: string): string {
   const query = new URLSearchParams();
   for (const [key, value] of [
     ['folder', options.folder],
-    ['text', searchText ?? options.text],
+    ['query', typedQuery],
+    ['text', options.text],
     ['from', options.from],
     ['to', options.to],
     ['subject', options.subject],
@@ -252,9 +265,9 @@ function queryString(options: QueryOptions, searchText?: string): string {
   ] as const) {
     if (value !== undefined) query.set(key, value);
   }
-  if (options.unreadOnly) query.set('unreadOnly', 'true');
-  if (options.starredOnly) query.set('starredOnly', 'true');
-  if (options.hasAttachment) query.set('hasAttachment', 'true');
+  if (options.read !== undefined) query.set('read', String(options.read));
+  if (options.starred !== undefined) query.set('starred', String(options.starred));
+  if (options.hasAttachment !== undefined) query.set('hasAttachment', String(options.hasAttachment));
   return query.size ? `?${query}` : '';
 }
 
@@ -370,11 +383,20 @@ export function registerMailCommands(program: Command, options: MailCommandOptio
   );
 
   const search = addQueryOptions(
-    emails.command('search').argument('<query>', 'Full-text search query').description('Search messages'),
+    emails.command('search').argument('<query>', 'Typed portable search query').description('Search messages'),
     false,
-  );
+  ).allowUnknownOption();
   search.action(async (query: string, queryOptions: QueryOptions) =>
     run(async () => {
+      const parsed = parseEmailSearch(query);
+      if (!parsed.valid) {
+        throw new EmailError('invalid_request', parsed.diagnostics.map((item) => item.message).join(' '), {
+          diagnostics: parsed.diagnostics,
+        });
+      }
+      for (const warning of parsed.diagnostics.filter((item) => item.severity === 'warning')) {
+        console.error(`Search warning: ${warning.message}`);
+      }
       const { client, accountId } = await accountContext();
       await printEnvelope(
         client.jsonEnvelope(

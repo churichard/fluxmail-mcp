@@ -35,17 +35,22 @@ describe('toGmailQuery', () => {
       {
         text: 'quarterly report',
         from: 'ann@example.com',
-        unreadOnly: true,
+        read: false,
         hasAttachment: true,
-        after: '2026-01-01T00:00:00.000Z',
+        after: '2026-01-01',
       },
       noLabels,
     );
-    expect(q.q).toContain('quarterly report');
-    expect(q.q).toContain('from:ann@example.com');
+    expect(q.q).toContain('"quarterly" "report"');
+    expect(q.q).toContain('from:"ann@example.com"');
     expect(q.q).toContain('is:unread');
-    expect(q.q).toContain('has:attachment');
+    expect(q.q).not.toContain('has:attachment');
     expect(q.q).toMatch(/after:\d{10}/);
+  });
+
+  it('keeps boolean false values distinct from omitted filters', () => {
+    expect(toGmailQuery({ read: true, starred: false, hasAttachment: false }, noLabels).q).toBe('is:read -is:starred');
+    expect(toGmailQuery({}, noLabels)).toEqual({});
   });
 
   it('quotes values with spaces', () => {
@@ -59,6 +64,6 @@ describe('toGmailQuery', () => {
   });
 
   it('rejects invalid date filters before calling Gmail', () => {
-    expect(() => toGmailQuery({ after: 'not-a-date' }, noLabels)).toThrow(/valid ISO date/);
+    expect(() => toGmailQuery({ after: 'not-a-date' }, noLabels)).toThrow(/YYYY-MM-DD/);
   });
 });

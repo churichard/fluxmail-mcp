@@ -3,7 +3,16 @@ import { createRoute, OpenAPIHono, z } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { HttpBindings } from '@hono/node-server';
-import { EmailError, isEmailError, type EmailQuery, type ModifyAction, type PageOpts } from '@fluxmail/core';
+import {
+  EmailError,
+  isEmailError,
+  mergeEmailQueries,
+  parseEmailSearch,
+  type EmailQuery,
+  type ModifyAction,
+  type PageOpts,
+  type SearchDiagnostic,
+} from '@fluxmail/core';
 import type { ConfigurationService, FluxmailConfig } from '../config.js';
 import type { AccountRegistry } from '../accounts/registry.js';
 import type { LicenseController } from '../licensing/refresher.js';
@@ -143,6 +152,17 @@ const MessageSchema = z
   })
   .strict()
   .openapi('Message');
+const SearchDiagnosticSchema = z
+  .object({
+    code: z.string(),
+    severity: z.enum(['error', 'warning']),
+    message: z.string(),
+    start: z.number().int().nonnegative().optional(),
+    end: z.number().int().nonnegative().optional(),
+    suggestion: z.string().optional(),
+  })
+  .strict()
+  .openapi('SearchDiagnostic');
 const ThreadSchema = z
   .object({ id: z.string(), subject: z.string(), messages: z.array(MessageSchema) })
   .strict()
@@ -159,6 +179,43 @@ const AccountSchema = z
         labels: z.boolean(),
         serverThreads: z.boolean(),
         serverSearch: z.enum(['rich', 'basic']),
+        search: z
+          .object({
+            filters: z.array(
+              z.enum([
+                'folder',
+                'text',
+                'from',
+                'to',
+                'subject',
+                'read',
+                'starred',
+                'hasAttachment',
+                'after',
+                'before',
+              ]),
+            ),
+            folderRoles: z
+              .object({
+                inbox: z.enum(['available', 'unavailable', 'unknown']),
+                sent: z.enum(['available', 'unavailable', 'unknown']),
+                drafts: z.enum(['available', 'unavailable', 'unknown']),
+                archive: z.enum(['available', 'unavailable', 'unknown']),
+                spam: z.enum(['available', 'unavailable', 'unknown']),
+                trash: z.enum(['available', 'unavailable', 'unknown']),
+                all: z.enum(['available', 'unavailable', 'unknown']),
+              })
+              .strict(),
+            nativeQuery: z
+              .object({
+                syntax: z.enum(['gmail', 'outlook-kql']),
+                availability: z.enum(['available', 'unavailable', 'unknown']),
+                unavailableReason: z.string().optional(),
+              })
+              .strict()
+              .nullable(),
+          })
+          .strict(),
         snippets: z.boolean(),
       })
       .strict(),
@@ -203,7 +260,15 @@ function pagedEnvelope<T extends z.ZodTypeAny>(schema: T) {
   return z
     .object({
       data: z.array(schema),
-      meta: z.object({ nextPageToken: z.string().optional() }).strict(),
+      meta: z
+        .object({
+          nextPageToken: z.string().optional(),
+          diagnostics: z.array(SearchDiagnosticSchema).optional(),
+          incomplete: z.literal(true).optional(),
+          incompleteReason: z.enum(['scan_limit', 'provider_limit']).optional(),
+          inspectedCandidates: z.number().int().nonnegative().optional(),
+        })
+        .strict(),
       warnings: z.array(z.string()).optional(),
     })
     .strict();
@@ -326,6 +391,7 @@ const ModifyRequestSchema = z
 
 const messageQuerySchema = z
   .object({
+    query: z.string().min(1).optional().describe('Typed portable search syntax'),
     folder: z
       .string()
       .min(1)
@@ -333,16 +399,16 @@ const messageQuerySchema = z
       .describe(
         "Folder role (inbox, sent, drafts, trash, spam, starred, archive, all) or a label/folder name. Use all or omit this field to search all mail except Spam and Trash. An IMAP server's \\All mailbox may use different rules.",
       ),
-    text: z.string().optional(),
+    text: z.string().optional().describe('Literal full-text search terms'),
     from: z.string().optional(),
     to: z.string().optional(),
     subject: z.string().optional(),
-    unreadOnly: z.enum(['true', 'false']).optional(),
-    starredOnly: z.enum(['true', 'false']).optional(),
+    read: z.enum(['true', 'false']).optional(),
+    starred: z.enum(['true', 'false']).optional(),
     hasAttachment: z.enum(['true', 'false']).optional(),
     after: isoDate.optional(),
     before: isoDate.optional(),
-    rawProviderQuery: z.string().optional(),
+    rawProviderQuery: z.string().optional().describe('Provider-native Gmail syntax or Outlook KQL'),
     pageSize: z
       .string()
       .regex(/^(?:[1-9]|[1-9][0-9]|100)$/)
@@ -701,16 +767,39 @@ function toSendInput(input: z.infer<typeof DraftRequestSchema>): SendInput {
   };
 }
 
-function toEmailQuery(input: z.infer<typeof messageQuerySchema>): { query: EmailQuery; page: PageOpts } {
-  const query: EmailQuery = {};
+function toEmailQuery(input: z.infer<typeof messageQuerySchema>): {
+  query: EmailQuery;
+  page: PageOpts;
+  diagnostics: SearchDiagnostic[];
+} {
+  const structured: EmailQuery = {};
   for (const key of ['folder', 'text', 'from', 'to', 'subject', 'after', 'before', 'rawProviderQuery'] as const) {
-    if (input[key] !== undefined) query[key] = input[key];
+    if (input[key] !== undefined) structured[key] = input[key];
   }
-  for (const key of ['unreadOnly', 'starredOnly', 'hasAttachment'] as const) {
-    if (input[key] !== undefined) query[key] = input[key] === 'true';
+  for (const key of ['read', 'starred', 'hasAttachment'] as const) {
+    if (input[key] !== undefined) structured[key] = input[key] === 'true';
+  }
+  let query = structured;
+  let diagnostics: SearchDiagnostic[] = [];
+  if (input.query !== undefined) {
+    const parsed = parseEmailSearch(input.query);
+    diagnostics = parsed.diagnostics;
+    if (!parsed.valid) {
+      throw new EmailError('invalid_request', parsed.diagnostics.map((item) => item.message).join(' '), {
+        diagnostics: parsed.diagnostics,
+      });
+    }
+    const merged = mergeEmailQueries(parsed.query, structured);
+    if (!merged.success) {
+      throw new EmailError('invalid_request', merged.diagnostics.map((item) => item.message).join(' '), {
+        diagnostics: merged.diagnostics,
+      });
+    }
+    query = merged.query;
   }
   return {
     query,
+    diagnostics,
     page: {
       ...(input.pageSize ? { pageSize: Number(input.pageSize) } : {}),
       ...(input.pageToken ? { pageToken: input.pageToken } : {}),
@@ -1113,10 +1202,21 @@ export function createRestApi(deps: RestApiDeps): OpenAPIHono<RestEnv> {
   });
   app.openapi(listMessagesRoute, (c) => {
     const { accountId } = c.req.valid('param');
-    const { query, page } = toEmailQuery(c.req.valid('query'));
     return runJson(c, deps, { operation: 'listMessages', capabilities: ['mail.read'] }, async () => {
+      const { query, page, diagnostics } = toEmailQuery(c.req.valid('query'));
       const result = await c.get('restService').listMessages(accountId, query, page);
-      return { data: result.items, meta: result.nextPageToken ? { nextPageToken: result.nextPageToken } : {} };
+      return {
+        data: result.items,
+        meta: {
+          ...(result.nextPageToken ? { nextPageToken: result.nextPageToken } : {}),
+          ...([...diagnostics, ...(result.diagnostics ?? [])].length
+            ? { diagnostics: [...diagnostics, ...(result.diagnostics ?? [])] }
+            : {}),
+          ...(result.incomplete ? { incomplete: true as const } : {}),
+          ...(result.incompleteReason ? { incompleteReason: result.incompleteReason } : {}),
+          ...(result.inspectedCandidates !== undefined ? { inspectedCandidates: result.inspectedCandidates } : {}),
+        },
+      };
     });
   });
 

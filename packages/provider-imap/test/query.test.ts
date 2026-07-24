@@ -1,22 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import { toImapSearch } from '../src/query.js';
+import { toImapSearches } from '../src/query.js';
 
-describe('toImapSearch', () => {
+describe('toImapSearches', () => {
   it('maps structured filters', () => {
     expect(
-      toImapSearch(
-        { text: 'report', from: 'ann@example.com', unreadOnly: true, starredOnly: true, after: '2026-01-01' },
+      toImapSearches(
+        { text: 'report', from: 'ann@example.com', read: false, starred: true, after: '2026-01-01' },
         false,
       ),
-    ).toMatchObject({ text: 'report', from: 'ann@example.com', seen: false, flagged: true });
+    ).toEqual([expect.objectContaining({ text: 'report', from: 'ann@example.com', seen: false, flagged: true })]);
+  });
+
+  it('builds one IMAP search per literal full-text term', () => {
+    expect(toImapSearches({ text: 'quarterly report', read: false }, false)).toEqual([
+      expect.objectContaining({ text: 'quarterly', seen: false }),
+      expect.objectContaining({ text: 'report', seen: false }),
+    ]);
   });
 
   it('only permits raw queries on Gmail IMAP', () => {
-    expect(() => toImapSearch({ rawProviderQuery: 'has:attachment' }, false)).toThrow(/Gmail raw search/);
-    expect(toImapSearch({ rawProviderQuery: 'has:attachment' }, true)).toMatchObject({ gmraw: 'has:attachment' });
+    expect(() => toImapSearches({ rawProviderQuery: 'has:attachment' }, false)).toThrow(/Gmail raw search/);
+    expect(toImapSearches({ rawProviderQuery: 'has:attachment' }, true)).toEqual([
+      expect.objectContaining({ gmraw: 'has:attachment' }),
+    ]);
+  });
+
+  it('maps both values of tri-state flags', () => {
+    expect(toImapSearches({ read: true, starred: false }, false)).toEqual([
+      expect.objectContaining({ seen: true, flagged: false }),
+    ]);
+    expect(toImapSearches({}, false)[0]).not.toHaveProperty('seen');
   });
 
   it('rejects invalid dates', () => {
-    expect(() => toImapSearch({ after: 'yesterday' }, false)).toThrow(/ISO date/);
+    expect(() => toImapSearches({ after: 'yesterday' }, false)).toThrow(/YYYY-MM-DD/);
   });
 });

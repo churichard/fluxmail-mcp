@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Account } from '@fluxmail/core';
+import { GMAIL_CAPABILITIES } from '@fluxmail/provider-gmail';
 import type { Principal } from '../src/auth.js';
 import { canAccessAccount, canAdminister, canSeeAccountMetadata } from '../src/authorization.js';
 import { customPermissionPolicy, FULL_PERMISSION_POLICY } from '../src/permissions.js';
@@ -9,7 +10,7 @@ const privateAccount: Account = {
   provider: 'gmail',
   email: 'owner@example.com',
   status: 'active',
-  capabilities: { labels: true, serverThreads: true, serverSearch: 'rich', snippets: true },
+  capabilities: GMAIL_CAPABILITIES,
   ownerMemberId: 'member_owner',
   sharedWithAll: false,
   grantedMemberIds: ['member_granted'],

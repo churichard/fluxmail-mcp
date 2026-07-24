@@ -436,6 +436,77 @@ describe('EmailService member scope', () => {
   });
 });
 
+describe('EmailService search pagination', () => {
+  it('normalizes queries and wraps provider cursors in a signed server token', async () => {
+    const listMessages = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [], nextPageToken: 'provider-page-2' })
+      .mockResolvedValueOnce({ items: [] });
+    const account = {
+      id: 'acct_1',
+      provider: 'gmail' as const,
+      email: 'me@example.com',
+      status: 'active' as const,
+    };
+    const registry = {
+      resolveAccountId: () => account.id,
+      getAccount: () => account,
+      getProvider: () => ({ listMessages }),
+      markStatus: vi.fn(),
+    };
+    const service = new EmailService(registry as never, testDb(), undefined, Buffer.alloc(32, 4));
+
+    const first = await service.listMessages(account.id, { text: '  quarterly   report ' }, { pageSize: 10 });
+    expect(first.nextPageToken).toMatch(/^[^.]+\.[^.]+$/);
+    expect(first.nextPageToken).not.toContain('provider-page-2');
+    expect(listMessages).toHaveBeenNthCalledWith(1, { text: 'quarterly report' }, { pageSize: 10 });
+
+    await service.listMessages(
+      account.id,
+      { text: 'quarterly report' },
+      {
+        pageSize: 10,
+        pageToken: first.nextPageToken,
+      },
+    );
+    expect(listMessages).toHaveBeenNthCalledWith(
+      2,
+      { text: 'quarterly report' },
+      {
+        pageSize: 10,
+        pageToken: 'provider-page-2',
+      },
+    );
+  });
+
+  it('rejects continuation requests with a changed query or page size', async () => {
+    const provider = {
+      listMessages: vi.fn().mockResolvedValue({ items: [], nextPageToken: 'provider-page-2' }),
+    };
+    const account = {
+      id: 'acct_1',
+      provider: 'gmail' as const,
+      email: 'me@example.com',
+      status: 'active' as const,
+    };
+    const registry = {
+      resolveAccountId: () => account.id,
+      getAccount: () => account,
+      getProvider: () => provider,
+      markStatus: vi.fn(),
+    };
+    const service = new EmailService(registry as never, testDb(), undefined, Buffer.alloc(32, 4));
+    const first = await service.listMessages(account.id, { read: false }, { pageSize: 10 });
+
+    await expect(
+      service.listMessages(account.id, { read: true }, { pageSize: 10, pageToken: first.nextPageToken }),
+    ).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(
+      service.listMessages(account.id, { read: false }, { pageSize: 20, pageToken: first.nextPageToken }),
+    ).rejects.toMatchObject({ code: 'invalid_request' });
+  });
+});
+
 describe('EmailService.status', () => {
   function statusService(
     initialStatus: 'active' | 'auth_error',

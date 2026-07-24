@@ -208,6 +208,48 @@ describe('MCP permissions', () => {
   });
 });
 
+describe('MCP typed search', () => {
+  it('parses portable syntax and includes parser warnings in the result', async () => {
+    const listMessages = vi.fn().mockResolvedValue({ items: [] });
+    const client = await connectMcp({ enforceQuota: () => undefined, listMessages } as Partial<EmailService>, {
+      permissions: permissionPolicyForProfile('read-only'),
+    });
+
+    const result = await client.callTool({
+      name: 'search_emails',
+      arguments: { query: 'form:ann@example.com is:unread', starred: true },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(listMessages).toHaveBeenCalledWith(
+      undefined,
+      { text: 'form:ann@example.com', read: false, starred: true },
+      {},
+    );
+    expect(JSON.stringify(result.content)).toContain('possible_operator_typo');
+  });
+
+  it('rejects invalid syntax and duplicate structured filters', async () => {
+    const listMessages = vi.fn();
+    const client = await connectMcp({ enforceQuota: () => undefined, listMessages } as Partial<EmailService>, {
+      permissions: permissionPolicyForProfile('read-only'),
+    });
+
+    const invalid = await client.callTool({
+      name: 'search_emails',
+      arguments: { query: 'in:starred' },
+    });
+    expect(invalid.isError).toBe(true);
+
+    const duplicate = await client.callTool({
+      name: 'search_emails',
+      arguments: { query: 'from:ann@example.com', from: 'bob@example.com' },
+    });
+    expect(duplicate.isError).toBe(true);
+    expect(listMessages).not.toHaveBeenCalled();
+  });
+});
+
 describe('attachment tool', () => {
   it('returns an embedded binary resource and passes the size limit to the service', async () => {
     const getAttachment = vi.fn().mockResolvedValue({

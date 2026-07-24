@@ -10,6 +10,7 @@ import nodemailer, { type Transporter } from 'nodemailer';
 import PostalMime, { type Address as PostalAddress } from 'postal-mime';
 import {
   EmailError,
+  normalizeEmailQuery,
   replySubject,
   type AttachmentMeta,
   type Capabilities,
@@ -33,7 +34,7 @@ import { downloadBody, inspectStructure } from './body.js';
 import { mapImapError } from './errors.js';
 import { resolveFolders, type ResolvedFolders } from './folders.js';
 import { composeMessage, stripBccHeader, type ThreadingHeaders } from './mime.js';
-import { toImapSearch } from './query.js';
+import { toImapSearches } from './query.js';
 import type { FolderWarning, ImapCredentials, ImapMessageLocation, ImapStateStore } from './types.js';
 
 const DEFAULT_PAGE_SIZE = 25;
@@ -76,6 +77,19 @@ export const IMAP_CAPABILITIES: Capabilities = {
   labels: false,
   serverThreads: false,
   serverSearch: 'basic',
+  search: {
+    filters: ['folder', 'text', 'from', 'to', 'subject', 'read', 'starred', 'hasAttachment', 'after', 'before'],
+    folderRoles: {
+      inbox: 'unknown',
+      sent: 'unknown',
+      drafts: 'unknown',
+      archive: 'unknown',
+      spam: 'unknown',
+      trash: 'unknown',
+      all: 'unknown',
+    },
+    nativeQuery: { syntax: 'gmail', availability: 'unknown' },
+  },
   snippets: false,
 };
 
@@ -199,7 +213,6 @@ export function smtpTransportOptions(config: ImapCredentials['smtp']) {
 }
 
 export class ImapProvider implements EmailProvider {
-  readonly capabilities = IMAP_CAPABILITIES;
   private imap?: ImapFlow;
   private connectingImap?: ImapFlow;
   private imapConnection?: Promise<ImapFlow>;
@@ -208,12 +221,40 @@ export class ImapProvider implements EmailProvider {
 
   constructor(private readonly options: ImapProviderOptions) {}
 
+  get capabilities(): Capabilities {
+    const folders = this.resolved;
+    const gmailRaw = this.imap?.capabilities.has('X-GM-EXT-1');
+    return {
+      ...IMAP_CAPABILITIES,
+      search: {
+        ...IMAP_CAPABILITIES.search,
+        folderRoles: {
+          inbox: folders ? (folders.paths.inbox ? 'available' : 'unavailable') : 'unknown',
+          sent: folders ? (folders.paths.sent ? 'available' : 'unavailable') : 'unknown',
+          drafts: folders ? (folders.paths.drafts ? 'available' : 'unavailable') : 'unknown',
+          archive: folders ? (folders.paths.archive ? 'available' : 'unavailable') : 'unknown',
+          spam: folders ? (folders.paths.spam ? 'available' : 'unavailable') : 'unknown',
+          trash: folders ? (folders.paths.trash ? 'available' : 'unavailable') : 'unknown',
+          all: folders ? (this.allMailPaths(folders).length ? 'available' : 'unavailable') : 'unknown',
+        },
+        nativeQuery: {
+          syntax: 'gmail',
+          availability: gmailRaw === undefined ? 'unknown' : gmailRaw ? 'available' : 'unavailable',
+          ...(!gmailRaw && gmailRaw !== undefined
+            ? { unavailableReason: 'The IMAP server does not advertise X-GM-EXT-1.' }
+            : {}),
+        },
+      },
+    };
+  }
+
   async close(): Promise<void> {
     const imap = this.imap;
     const connecting = this.connectingImap;
     this.imap = undefined;
     this.connectingImap = undefined;
     this.imapConnection = undefined;
+    this.resolved = undefined;
     if (connecting && connecting !== imap) connecting.close();
     if (imap && imap !== connecting) imap.close();
     this.smtp?.close();
@@ -410,6 +451,13 @@ export class ImapProvider implements EmailProvider {
   }
 
   async listMessages(query: EmailQuery, page?: PageOpts): Promise<Page<Message>> {
+    const normalized = normalizeEmailQuery(query);
+    if (!normalized.success) {
+      throw new EmailError('invalid_request', normalized.diagnostics.map((item) => item.message).join(' '), {
+        diagnostics: normalized.diagnostics,
+      });
+    }
+    query = normalized.query;
     const folders = await this.refreshFolders();
     const explicit = query.folder;
     let paths: string[];
@@ -422,7 +470,7 @@ export class ImapProvider implements EmailProvider {
     } else {
       paths = this.allMailPaths(folders);
     }
-    const normalizedQuery = { ...query, ...(explicit === 'starred' ? { starredOnly: true } : {}), folder: undefined };
+    const normalizedQuery = { ...query, ...(explicit === 'starred' ? { starred: true } : {}), folder: undefined };
     const hash = cursorHash({ query: { ...normalizedQuery, ...(explicit ? { folder: explicit } : {}) }, paths });
     const cursor = decodeCursor(page?.pageToken, hash);
     const pageSize = Math.min(Math.max(page?.pageSize ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE);
@@ -430,22 +478,43 @@ export class ImapProvider implements EmailProvider {
     let folderIndex = cursor.folder;
     let upperUid = cursor.upperUid;
     let nextCursor: Cursor | undefined;
+    let inspectedCandidates = 0;
+    const localFilter = query.hasAttachment !== undefined || query.after !== undefined || query.before !== undefined;
 
     searchFolders: for (; folderIndex < paths.length; folderIndex++, upperUid = undefined) {
       const path = paths[folderIndex]!;
       await this.withMailbox(path, async (client, uidValidity) => {
-        const found = await client.search(toImapSearch(normalizedQuery, client.capabilities.has('X-GM-EXT-1')), {
-          uid: true,
-        });
-        const uids = (found || []).sort((a, b) => b - a).filter((uid) => upperUid === undefined || uid <= upperUid);
+        let found: number[] | undefined;
+        for (const search of toImapSearches(normalizedQuery, client.capabilities.has('X-GM-EXT-1'))) {
+          const matches = (await client.search(search, { uid: true })) || [];
+          if (found === undefined) {
+            found = matches;
+          } else {
+            const matchingUids = new Set(matches);
+            found = found.filter((uid) => matchingUids.has(uid));
+          }
+          if (!found.length) break;
+        }
+        const uids = (found ?? []).sort((a, b) => b - a).filter((uid) => upperUid === undefined || uid <= upperUid);
         for (const uid of uids) {
+          if (inspectedCandidates >= 1_000) {
+            nextCursor = { v: 2, hash, folder: folderIndex, upperUid: uid };
+            return;
+          }
+          inspectedCandidates += 1;
           const fetched = await client.fetchOne(
             uid,
             { envelope: true, flags: true, internalDate: true, bodyStructure: true, headers: HEADER_NAMES },
             { uid: true },
           );
           if (!fetched) continue;
-          if (query.hasAttachment && !inspectStructure(fetched.bodyStructure).attachments.length) continue;
+          const hasAttachment = inspectStructure(fetched.bodyStructure).attachments.some(
+            (attachment) => attachment.disposition !== 'inline',
+          );
+          if (query.hasAttachment !== undefined && hasAttachment !== query.hasAttachment) continue;
+          const receivedAt = isoDate(fetched.internalDate ?? fetched.envelope?.date);
+          if (query.after && receivedAt < `${query.after}T00:00:00.000Z`) continue;
+          if (query.before && receivedAt >= `${query.before}T00:00:00.000Z`) continue;
           if (items.length === pageSize) {
             nextCursor = { v: 2, hash, folder: folderIndex, upperUid: uid };
             return;
@@ -456,8 +525,12 @@ export class ImapProvider implements EmailProvider {
       if (nextCursor) break searchFolders;
     }
 
-    const out: Page<Message> = { items };
+    const out: Page<Message> = { items, ...(localFilter ? { inspectedCandidates } : {}) };
     if (nextCursor) out.nextPageToken = encodeCursor(nextCursor);
+    if (items.length < pageSize && inspectedCandidates >= 1_000 && nextCursor) {
+      out.incomplete = true;
+      out.incompleteReason = 'scan_limit';
+    }
     return out;
   }
 

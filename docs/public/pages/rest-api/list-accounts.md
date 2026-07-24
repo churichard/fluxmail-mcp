@@ -93,6 +93,135 @@ This endpoint has no parameters or request body.
                   "basic"
                 ]
               },
+              "search": {
+                "type": "object",
+                "properties": {
+                  "filters": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "folder",
+                        "text",
+                        "from",
+                        "to",
+                        "subject",
+                        "read",
+                        "starred",
+                        "hasAttachment",
+                        "after",
+                        "before"
+                      ]
+                    }
+                  },
+                  "folderRoles": {
+                    "type": "object",
+                    "properties": {
+                      "inbox": {
+                        "type": "string",
+                        "enum": [
+                          "available",
+                          "unavailable",
+                          "unknown"
+                        ]
+                      },
+                      "sent": {
+                        "type": "string",
+                        "enum": [
+                          "available",
+                          "unavailable",
+                          "unknown"
+                        ]
+                      },
+                      "drafts": {
+                        "type": "string",
+                        "enum": [
+                          "available",
+                          "unavailable",
+                          "unknown"
+                        ]
+                      },
+                      "archive": {
+                        "type": "string",
+                        "enum": [
+                          "available",
+                          "unavailable",
+                          "unknown"
+                        ]
+                      },
+                      "spam": {
+                        "type": "string",
+                        "enum": [
+                          "available",
+                          "unavailable",
+                          "unknown"
+                        ]
+                      },
+                      "trash": {
+                        "type": "string",
+                        "enum": [
+                          "available",
+                          "unavailable",
+                          "unknown"
+                        ]
+                      },
+                      "all": {
+                        "type": "string",
+                        "enum": [
+                          "available",
+                          "unavailable",
+                          "unknown"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "inbox",
+                      "sent",
+                      "drafts",
+                      "archive",
+                      "spam",
+                      "trash",
+                      "all"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "nativeQuery": {
+                    "type": "object",
+                    "nullable": true,
+                    "properties": {
+                      "syntax": {
+                        "type": "string",
+                        "enum": [
+                          "gmail",
+                          "outlook-kql"
+                        ]
+                      },
+                      "availability": {
+                        "type": "string",
+                        "enum": [
+                          "available",
+                          "unavailable",
+                          "unknown"
+                        ]
+                      },
+                      "unavailableReason": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "syntax",
+                      "availability"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "filters",
+                  "folderRoles",
+                  "nativeQuery"
+                ],
+                "additionalProperties": false
+              },
               "snippets": {
                 "type": "boolean"
               }
@@ -101,6 +230,7 @@ This endpoint has no parameters or request body.
               "labels",
               "serverThreads",
               "serverSearch",
+              "search",
               "snippets"
             ],
             "additionalProperties": false

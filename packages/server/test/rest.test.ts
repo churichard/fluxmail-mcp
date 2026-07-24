@@ -205,10 +205,10 @@ describe('REST email operations', () => {
     await expect(labels.json()).resolves.toEqual({ data: [{ id: 'Label_1', name: 'private-project' }] });
     expect(service.listLabels).toHaveBeenCalledWith('acct_1');
 
-    const listed = await app.request('/api/v1/accounts/acct_1/messages?unreadOnly=true&pageSize=25', { headers: auth });
+    const listed = await app.request('/api/v1/accounts/acct_1/messages?read=false&pageSize=25', { headers: auth });
     expect(listed.status).toBe(200);
     expect(await listed.json()).toMatchObject({ data: [{ id: 'msg_1' }], meta: { nextPageToken: 'next_1' } });
-    expect(service.listMessages).toHaveBeenCalledWith('acct_1', { unreadOnly: true }, { pageSize: 25 });
+    expect(service.listMessages).toHaveBeenCalledWith('acct_1', { read: false }, { pageSize: 25 });
 
     expect((await app.request('/api/v1/accounts/acct_1/messages/msg_1', { headers: auth })).status).toBe(200);
     expect((await app.request('/api/v1/accounts/acct_1/threads/thread_1', { headers: auth })).status).toBe(200);
@@ -245,7 +245,7 @@ describe('REST email operations', () => {
 
   it('strictly validates query strings and JSON bodies', async () => {
     const { app, auth } = fixture();
-    const badBoolean = await app.request('/api/v1/accounts/acct_1/messages?unreadOnly=1', { headers: auth });
+    const badBoolean = await app.request('/api/v1/accounts/acct_1/messages?read=1', { headers: auth });
     expect(badBoolean.status).toBe(400);
     const unknownQuery = await app.request('/api/v1/accounts/acct_1/messages?typo=true', { headers: auth });
     expect(unknownQuery.status).toBe(400);
@@ -286,6 +286,43 @@ describe('REST email operations', () => {
       body: JSON.stringify(draftBody),
     });
     expect(wrongContentType.status).toBe(400);
+  });
+
+  it('parses typed portable search syntax and returns warnings in metadata', async () => {
+    const { app, auth, service } = fixture();
+    const typed = await app.request(
+      `/api/v1/accounts/acct_1/messages?query=${encodeURIComponent('from:ann@example.com is:unread quarterly')}`,
+      { headers: auth },
+    );
+    expect(typed.status).toBe(200);
+    expect(service.listMessages).toHaveBeenLastCalledWith(
+      'acct_1',
+      { from: 'ann@example.com', read: false, text: 'quarterly' },
+      {},
+    );
+
+    const warned = await app.request(
+      `/api/v1/accounts/acct_1/messages?query=${encodeURIComponent('form:ann@example.com')}`,
+      { headers: auth },
+    );
+    expect(warned.status).toBe(200);
+    await expect(warned.json()).resolves.toMatchObject({
+      meta: {
+        diagnostics: [
+          {
+            code: 'possible_operator_typo',
+            severity: 'warning',
+            suggestion: 'from',
+          },
+        ],
+      },
+    });
+
+    const duplicate = await app.request(
+      `/api/v1/accounts/acct_1/messages?query=${encodeURIComponent('from:ann@example.com')}&from=bob@example.com`,
+      { headers: auth },
+    );
+    expect(duplicate.status).toBe(400);
   });
 
   it('maps provider errors without exposing internal failures', async () => {
@@ -375,6 +412,14 @@ describe('REST email operations', () => {
     expect((await app.request('/api/v1')).status).toBe(200);
     expect((await app.request('/api/v1/status', { headers: auth })).status).toBe(200);
     expect((await app.request('/api/v1/accounts/acct_1/labels', { headers: auth })).status).toBe(200);
+    const privateQuery = 'from:private@example.com from:other@example.com';
+    expect(
+      (
+        await app.request(`/api/v1/accounts/acct_1/messages?query=${encodeURIComponent(privateQuery)}`, {
+          headers: auth,
+        })
+      ).status,
+    ).toBe(400);
     service.listLabels.mockRejectedValueOnce(new EmailError('permission_denied', 'private-project denied'));
     expect((await app.request('/api/v1/accounts/acct_1/labels', { headers: auth })).status).toBe(403);
     expect(capture).toHaveBeenCalledWith(
@@ -398,8 +443,18 @@ describe('REST email operations', () => {
         error_code: 'permission_denied',
       }),
     );
+    expect(capture).toHaveBeenCalledWith(
+      'operation completed',
+      expect.objectContaining({
+        product_surface: 'rest',
+        operation: 'listMessages',
+        outcome: 'error',
+        error_code: 'invalid_request',
+      }),
+    );
     expect(JSON.stringify(capture.mock.calls)).not.toContain('me@example.com');
     expect(JSON.stringify(capture.mock.calls)).not.toContain('private-project');
+    expect(JSON.stringify(capture.mock.calls)).not.toContain(privateQuery);
     expect(warn).toHaveBeenCalledWith(
       'rest.operation_failed',
       'private-project denied',
