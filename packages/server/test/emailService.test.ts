@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { EmailError, type Message } from '@fluxmail/core';
+import { EmailError, type Message, type SearchCapabilities } from '@fluxmail/core';
 import { buildForwardBody, EmailService, resolveSendAt } from '../src/service/emailService.js';
 import { accounts, members, openDb, type FluxmailDb } from '../src/storage/db.js';
 import { createScheduledSend } from '../src/storage/scheduledSends.js';
@@ -437,6 +437,20 @@ describe('EmailService member scope', () => {
 });
 
 describe('EmailService search pagination', () => {
+  const supportedSearch: SearchCapabilities = {
+    filters: ['folder', 'text', 'from', 'to', 'subject', 'read', 'starred', 'hasAttachment', 'after', 'before'],
+    folderRoles: {
+      inbox: 'available',
+      sent: 'available',
+      drafts: 'available',
+      archive: 'available',
+      spam: 'available',
+      trash: 'available',
+      all: 'available',
+    },
+    nativeQuery: { syntax: 'gmail', availability: 'available' },
+  };
+
   it('normalizes queries and wraps provider cursors in a signed server token', async () => {
     const listMessages = vi
       .fn()
@@ -451,7 +465,7 @@ describe('EmailService search pagination', () => {
     const registry = {
       resolveAccountId: () => account.id,
       getAccount: () => account,
-      getProvider: () => ({ listMessages }),
+      getProvider: () => ({ capabilities: { search: supportedSearch }, listMessages }),
       markStatus: vi.fn(),
     };
     const service = new EmailService(registry as never, testDb(), undefined, Buffer.alloc(32, 4));
@@ -481,6 +495,7 @@ describe('EmailService search pagination', () => {
 
   it('rejects continuation requests with a changed query or page size', async () => {
     const provider = {
+      capabilities: { search: supportedSearch },
       listMessages: vi.fn().mockResolvedValue({ items: [], nextPageToken: 'provider-page-2' }),
     };
     const account = {
@@ -504,6 +519,98 @@ describe('EmailService search pagination', () => {
     await expect(
       service.listMessages(account.id, { read: false }, { pageSize: 20, pageToken: first.nextPageToken }),
     ).rejects.toMatchObject({ code: 'invalid_request' });
+  });
+
+  it('rejects search options that the provider marks as unsupported', async () => {
+    const listMessages = vi.fn().mockResolvedValue({ items: [] });
+    const search: SearchCapabilities = {
+      ...supportedSearch,
+      filters: ['folder', 'text'],
+      folderRoles: { ...supportedSearch.folderRoles, archive: 'unavailable' },
+      nativeQuery: null,
+    };
+    const account = {
+      id: 'acct_1',
+      provider: 'gmail' as const,
+      email: 'me@example.com',
+      status: 'active' as const,
+    };
+    const registry = {
+      resolveAccountId: () => account.id,
+      getAccount: () => account,
+      getProvider: () => ({ capabilities: { search }, listMessages }),
+      markStatus: vi.fn(),
+    };
+    const service = new EmailService(registry as never, testDb());
+
+    await expect(
+      service.listMessages(account.id, {
+        folder: 'archive',
+        from: 'ann@example.com',
+        rawProviderQuery: 'from:ann@example.com',
+      }),
+    ).rejects.toMatchObject({
+      code: 'unsupported_capability',
+      data: {
+        unsupportedSearchOptions: ['folder:archive', 'from', 'rawProviderQuery'],
+      },
+    });
+    expect(listMessages).not.toHaveBeenCalled();
+  });
+
+  it('checks custom folders against folder-filter support', async () => {
+    const listMessages = vi.fn().mockResolvedValue({ items: [] });
+    const search: SearchCapabilities = {
+      ...supportedSearch,
+      filters: ['text'],
+    };
+    const account = {
+      id: 'acct_1',
+      provider: 'gmail' as const,
+      email: 'me@example.com',
+      status: 'active' as const,
+    };
+    const registry = {
+      resolveAccountId: () => account.id,
+      getAccount: () => account,
+      getProvider: () => ({ capabilities: { search }, listMessages }),
+      markStatus: vi.fn(),
+    };
+    const service = new EmailService(registry as never, testDb());
+
+    await expect(service.listMessages(account.id, { folder: 'Projects/2026' })).rejects.toMatchObject({
+      code: 'unsupported_capability',
+      data: { unsupportedSearchOptions: ['folder'] },
+    });
+    expect(listMessages).not.toHaveBeenCalled();
+  });
+
+  it('allows unknown folder and native-query capabilities to resolve in the provider', async () => {
+    const listMessages = vi.fn().mockResolvedValue({ items: [] });
+    const search: SearchCapabilities = {
+      ...supportedSearch,
+      folderRoles: { ...supportedSearch.folderRoles, archive: 'unknown' },
+      nativeQuery: { syntax: 'gmail', availability: 'unknown' },
+    };
+    const account = {
+      id: 'acct_1',
+      provider: 'imap' as const,
+      email: 'me@example.com',
+      status: 'active' as const,
+    };
+    const registry = {
+      resolveAccountId: () => account.id,
+      getAccount: () => account,
+      getProvider: () => ({ capabilities: { search }, listMessages }),
+      markStatus: vi.fn(),
+    };
+    const service = new EmailService(registry as never, testDb());
+
+    await service.listMessages(account.id, { folder: 'archive' });
+    await service.listMessages(account.id, { folder: 'Projects/2026' });
+    await service.listMessages(account.id, { rawProviderQuery: 'has:attachment' });
+
+    expect(listMessages).toHaveBeenCalledTimes(3);
   });
 });
 

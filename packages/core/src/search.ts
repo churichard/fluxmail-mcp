@@ -106,6 +106,10 @@ function validDate(value: string): boolean {
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }
 
+export function isPortableFolderRole(value: string): value is PortableFolderRole {
+  return PORTABLE_FOLDER_ROLE_SET.has(value);
+}
+
 function normalizeString(value: string, collapseWhitespace = false): string {
   const trimmed = value.trim();
   return collapseWhitespace ? trimmed.replace(/\s+/g, ' ') : trimmed;

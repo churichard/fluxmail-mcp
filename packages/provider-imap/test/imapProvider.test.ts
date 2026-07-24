@@ -698,6 +698,7 @@ describe('ImapProvider connection and pagination state', () => {
         uids = next;
       },
       search: fake.search,
+      fetchOne: fake.fetchOne,
     };
   }
 
@@ -736,6 +737,73 @@ describe('ImapProvider connection and pagination state', () => {
 
     expect(page.items.map((message) => message.subject)).toEqual(['INBOX-2']);
     expect(search).toHaveBeenCalledTimes(2);
+  });
+
+  it('applies canonical attachment and UTC date filters after IMAP search', async () => {
+    const { provider, fetchOne } = paginationProvider([4, 3, 2, 1]);
+    fetchOne.mockImplementation(async (uid: number) => ({
+      uid,
+      envelope: { subject: `INBOX-${uid}`, messageId: `<INBOX-${uid}@example.com>` },
+      headers: Buffer.from(`Message-ID: <INBOX-${uid}@example.com>\r\n`),
+      flags: new Set<string>(),
+      internalDate: new Date(
+        uid === 4 ? '2025-12-31T23:59:59.999Z' : uid === 2 ? '2026-01-03T00:00:00.000Z' : '2026-01-02T12:00:00.000Z',
+      ),
+      bodyStructure: {
+        type: 'multipart/mixed',
+        childNodes: [
+          { part: '1', type: 'text/plain', encoding: '7bit', size: 12 },
+          {
+            part: '2',
+            type: 'image/png',
+            encoding: 'base64',
+            size: 24,
+            disposition: uid === 3 ? 'inline' : 'attachment',
+          },
+        ],
+      },
+    }));
+
+    const page = await provider.listMessages(
+      {
+        folder: 'INBOX',
+        hasAttachment: true,
+        after: '2026-01-01',
+        before: '2026-01-03',
+      },
+      { pageSize: 10 },
+    );
+
+    expect(page.items.map((message) => message.subject)).toEqual(['INBOX-1']);
+    expect(page.inspectedCandidates).toBe(4);
+  });
+
+  it('continues after an empty page reaches the IMAP scan limit', async () => {
+    const uids = Array.from({ length: 1_001 }, (_, index) => 1_001 - index);
+    const { provider, fetchOne } = paginationProvider(uids);
+    fetchOne.mockImplementation(async (uid: number) => ({
+      uid,
+      envelope: { subject: `INBOX-${uid}`, messageId: `<INBOX-${uid}@example.com>` },
+      headers: Buffer.from(`Message-ID: <INBOX-${uid}@example.com>\r\n`),
+      flags: new Set<string>(),
+      internalDate: new Date(uid === 1 ? '2026-01-02T12:00:00.000Z' : '2025-12-31T12:00:00.000Z'),
+    }));
+
+    const query = { folder: 'INBOX', after: '2026-01-01' };
+    const first = await provider.listMessages(query, { pageSize: 1 });
+    const second = await provider.listMessages(query, { pageSize: 1, pageToken: first.nextPageToken });
+
+    expect(first).toMatchObject({
+      items: [],
+      incomplete: true,
+      incompleteReason: 'scan_limit',
+      inspectedCandidates: 1_000,
+    });
+    expect(first.nextPageToken).toBeTruthy();
+    expect(second.items.map((message) => message.subject)).toEqual(['INBOX-1']);
+    expect(second.nextPageToken).toBeUndefined();
+    expect(second.incomplete).toBeUndefined();
+    expect(second.inspectedCandidates).toBe(1);
   });
 
   it('excludes resolved Spam and Trash folders when the server has no All mailbox', async () => {
